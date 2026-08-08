@@ -312,6 +312,123 @@ struct DaemonStateAPITests {
     }
 
     @Test
+    func sessionContextRetriesTheWholeFlowAfterATransientServerError() async throws {
+        defer { URLProtocolStub.reset() }
+        let content = "# Current Session Context\n\nRetry the transient failure."
+        var refreshAttempts = 0
+        var paths: [String] = []
+        let api = makeAPI(sessionContextRetryDelays: [.zero]) { request in
+            let path = request.url!.path
+            paths.append(path)
+            switch path {
+            case "/api/connectors/ai-session/refresh-linked":
+                refreshAttempts += 1
+                if refreshAttempts == 1 {
+                    return URLProtocolStub.response(
+                        for: request,
+                        statusCode: 500,
+                        json: """
+                        {
+                          "error": {
+                            "code": "internal_error",
+                            "message": "An internal error occurred.",
+                            "request_id": "request-1"
+                          }
+                        }
+                        """
+                    )
+                }
+                return URLProtocolStub.response(
+                    for: request,
+                    json: """
+                    {
+                      "workspace_id": "workspace-1",
+                      "linked_sessions": 1,
+                      "refreshed": 1,
+                      "errors": []
+                    }
+                    """
+                )
+            case "/api/context/digest":
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.digestJSON()
+                )
+            case "/api/checkpoints/session-context-eligibility":
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.eligibilityJSON()
+                )
+            case "/api/checkpoints/latest":
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.checkpointJSON()
+                )
+            case "/api/checkpoints/checkpoint-1/handoff":
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.handoffJSON(
+                        content: content,
+                        sha256: self.sha256(content)
+                    )
+                )
+            default:
+                throw URLError(.badURL)
+            }
+        }
+
+        let result = try await api.fetchContext(
+            scope: .session,
+            workspaceID: "workspace-1"
+        )
+
+        #expect(result.content == content)
+        #expect(refreshAttempts == 2)
+        #expect(
+            paths.prefix(2)
+                == [
+                    "/api/connectors/ai-session/refresh-linked",
+                    "/api/connectors/ai-session/refresh-linked",
+                ]
+        )
+    }
+
+    @Test
+    func nestedInternalErrorsPreserveTheirRequestID() async {
+        defer { URLProtocolStub.reset() }
+        let api = makeAPI { request in
+            URLProtocolStub.response(
+                for: request,
+                statusCode: 500,
+                json: """
+                {
+                  "error": {
+                    "code": "internal_error",
+                    "message": "An internal error occurred.",
+                    "request_id": "request-123"
+                  }
+                }
+                """
+            )
+        }
+
+        do {
+            _ = try await api.workspaces()
+            Issue.record("Expected the internal error response to fail")
+        } catch let error as DaemonStateError {
+            #expect(
+                error == .httpError(
+                    statusCode: 500,
+                    code: "internal_error",
+                    message: "An internal error occurred. Request request-123."
+                )
+            )
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test
     func sessionContextCapturesTipWhenScopedCheckpointIsMissing() async throws {
         defer { URLProtocolStub.reset() }
         let content = "# Current Session Context"
@@ -642,15 +759,22 @@ struct DaemonStateAPITests {
     }
 
     private func makeAPI(
+        sessionContextRetryDelays: [Duration]? = nil,
         handler: @escaping URLProtocolStub.Handler
     ) -> DaemonStateAPI {
         URLProtocolStub.install(handler)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [URLProtocolStub.self]
-        return DaemonStateAPI(
-            baseURL: URL(string: "https://context.test/api")!,
-            session: URLSession(configuration: configuration)
-        )
+        let baseURL = URL(string: "https://context.test/api")!
+        let session = URLSession(configuration: configuration)
+        if let sessionContextRetryDelays {
+            return DaemonStateAPI(
+                baseURL: baseURL,
+                session: session,
+                sessionContextRetryDelays: sessionContextRetryDelays
+            )
+        }
+        return DaemonStateAPI(baseURL: baseURL, session: session)
     }
 
     private func jsonBody(_ request: URLRequest) throws -> [String: Any] {

@@ -56,15 +56,21 @@ final class OverlayRuntimeController {
     private let stateURL: URL
     private let controlURL: URL
     private let lockURL: URL
+    private let stateRepairInterval: DispatchTimeInterval?
     private var lockFileDescriptor: Int32 = -1
     private var signalSource: DispatchSourceSignal?
+    private var stateRepairTimer: DispatchSourceTimer?
     private var commandHandler: CommandHandler?
+    private var lastPublishedVisible: Bool?
+    private var lastPublishedWorkspaceID: String?
 
     init(
         controlToken: String,
-        runtimeDirectory: URL? = nil
+        runtimeDirectory: URL? = nil,
+        stateRepairInterval: DispatchTimeInterval? = .seconds(1)
     ) throws {
         self.controlToken = controlToken
+        self.stateRepairInterval = stateRepairInterval
         let resolvedRuntimeDirectory = runtimeDirectory
             ?? Self.defaultRuntimeDirectory()
         self.runtimeDirectory = resolvedRuntimeDirectory
@@ -102,18 +108,62 @@ final class OverlayRuntimeController {
         }
         signalSource = source
         source.resume()
+
+        if let stateRepairInterval {
+            let timer = DispatchSource.makeTimerSource(queue: .main)
+            timer.schedule(
+                deadline: .now() + stateRepairInterval,
+                repeating: stateRepairInterval,
+                leeway: .milliseconds(10)
+            )
+            timer.setEventHandler { [weak self] in
+                _ = self?.ensureLatestStateIsPublished()
+            }
+            stateRepairTimer = timer
+            timer.resume()
+        }
     }
 
-    func publish(visible: Bool, workspaceID: String?) {
+    @discardableResult
+    func publish(visible: Bool, workspaceID: String?) -> Bool {
+        lastPublishedVisible = visible
+        lastPublishedWorkspaceID = normalizedWorkspaceID(workspaceID)
+        return writeLatestState()
+    }
+
+    private func writeLatestState() -> Bool {
+        guard let visible = lastPublishedVisible else { return false }
         let state = OverlayRuntimeState(
             schemaVersion: overlayStateSchema,
             processIdentifier: ProcessInfo.processInfo.processIdentifier,
             controlToken: controlToken,
             visible: visible,
-            workspaceID: normalizedWorkspaceID(workspaceID),
+            workspaceID: lastPublishedWorkspaceID,
             updatedAt: ISO8601DateFormatter().string(from: Date())
         )
-        try? writeJSON(state, to: stateURL)
+        do {
+            try writeJSON(state, to: stateURL)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func ensureLatestStateIsPublished() -> Bool {
+        guard let visible = lastPublishedVisible,
+              let data = try? Data(contentsOf: stateURL),
+              let state = try? JSONDecoder().decode(
+                  OverlayRuntimeState.self,
+                  from: data
+              ),
+              state.processIdentifier == ProcessInfo.processInfo.processIdentifier,
+              state.controlToken == controlToken,
+              state.visible == visible,
+              state.workspaceID == lastPublishedWorkspaceID
+        else {
+            return writeLatestState()
+        }
+        return true
     }
 
     func processPendingControl() {
@@ -134,9 +184,13 @@ final class OverlayRuntimeController {
     }
 
     func stop() {
+        stateRepairTimer?.cancel()
+        stateRepairTimer = nil
         signalSource?.cancel()
         signalSource = nil
         commandHandler = nil
+        lastPublishedVisible = nil
+        lastPublishedWorkspaceID = nil
         removeOwnedRuntimeFiles()
         if lockFileDescriptor >= 0 {
             _ = Darwin.lockf(lockFileDescriptor, F_ULOCK, 0)

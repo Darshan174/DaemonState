@@ -30,9 +30,12 @@ CONTROL_FILENAME = "daemonstate-overlay-control.json"
 TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 MAX_STATE_BYTES = 8_192
 LAUNCH_TIMEOUT_SECONDS = 45.0
+INSTANCE_RECOVERY_TIMEOUT_SECONDS = 3.0
 CONTROL_TIMEOUT_SECONDS = 3.0
 POLL_INTERVAL_SECONDS = 0.05
 DEFAULT_API_URL = "http://127.0.0.1:8000/api"
+# The native app uses this exit status when its singleton lock is already held.
+INSTANCE_CONFLICT_EXIT_CODE = 75
 
 
 class DesktopOverlayError(RuntimeError):
@@ -431,8 +434,21 @@ class DesktopOverlayManager:
 
         deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
-            if process.poll() is not None:
+            return_code = process.poll()
+            if return_code is not None:
                 self._owned_process = None
+                if return_code == INSTANCE_CONFLICT_EXIT_CODE:
+                    incumbent = self._wait_for_incumbent_state()
+                    if incumbent is not None:
+                        return incumbent
+                    raise DesktopOverlayError(
+                        (
+                            "A floating context control is already running, but "
+                            "it did not publish recoverable state. Quit the existing "
+                            "control and try again."
+                        ),
+                        code="overlay_instance_unavailable",
+                    )
                 raise DesktopOverlayError(
                     "The native floating context control exited during launch.",
                     code="overlay_launch_failed",
@@ -457,6 +473,32 @@ class DesktopOverlayManager:
             "The native floating context control did not report ready in time.",
             code="overlay_launch_timeout",
         )
+
+    def _wait_for_incumbent_state(self) -> _NativeOverlayState | None:
+        """Adopt a healthy singleton whose state is being republished.
+
+        The native process periodically verifies its state file and recreates it
+        if needed. If that file was removed while the process remained alive, a
+        concurrent launch loses the singleton race and waits briefly for the
+        incumbent to repair it.
+        """
+
+        deadline = time.monotonic() + INSTANCE_RECOVERY_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            try:
+                state = self._verified_state()
+            except DesktopOverlayError as exc:
+                if exc.code not in {
+                    "overlay_state_invalid",
+                    "overlay_state_unavailable",
+                    "overlay_state_unverified",
+                }:
+                    raise
+                state = None
+            if state is not None:
+                return state
+            time.sleep(POLL_INTERVAL_SECONDS)
+        return None
 
     def _validated_api_url(self, value: str) -> str:
         try:

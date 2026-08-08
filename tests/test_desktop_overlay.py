@@ -19,6 +19,7 @@ from app.services.access import AccessScope
 from app.services.desktop_overlay import (
     CONTROL_FILENAME,
     CONTROL_SCHEMA,
+    INSTANCE_CONFLICT_EXIT_CODE,
     STATE_FILENAME,
     STATE_SCHEMA,
     DesktopOverlayError,
@@ -319,6 +320,47 @@ def test_show_launches_only_fixed_repository_command(
     assert options["env"]["DAEMONSTATE_OVERLAY_RUNTIME_DIR"] == str(
         manager.state_path.parent
     )
+
+
+def test_show_adopts_incumbent_after_native_instance_conflict(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    workspace_id = uuid4()
+    incumbent_token = "incumbent-control-token-1234567890"
+
+    class ConflictProcess:
+        pid = 6789
+
+        def poll(self):
+            return INSTANCE_CONFLICT_EXIT_CODE
+
+    def fake_popen(_argv, **_kwargs):
+        _write_state(
+            manager,
+            token=incumbent_token,
+            visible=True,
+            workspace_id=workspace_id,
+        )
+        return ConflictProcess()
+
+    monkeypatch.setattr("app.services.desktop_overlay.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(
+        manager,
+        "_pid_command",
+        lambda _pid: _verified_command(incumbent_token),
+    )
+
+    status = manager.set_visible(
+        True,
+        workspace_id=workspace_id,
+        api_url="http://127.0.0.1:9123/api",
+    )
+
+    assert status.running is True
+    assert status.visible is True
+    assert status.workspace_id == str(workspace_id)
 
 
 def test_show_rejects_nonloopback_api_before_launch(
