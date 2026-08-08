@@ -35,6 +35,7 @@ from app.services.checkpoints import (
     resolve_session_handoff_request_verbatim,
     resolve_session_handoff_supporting_context,
     session_request_requires_materialized_context,
+    validate_continuation_lead,
 )
 from app.services.context_compiler import ContextCompiler
 from app.services.continuation_execution import (
@@ -205,6 +206,7 @@ class ContinuationService:
         repo_path: str | None = None,
         objective: str | None = None,
         objective_is_user_edited: bool = False,
+        continuation_lead: str | None = None,
         checkpoint_id: UUID | str | None = None,
         checkpoint_source_id: UUID | None = None,
         source_provider: str | None = None,
@@ -227,6 +229,15 @@ class ContinuationService:
                 "continuation_edited_goal_missing",
                 "An edited continuation lead must include the exact user text.",
             )
+        try:
+            validated_continuation_lead = validate_continuation_lead(
+                continuation_lead
+            )
+        except ValueError as exc:
+            raise ContinuationError(
+                "continuation_lead_invalid",
+                str(exc),
+            ) from exc
 
         try:
             source_session_filter = normalize_optional_session_key(
@@ -660,6 +671,22 @@ class ContinuationService:
                     "bound to the selected checkpoint or source session."
                 ),
             )
+        historical_objective = normalized_objective
+        historical_request_verbatim = authoritative_request_verbatim
+        if validated_continuation_lead is not None:
+            normalized_continuation_lead = _normalize_goal(
+                normalize_substantive_user_request(
+                    validated_continuation_lead
+                )
+            )
+            if normalized_continuation_lead is None:
+                raise ContinuationError(
+                    "continuation_lead_invalid",
+                    "The continuation lead must be a substantive user instruction.",
+                )
+            normalized_objective = normalized_continuation_lead
+            authoritative_request_verbatim = validated_continuation_lead
+            objective_origin = "continuation_lead"
         authoritative_request = build_authoritative_request(
             authoritative_request_verbatim
         )
@@ -721,6 +748,7 @@ class ContinuationService:
                     ),
                     include_unreferenced_trusted_descriptors=(
                         not objective_is_user_edited
+                        and validated_continuation_lead is None
                     ),
                 )
             )
@@ -729,13 +757,16 @@ class ContinuationService:
             ...,
         ] = (*artifacts, *trusted_request_artifacts)
         resolved_task_mode = (
-            task_mode
+            infer_task_mode(authoritative_request.request_verbatim)
+            if validated_continuation_lead is not None
+            else task_mode
             if isinstance(task_mode, TaskMode)
             else TaskMode(str(task_mode))
             if task_mode is not None
             else infer_task_mode(authoritative_request.request_verbatim)
         )
 
+        provenance_session_candidate = session_candidate
         workflow_resolution = await TaskWorkflowService(self.session).resolve(
             workspace_id=workspace_id,
             access_scope=access_scope,
@@ -781,28 +812,39 @@ class ContinuationService:
                     ),
                 ))
 
+        checkpoint_session_candidate = (
+            provenance_session_candidate
+            if validated_continuation_lead is not None
+            else session_candidate
+        )
+        checkpoint_context_objective = (
+            historical_objective
+            if validated_continuation_lead is not None
+            else execution_context_objective
+        )
+
         captured_checkpoint: WorkCheckpoint | None = None
         if (
             requested_checkpoint_key is None
-            and session_candidate is not None
+            and checkpoint_session_candidate is not None
             and _goals_compatible(
-                execution_context_objective,
-                session_candidate.objective,
+                checkpoint_context_objective,
+                checkpoint_session_candidate.objective,
             )
         ):
             if await self._session_sources_accessible(
                 workspace_id=workspace_id,
-                provider=session_candidate.provider,
-                session_id=session_candidate.session_id,
+                provider=checkpoint_session_candidate.provider,
+                session_id=checkpoint_session_candidate.session_id,
                 access_scope=access_scope,
             ):
                 try:
                     captured_checkpoint = await capture_checkpoint(
                         self.session,
                         workspace_id=workspace_id,
-                        provider=session_candidate.provider,
-                        session_id=session_candidate.session_id,
-                        boundary_event_id=session_candidate.tip_event.id,
+                        provider=checkpoint_session_candidate.provider,
+                        session_id=checkpoint_session_candidate.session_id,
+                        boundary_event_id=checkpoint_session_candidate.tip_event.id,
                         trigger="continuation",
                     )
                     captured_checkpoint = await get_checkpoint(
@@ -825,7 +867,8 @@ class ContinuationService:
         requested_checkpoint_execution_compatible = bool(
             requested_checkpoint is not None
             and (
-                not execution_differs_from_intent
+                validated_continuation_lead is not None
+                or not execution_differs_from_intent
                 or _goals_compatible(
                     execution_objective,
                     _checkpoint_goal(requested_checkpoint),
@@ -835,7 +878,8 @@ class ContinuationService:
         legacy_execution_compatible = bool(
             legacy_restore is not None
             and (
-                not execution_differs_from_intent
+                validated_continuation_lead is not None
+                or not execution_differs_from_intent
                 or _goals_compatible(
                     execution_objective,
                     _normalize_goal(
@@ -876,7 +920,7 @@ class ContinuationService:
                 recovered_goal := _current_tip_recovered_checkpoint_goal(
                     checkpoint,
                     captured_checkpoint=captured_checkpoint,
-                    session_candidate=session_candidate,
+                    session_candidate=checkpoint_session_candidate,
                 )
             )
             is not None
@@ -899,16 +943,16 @@ class ContinuationService:
                 allow_missing_repo=bool(
                     captured_checkpoint is not None
                     and checkpoint.id == captured_checkpoint.id
-                    and session_candidate is not None
+                    and checkpoint_session_candidate is not None
                 ),
                 allow_missing_branch=bool(
                     captured_checkpoint is not None
                     and checkpoint.id == captured_checkpoint.id
-                    and session_candidate is not None
+                    and checkpoint_session_candidate is not None
                 ),
             )
             and _goals_compatible(
-                execution_context_objective,
+                checkpoint_context_objective,
                 _checkpoint_goal(
                     checkpoint,
                     recovered_goal=recovered_checkpoint_goals.get(
@@ -1050,15 +1094,19 @@ class ContinuationService:
                 "warning",
                 "The exact provider-compaction checkpoint is restored as reported context without a durable repository snapshot.",
             ))
-        elif session_candidate is not None:
+        elif checkpoint_session_candidate is not None:
             session_title = str(
-                metadata_dict(session_candidate.source_document).get("title")
+                metadata_dict(
+                    checkpoint_session_candidate.source_document
+                ).get("title")
                 or ""
             ).strip()
             source_session = {
-                "provider": session_candidate.provider,
-                "session_id": session_candidate.session_id,
-                "source_document_id": str(session_candidate.source_document.id),
+                "provider": checkpoint_session_candidate.provider,
+                "session_id": checkpoint_session_candidate.session_id,
+                "source_document_id": str(
+                    checkpoint_session_candidate.source_document.id
+                ),
                 **({"title": session_title} if session_title else {}),
             }
 
@@ -1070,7 +1118,7 @@ class ContinuationService:
                 if legacy_document is not None
                 else None
             )
-            or _candidate_repo_path(session_candidate)
+            or _candidate_repo_path(checkpoint_session_candidate)
         )
         if current_repository is None and effective_repo_path:
             current_repository, current_repo_error = await _current_repository(
@@ -1178,6 +1226,19 @@ class ContinuationService:
                 for artifact in effective_artifacts
             ],
             "workflow": workflow_resolution.workflow,
+            **(
+                {
+                    "continuation_lead_sha256": (
+                        authoritative_request.request_sha256
+                    ),
+                    "historical_request_sha256": hashlib.sha256(
+                        historical_request_verbatim.encode("utf-8")
+                    ).hexdigest(),
+                    "historical_objective": historical_objective,
+                }
+                if validated_continuation_lead is not None
+                else {}
+            ),
         }
         pack = await ContextCompiler(self.session).compile_context_pack(
             execution_objective,
@@ -1506,6 +1567,19 @@ class ContinuationService:
                 "identity": task_identity,
                 "title": execution_objective,
                 "origin": objective_origin,
+                **(
+                    {
+                        "historical_goal": {
+                            "text": historical_request_verbatim,
+                            "request_sha256": hashlib.sha256(
+                                historical_request_verbatim.encode("utf-8")
+                            ).hexdigest(),
+                            "authority": "historical_user_authored",
+                        }
+                    }
+                    if validated_continuation_lead is not None
+                    else {}
+                ),
                 "workspace_goal_id": (
                     current_goal.get("id") if current_goal is not None else None
                 ),

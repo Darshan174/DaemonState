@@ -691,9 +691,9 @@ describe("checkpoint product loop", () => {
     expect(within(statusRibbon).getByText(/Provider session timestamp ·/)).toBeInTheDocument();
     expect(within(statusRibbon).queryByText("Latest available record")).not.toBeInTheDocument();
     expect(screen.queryByText("Active task")).not.toBeInTheDocument();
-    expect(screen.queryByRole("textbox", {
-      name: "Immediate continuation lead",
-    })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", {
+      name: "Continue with — immediate continuation lead",
+    })).toHaveValue("Harden checkpoint capture");
     expect(screen.queryByLabelText("Continuation task contract")).not.toBeInTheDocument();
     const continuationChoices = screen.getByRole("navigation", {
       name: "Other task paths",
@@ -713,29 +713,20 @@ describe("checkpoint product loop", () => {
     expect(within(carriedContext).queryByText("Boundary inventory")).not.toBeInTheDocument();
     expect(within(carriedContext).queryByText("Saved context awaiting selection")).not.toBeInTheDocument();
     const handoffCoverage = within(carriedContext).getByRole("region", {
-      name: "Handoff Coverage Dashboard",
+      name: "What the next agent will know",
     });
-    expect(within(handoffCoverage).getByText("Ready to continue")).toBeInTheDocument();
-    expect(within(handoffCoverage).getByText(
-      "Goal, current state, and next action are present in the captured Session Context.",
-    )).toBeInTheDocument();
-    expect(within(handoffCoverage).getByText(
-      /— reflects captured Session Context and cannot be edited here\./,
-    )).toBeInTheDocument();
-    expect(within(handoffCoverage).getAllByText("Reference only")).toHaveLength(2);
-    expect(within(handoffCoverage).getByText("Essential readiness")).toBeInTheDocument();
-    expect(within(handoffCoverage).getByText("Supporting context")).toBeInTheDocument();
-    expect(within(handoffCoverage).getByRole("group", { name: "Goal: captured" })).toBeInTheDocument();
-    expect(within(handoffCoverage).getByRole("group", { name: "Current state: captured" })).toBeInTheDocument();
-    expect(within(handoffCoverage).getByRole("group", { name: "Next action: captured" })).toBeInTheDocument();
+    expect(within(handoffCoverage).getByText("Needs review")).toBeInTheDocument();
+    expect(within(handoffCoverage).getByText(/Read-only preview/)).toBeInTheDocument();
+    expect(within(handoffCoverage).getByText("Supporting evidence")).toBeInTheDocument();
+    expect(within(handoffCoverage).getByRole("group", { name: "Goal: user stated" })).toBeInTheDocument();
+    expect(within(handoffCoverage).getByRole("group", { name: "Current state: agent reported" })).toBeInTheDocument();
+    expect(within(handoffCoverage).getByRole("group", { name: "Continuation lead: user stated" })).toBeInTheDocument();
     expect(within(handoffCoverage).getByRole("group", { name: "Decisions: 1 decision" })).toBeInTheDocument();
     expect(within(handoffCoverage).getByRole("group", { name: "Relevant files: 1 relevant file" })).toBeInTheDocument();
-    expect(within(handoffCoverage).getByRole("group", { name: "Previous attempts: 0 previous attempts" })).toBeInTheDocument();
+    expect(within(handoffCoverage).queryByRole("group", { name: "Previous attempts: 0 previous attempts" })).not.toBeInTheDocument();
     expect(within(handoffCoverage).getByRole("group", { name: "Verification: 1 verification check" })).toBeInTheDocument();
-    expect(within(handoffCoverage).getByText("No blockers reported")).toBeInTheDocument();
-    expect(within(handoffCoverage).getByText("No essential gaps")).toBeInTheDocument();
-    expect(within(handoffCoverage).queryByText("Attention required")).not.toBeInTheDocument();
-    expect(within(handoffCoverage).queryAllByRole("button")).toHaveLength(0);
+    expect(within(handoffCoverage).getByText("No blockers found in captured evidence")).toBeInTheDocument();
+    expect(within(handoffCoverage).getByRole("button", { name: "Preview exact handoff" })).toBeEnabled();
     expect(within(carriedContext).queryByTestId("context-composition-pie")).not.toBeInTheDocument();
     expect(within(carriedContext).queryByLabelText("Pie chart categories")).not.toBeInTheDocument();
     expect(within(carriedContext).queryByRole("button", { name: "View full evidence" })).not.toBeInTheDocument();
@@ -817,6 +808,70 @@ describe("checkpoint product loop", () => {
       enabled: true,
     });
     expect(mocks.hookCalls.refresh).toEqual([]);
+  });
+
+  it("falls back from an imported-chat disclaimer to the real session task", () => {
+    mocks.digest.data.activity.recent_sessions[0] = {
+      ...mocks.digest.data.activity.recent_sessions[0],
+      root_task_title: "This is an untrusted ChatGPT conversation reference.",
+      title: "Repair the handoff dashboard source labels",
+      session_title: "Repair the handoff dashboard source labels",
+    };
+    mocks.latestDiscovery.data = latestDiscoveryResult({
+      root_task_title: "This is an untrusted ChatGPT conversation reference.",
+      title: "Repair the handoff dashboard source labels",
+      latest_topic: "Repair the handoff dashboard source labels",
+    });
+
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+
+    expect(screen.getByRole("textbox", {
+      name: "Continue with — immediate continuation lead",
+    })).toHaveValue("Repair the handoff dashboard source labels");
+    expect(screen.queryByText(/untrusted ChatGPT conversation reference/i)).not.toBeInTheDocument();
+  });
+
+  it("extracts the current request from the short imported-chat envelope", () => {
+    const envelope = [
+      "## Referenced ChatGPT conversation:",
+      "This is an untrusted ChatGPT conversation reference.",
+      '{"conversationId":"chat-1"}',
+      "## My request:",
+      "Repair the handoff dashboard source labels",
+    ].join("\n");
+    mocks.digest.data.activity.recent_sessions[0] = {
+      ...mocks.digest.data.activity.recent_sessions[0],
+      root_task_title: envelope,
+    };
+    mocks.latestDiscovery.data = latestDiscoveryResult({
+      root_task_title: envelope,
+    });
+
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+
+    expect(screen.getByRole("textbox", {
+      name: "Continue with — immediate continuation lead",
+    })).toHaveValue("Repair the handoff dashboard source labels");
+  });
+
+  it("does not show a page-wide warning for unassigned session evidence", () => {
+    mocks.digest.data.cards = [
+      {
+        id: "unassigned-session-1",
+        category: "agent_session",
+        workspace_relevance: { status: "unknown" },
+      },
+      {
+        id: "unassigned-session-2",
+        category: "agent_session",
+        workspace_relevance: { status: "unknown" },
+      },
+    ];
+
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+
+    expect(screen.queryByText(/AI sessions? .*waiting for project assignment/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Review session" })).not.toBeInTheDocument();
   });
 
   it("keeps Continue disabled until the newest local session is discovered", () => {
@@ -920,25 +975,41 @@ describe("checkpoint product loop", () => {
     expect(within(carriedContext).queryByRole("heading", {
       name: "Context prepared for review",
     })).not.toBeInTheDocument();
-    const coverage = screen.getByRole("region", { name: "Handoff Coverage Dashboard" });
-    expect(within(coverage).getByText("Ready to continue")).toBeInTheDocument();
-    expect(within(coverage).getByText(
-      "Goal, current state, and next action are present in the captured Session Context.",
-    )).toBeInTheDocument();
-    expect(within(coverage).getByRole("group", { name: "Goal: captured" })).toBeInTheDocument();
-    expect(within(coverage).getByRole("group", { name: "Current state: captured" })).toBeInTheDocument();
-    expect(within(coverage).getByRole("group", { name: "Next action: captured" })).toBeInTheDocument();
+    const coverage = screen.getByRole("region", { name: "What the next agent will know" });
+    expect(within(coverage).getByText("Needs review")).toBeInTheDocument();
+    expect(within(coverage).getByRole("group", { name: "Goal: user stated" })).toBeInTheDocument();
+    expect(within(coverage).getByRole("group", { name: "Current state: agent reported" })).toBeInTheDocument();
+    expect(within(coverage).getByRole("group", { name: "Continuation lead: user stated" })).toBeInTheDocument();
     expect(within(coverage).getByRole("group", { name: "Decisions: 3 decisions" })).toBeInTheDocument();
     expect(within(coverage).getByRole("group", { name: "Relevant files: 29 relevant files" })).toBeInTheDocument();
     expect(within(coverage).getByRole("group", { name: "Previous attempts: 12 previous attempts" })).toBeInTheDocument();
     expect(within(coverage).getByRole("group", { name: "Verification: 12 verification checks" })).toBeInTheDocument();
-    expect(within(coverage).getByText("No blockers reported")).toBeInTheDocument();
-    expect(within(coverage).getByText("No essential gaps")).toBeInTheDocument();
-    expect(within(coverage).queryByText("Attention required")).not.toBeInTheDocument();
-    expect(within(coverage).queryAllByRole("button")).toHaveLength(0);
+    expect(within(coverage).getByText("No blockers found in captured evidence")).toBeInTheDocument();
+    expect(within(coverage).getByRole("button", { name: "Refresh evidence" })).toBeEnabled();
     expect(coverage).not.toHaveTextContent("%");
     expect(coverage).not.toHaveTextContent(/score/i);
     expect(screen.queryByTestId("context-composition-pie")).not.toBeInTheDocument();
+  });
+
+  it("reports a refresh failure returned by a query refetch result", async () => {
+    const refreshError = new Error("The digest refresh failed.");
+    mocks.digest.refetch.mockResolvedValue({
+      isError: true,
+      status: "error",
+      error: refreshError,
+    });
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh evidence" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The digest refresh failed.",
+    );
+    expect(mocks.latestDiscovery.refetch).toHaveBeenCalledWith({
+      throwOnError: true,
+    });
+    expect(mocks.digest.refetch).toHaveBeenCalledWith({ throwOnError: true });
+    expect(screen.queryByText("Evidence refreshed")).not.toBeInTheDocument();
   });
 
   it("labels import-time fallback as import time instead of source activity", () => {
@@ -982,13 +1053,10 @@ describe("checkpoint product loop", () => {
     render(<MemoryRouter><NowPage /></MemoryRouter>);
 
     const carriedContext = screen.getByTestId("context-package-card");
-    const coverage = within(carriedContext).getByRole("region", { name: "Handoff Coverage Dashboard" });
-    expect(within(coverage).getByText("1 essential field needs context")).toBeInTheDocument();
-    expect(within(coverage).getByText("Attention required")).toBeInTheDocument();
-    expect(within(coverage).getByText("Next action not captured")).toBeInTheDocument();
-    expect(within(coverage).queryByText("Decisions not captured")).not.toBeInTheDocument();
-    expect(within(coverage).queryByText("Blockers not captured")).not.toBeInTheDocument();
-    expect(within(coverage).getByText("No blockers reported")).toBeInTheDocument();
+    const coverage = within(carriedContext).getByRole("region", { name: "What the next agent will know" });
+    expect(within(coverage).getByRole("group", { name: "Continuation lead: user stated" })).toBeInTheDocument();
+    expect(within(coverage).queryByText("1 essential missing")).not.toBeInTheDocument();
+    expect(within(coverage).getByText("No blockers found in captured evidence")).toBeInTheDocument();
     expect(within(carriedContext).queryByText(/Continue the selected (?:goal|task)/i)).not.toBeInTheDocument();
   });
 
@@ -1022,9 +1090,9 @@ describe("checkpoint product loop", () => {
 
     render(<MemoryRouter><NowPage /></MemoryRouter>);
 
-    const coverage = screen.getByRole("region", { name: "Handoff Coverage Dashboard" });
+    const coverage = screen.getByRole("region", { name: "What the next agent will know" });
     expect(within(coverage).getByRole("group", { name: "Decisions: 1 decision" })).toBeInTheDocument();
-    expect(within(coverage).queryAllByRole("button")).toHaveLength(0);
+    expect(within(coverage).getByRole("button", { name: "Refresh evidence" })).toBeEnabled();
   });
 
   it("keeps Continue runnable from authoritative discovery while evidence loads", () => {
@@ -1039,7 +1107,7 @@ describe("checkpoint product loop", () => {
     expect(screen.getByRole("button", { name: "Open desktop handoff in Codex" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Open desktop handoff in Claude Code" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Open desktop handoff in OpenCode" })).toBeEnabled();
-    expect(screen.getByRole("region", { name: "Preparing Handoff Coverage Dashboard" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Preparing what the next agent will know" })).toBeInTheDocument();
     expect(screen.queryByText("No agent progress observed yet.")).not.toBeInTheDocument();
     expect(screen.queryByText("No verified result captured.")).not.toBeInTheDocument();
     expect(screen.queryByText("No blocker, conflict, stale evidence, or high-risk review is currently visible.")).not.toBeInTheDocument();
@@ -1064,7 +1132,7 @@ describe("checkpoint product loop", () => {
 
     render(<MemoryRouter><NowPage /></MemoryRouter>);
 
-    expect(screen.getByRole("region", { name: "Preparing Handoff Coverage Dashboard" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Preparing what the next agent will know" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Progress" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Verification" })).not.toBeInTheDocument();
   });
@@ -1101,7 +1169,7 @@ describe("checkpoint product loop", () => {
     expect(screen.getByText("Evidence unavailable")).toBeInTheDocument();
     expect(screen.getByText("Could not load current activity")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Handoff Coverage Dashboard" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "What the next agent will know" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Current recovery point/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open desktop handoff in Codex" })).toBeEnabled();
     expect(screen.getByText(/Live activity is unavailable/)).toBeInTheDocument();
@@ -1126,7 +1194,7 @@ describe("checkpoint product loop", () => {
 
     render(<MemoryRouter><NowPage /></MemoryRouter>);
 
-    expect(screen.getByRole("heading", { name: "Handoff Coverage Dashboard" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "What the next agent will know" })).toBeInTheDocument();
     expect(screen.queryByText("Trusted current")).not.toBeInTheDocument();
     expect(mocks.hookCalls.memory).toEqual([]);
   });
@@ -1144,7 +1212,7 @@ describe("checkpoint product loop", () => {
 
     render(<MemoryRouter><NowPage /></MemoryRouter>);
 
-    expect(screen.getByRole("heading", { name: "Handoff Coverage Dashboard" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "What the next agent will know" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Current recovery point/ })).toBeInTheDocument();
     expect(screen.queryByText(/newer task activity exists/)).not.toBeInTheDocument();
   });
@@ -1163,7 +1231,7 @@ describe("checkpoint product loop", () => {
 
     render(<MemoryRouter><NowPage /></MemoryRouter>);
 
-    expect(screen.getByRole("heading", { name: "Handoff Coverage Dashboard" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "What the next agent will know" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Current recovery point/ })).toBeInTheDocument();
   });
 
@@ -1176,7 +1244,7 @@ describe("checkpoint product loop", () => {
     expect(screen.queryByRole("button", { name: "Checking resume availability…" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Verify checkpoint" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Resume task" })).not.toBeInTheDocument();
-    expect(screen.getByText(/reflects captured Session Context and cannot be edited here/)).toBeInTheDocument();
+    expect(screen.getByText(/reference below stays evidence-linked and read only/)).toBeInTheDocument();
   });
 
   it("keeps the legacy resume dialog removed while exposing the session handoff action", () => {
@@ -1466,9 +1534,9 @@ Remove screenshot IDs and temporary paths from the Now page.
     const carriedContext = screen.getByTestId("context-package-card");
     expect(screen.queryByText("18,420 / 24,000 estimated tokens")).not.toBeInTheDocument();
     expect(carriedContext).toHaveClass("w-full");
-    const coverage = within(carriedContext).getByRole("region", { name: "Handoff Coverage Dashboard" });
-    expect(within(coverage).getByText(/— reflects captured Session Context and cannot be edited here\./)).toBeInTheDocument();
-    expect(within(coverage).queryAllByRole("button")).toHaveLength(0);
+    const coverage = within(carriedContext).getByRole("region", { name: "What the next agent will know" });
+    expect(within(coverage).getByText(/Read-only preview/)).toBeInTheDocument();
+    expect(within(coverage).getByRole("button", { name: "Preview exact handoff" })).toBeEnabled();
     expect(within(carriedContext).queryByText("Ready in Claude Code")).not.toBeInTheDocument();
     expect(within(carriedContext).queryByText("Waiting for task confirmation")).not.toBeInTheDocument();
     expect(within(carriedContext).queryByText("Saved task state")).not.toBeInTheDocument();
@@ -1542,12 +1610,12 @@ Remove screenshot IDs and temporary paths from the Now page.
     expect(screen.queryByText("Project Context is not safe to stage")).not.toBeInTheDocument();
   });
 
-  it("stages an exact source without exposing an editable continuation lead", async () => {
+  it("stages the exact source without rewriting an untouched continuation lead", async () => {
     render(<MemoryRouter><NowPage /></MemoryRouter>);
 
-    expect(screen.queryByRole("textbox", {
-      name: "Immediate continuation lead",
-    })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", {
+      name: "Continue with — immediate continuation lead",
+    })).toHaveValue("Harden checkpoint capture");
     fireEvent.click(screen.getByRole("button", {
       name: "Open desktop handoff in Codex",
     }));
@@ -1562,6 +1630,148 @@ Remove screenshot IDs and temporary paths from the Now page.
     const request = mocks.continuation.mutateAsync.mock.calls.at(-1)[0];
     expect(request).not.toHaveProperty("objective");
     expect(request).not.toHaveProperty("objective_is_user_edited");
+    expect(request).not.toHaveProperty("continuation_lead");
+  });
+
+  it("sends an exact user-authored continuation lead without rewriting historical intent", async () => {
+    const continuationLead = (
+      "Verify the handoff dashboard against the canonical Session Context.\n"
+      + "Keep every correction evidence-linked."
+    );
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+
+    fireEvent.change(screen.getByRole("textbox", {
+      name: "Continue with — immediate continuation lead",
+    }), { target: { value: continuationLead } });
+    expect(screen.getByText("Your override")).toBeInTheDocument();
+
+    const leadClaim = screen.getByRole("group", {
+      name: "Continuation lead: edited by you",
+    });
+    fireEvent.click(within(leadClaim).getByRole("button"));
+    const evidence = screen.getByRole("dialog", { name: "Continuation lead evidence" });
+    expect(within(evidence).getByText("Current user input")).toBeInTheDocument();
+    expect(within(evidence).queryByText(/Codex saved boundary/)).not.toBeInTheDocument();
+    fireEvent.click(within(evidence).getByRole("button", { name: "Close context details" }));
+
+    fireEvent.click(screen.getByRole("button", {
+      name: "Open desktop handoff in Codex",
+    }));
+
+    await waitFor(() => expect(
+      mocks.continuation.mutateAsync,
+    ).toHaveBeenCalledWith(expect.objectContaining({
+      continuation_lead: continuationLead,
+      source_provider: "codex",
+      source_session_id: "session-1",
+      target_provider: "codex",
+    })));
+    const request = mocks.continuation.mutateAsync.mock.calls.at(-1)[0];
+    expect(request).not.toHaveProperty("objective");
+    expect(request).not.toHaveProperty("objective_is_user_edited");
+  });
+
+  it("preserves whitespace-only boundary edits in the user-authored lead", async () => {
+    const continuationLead = "  Harden checkpoint capture\n";
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+
+    fireEvent.change(screen.getByRole("textbox", {
+      name: "Continue with — immediate continuation lead",
+    }), { target: { value: continuationLead } });
+    expect(screen.getByText("Your override")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", {
+      name: "Open desktop handoff in Codex",
+    }));
+
+    await waitFor(() => expect(mocks.continuation.mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ continuation_lead: continuationLead }),
+    ));
+  });
+
+  it("restores the captured continuation lead and leaves the source request lossless", async () => {
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+    const lead = screen.getByRole("textbox", {
+      name: "Continue with — immediate continuation lead",
+    });
+
+    fireEvent.change(lead, { target: { value: "Try a different immediate action" } });
+    fireEvent.click(screen.getByRole("button", { name: "Restore captured lead" }));
+    expect(lead).toHaveValue("Harden checkpoint capture");
+    expect(screen.queryByText("Your override")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", {
+      name: "Open desktop handoff in Codex",
+    }));
+    await waitFor(() => expect(mocks.continuation.mutateAsync).toHaveBeenCalled());
+    expect(mocks.continuation.mutateAsync.mock.calls.at(-1)[0]).not.toHaveProperty(
+      "continuation_lead",
+    );
+  });
+
+  it("copies canonical preview content without changing its trailing bytes", async () => {
+    const continuationLead = "Review the new dashboard, then verify its evidence drawer.";
+    const content = `${[
+      "# Session Context",
+      "",
+      "## Continue with",
+      continuationLead,
+      "",
+      "## Goal",
+      "Harden checkpoint capture",
+    ].join("\n")}\n`;
+    mocks.checkpointHandoff.mutateAsync.mockResolvedValue(sessionHandoff(content));
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+
+    fireEvent.change(screen.getByRole("textbox", {
+      name: "Continue with — immediate continuation lead",
+    }), { target: { value: continuationLead } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview exact handoff" }));
+
+    await waitFor(() => expect(
+      mocks.checkpointHandoff.mutateAsync,
+    ).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      checkpointId: "checkpoint-1",
+      continuationLead,
+    }));
+    const dialog = await screen.findByRole("dialog", { name: "Exact handoff preview" });
+    expect(dialog).toHaveTextContent(continuationLead);
+    expect(dialog).toHaveTextContent("Harden checkpoint capture");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Copy handoff" }));
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(content));
+  });
+
+  it("does not present planned verification commands as recorded checks", async () => {
+    const checkpoint = checkpointFixture();
+    checkpoint.sections.verification = [];
+    mocks.latest.data = checkpoint;
+    mocks.history.data = { checkpoints: [checkpoint] };
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+
+    fireEvent.click(screen.getByRole("button", {
+      name: "Open desktop handoff in Codex",
+    }));
+    await waitFor(() => expect(mocks.continuation.mutateAsync).toHaveBeenCalled());
+
+    const coverage = screen.getByRole("region", {
+      name: "What the next agent will know",
+    });
+    expect(within(coverage).getByRole("group", {
+      name: "Verification: 0 verification checks",
+    })).toBeInTheDocument();
+    expect(within(coverage).getByText("No current verification is recorded")).toBeInTheDocument();
+  });
+
+  it("opens the evidence behind an essential handoff claim", () => {
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+    const goal = screen.getByRole("group", { name: "Goal: user stated" });
+
+    fireEvent.click(within(goal).getByRole("button"));
+
+    const dialog = screen.getByRole("dialog", { name: "Goal evidence" });
+    expect(within(dialog).getByText("Harden checkpoint capture")).toBeInTheDocument();
+    expect(within(dialog).getByText(/Codex saved boundary/)).toBeInTheDocument();
   });
 
   it("updates the resolved task when latest discovery changes source", async () => {
@@ -1569,6 +1779,9 @@ Remove screenshot IDs and temporary paths from the Now page.
     expect(screen.getByRole("definition", {
       name: "Harden checkpoint capture",
     })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", {
+      name: "Continue with — immediate continuation lead",
+    }), { target: { value: "A temporary user override" } });
 
     mocks.digest.data.activity.recent_sessions[0] = {
       ...mocks.digest.data.activity.recent_sessions[0],
@@ -1590,6 +1803,78 @@ Remove screenshot IDs and temporary paths from the Now page.
     await waitFor(() => expect(screen.getByRole("definition", {
       name: "Finish the newly selected source task",
     })).toBeInTheDocument());
+    expect(screen.getByRole("textbox", {
+      name: "Continue with — immediate continuation lead",
+    })).toHaveValue("Finish the newly selected source task");
+    expect(screen.queryByText("Your override")).not.toBeInTheDocument();
+  });
+
+  it("does not surface a stage result after the continuation source changes", async () => {
+    let resolveStage;
+    mocks.continuation.mutateAsync.mockImplementation(() => new Promise((resolve) => {
+      resolveStage = resolve;
+    }));
+    const view = render(<MemoryRouter><NowPage /></MemoryRouter>);
+
+    fireEvent.click(screen.getByRole("button", {
+      name: "Open desktop handoff in Codex",
+    }));
+    await waitFor(() => expect(mocks.continuation.mutateAsync).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Requesting a desktop handoff in Codex",
+    );
+
+    mocks.digest.data.activity.recent_sessions[0] = {
+      ...mocks.digest.data.activity.recent_sessions[0],
+      session_id: "new-source-task",
+      session_title: "Finish the newly selected source task",
+      title: "Finish the newly selected source task",
+    };
+    mocks.latestDiscovery.data = latestDiscoveryResult({
+      id: "codex:new-source-task",
+      session_id: "new-source-task",
+      source_document_id: "new-source-document",
+      title: "Finish the newly selected source task",
+      preview: "Finish the newly selected source task",
+      updated_at: "2026-07-21T11:00:00Z",
+      revision_number: 2,
+    });
+    view.rerender(<MemoryRouter><NowPage /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByRole("textbox", {
+      name: "Continue with — immediate continuation lead",
+    })).toHaveValue("Finish the newly selected source task"));
+
+    resolveStage({
+      schema_version: "continuation.stage.v1",
+      status: "awaiting_user",
+      delivery: {
+        status: "awaiting_user",
+        provider: "codex",
+        source_provider: "codex",
+        source_session_id: "session-1",
+        handoff_id: "stale-handoff",
+        context_delivery: "desktop_composer_prefill_and_clipboard",
+        execution_started: false,
+        harness_session: {
+          handoff_id: "stale-handoff",
+          open_requested: true,
+          context_copied: true,
+          execution_started: false,
+        },
+      },
+      run: {
+        handoff_id: "stale-handoff",
+        provider: "codex",
+        status: "awaiting_user",
+        execution_started: false,
+      },
+    });
+
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    expect(screen.queryByText("Continue in Codex")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", {
+      name: "Continue with — immediate continuation lead",
+    })).toHaveValue("Finish the newly selected source task");
   });
 
   it("does not advance the workflow before the user submits the staged lead", async () => {
@@ -2112,6 +2397,53 @@ Remove screenshot IDs and temporary paths from the Now page.
     })).not.toHaveTextContent("Request again");
   });
 
+  it("does not restore a staged handoff compiled for a different edited lead", () => {
+    const staleLead = "Verify a different handoff dashboard.";
+    mocks.providers.data.staged_handoff = {
+      schema_version: "continuation.stage.v1",
+      status: "awaiting_user",
+      continuation_identity: {
+        source_provider: "codex",
+        source_session_id: "session-1",
+        selected_objective: staleLead,
+        continuation_lead_sha256: sha256Text(staleLead),
+      },
+      delivery: {
+        status: "awaiting_user",
+        provider: "codex",
+        source_provider: "codex",
+        source_session_id: "session-1",
+        handoff_id: "stale-lead-handoff",
+        context_delivery: "clipboard",
+        execution_started: false,
+        harness_session: {
+          handoff_id: "stale-lead-handoff",
+          source_session_id: "session-1",
+          open_requested: true,
+          context_copied: true,
+          context_loaded: false,
+          execution_started: false,
+        },
+      },
+      run: {
+        handoff_id: "stale-lead-handoff",
+        provider: "codex",
+        objective: staleLead,
+        continuation_lead_sha256: sha256Text(staleLead),
+        status: "awaiting_user",
+        started_at: "2026-07-29T10:06:12Z",
+        execution_started: false,
+      },
+    };
+
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+
+    expect(screen.queryByText(/Previous Codex handoff/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", {
+      name: "Open desktop handoff in Codex",
+    })).not.toHaveTextContent("Request again");
+  });
+
   it("keeps a legacy active run from creating a duplicate staged thread", async () => {
     mocks.providers.data.active_run = {
       run_id: "active-codex-run",
@@ -2256,7 +2588,7 @@ Remove screenshot IDs and temporary paths from the Now page.
     expect(screen.queryByRole("heading", { name: "What carried over" })).not.toBeInTheDocument();
     expect(screen.queryByText("1,800 / 24,000 estimated tokens")).not.toBeInTheDocument();
     expect(screen.queryByText(/recorded package summary delivered to OpenCode/)).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Handoff Coverage Dashboard" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "What the next agent will know" })).toBeInTheDocument();
     expect(screen.queryByText("Run plan & safeguards")).not.toBeInTheDocument();
   });
 
@@ -2283,7 +2615,7 @@ Remove screenshot IDs and temporary paths from the Now page.
 
     render(<MemoryRouter><NowPage /></MemoryRouter>);
 
-    expect(screen.getByRole("heading", { name: "Handoff Coverage Dashboard" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "What the next agent will know" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "What carried over" })).not.toBeInTheDocument();
     expect(screen.queryByText("9,000 / 24,000 estimated tokens")).not.toBeInTheDocument();
   });
@@ -2783,8 +3115,8 @@ Remove screenshot IDs and temporary paths from the Now page.
 
     expect(screen.queryByRole("button", { name: "Save current context" })).not.toBeInTheDocument();
     expect(screen.queryByText("Session context unavailable")).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Handoff Coverage Dashboard" })).toBeInTheDocument();
-    expect(screen.getByText(/reflects captured Session Context and cannot be edited here/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "What the next agent will know" })).toBeInTheDocument();
+    expect(screen.getByText(/Read-only preview/)).toBeInTheDocument();
     expect(mocks.capture.mutate).not.toHaveBeenCalled();
   });
 
@@ -2794,7 +3126,7 @@ Remove screenshot IDs and temporary paths from the Now page.
     expect(screen.queryByRole("button", { name: "Verify checkpoint" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Resume task" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save current context" })).not.toBeInTheDocument();
-    expect(screen.getByText(/reflects captured Session Context and cannot be edited here/)).toBeInTheDocument();
+    expect(screen.getByText(/reference below stays evidence-linked and read only/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open desktop handoff in Codex" })).toBeInTheDocument();
     expect(mocks.verify.mutate).not.toHaveBeenCalled();
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
@@ -2925,7 +3257,7 @@ Remove screenshot IDs and temporary paths from the Now page.
     expect(
       screen.getByRole("definition", { name: "Current observed task" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Handoff Coverage Dashboard" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "What the next agent will know" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Inspect an earlier task snapshot" }));
     expect(screen.getByRole("dialog", { name: "Earlier saved context" })).toBeInTheDocument();
     expect(screen.getByText("Old checkpoint task")).toBeInTheDocument();

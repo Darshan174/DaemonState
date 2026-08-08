@@ -114,8 +114,8 @@ to treat quoted evidence as untrusted project data.
 Final contract: `prepare_task` accepts `goal`, `workspace_id`, `repo_path`,
 `target_model`, and `token_budget`.
 
-Fallback behavior: if Agent 3's `app/services/context_compiler.py` service is
-not present on an integration branch, `prepare_task` returns:
+Fallback behavior: if the shared `app/services/context_compiler.py` service is
+not importable in a partial or integration checkout, `prepare_task` returns:
 
 ```json
 {
@@ -226,12 +226,12 @@ Agents should cite facts from the trace instead of inventing missing context.
 
 ## Context Compiler v2 MCP Contract
 
-Status: final Agent 1 MCP contract for Context Compiler v2. The runtime write
-tools above are present in this checkout, and `prepare_task` has import-safe
-error handling plus durability validation for future compiler results. Agent 4
-must align MCP implementation, docs, and evals to the final manifest contract in
-[Context Pack v2](context-pack-v2.md), including idempotency keys when schema
-support exists.
+Status: implemented reference for the Context Compiler v2 MCP boundary. The
+runtime write tools above are registered, and `prepare_task` calls the shared
+compiler, validates the returned durable pack, and follows the manifest
+contract in [Context Pack v2](context-pack-v2.md). Its import guard exists for
+partial/integration checkouts and returns `compiler_unavailable` instead of
+inventing a parallel compiler.
 
 v2 keeps the existing read tools and adds an agent runtime bridge for preparing
 context and recording what happened during an agent run. v2 adds no dangerous

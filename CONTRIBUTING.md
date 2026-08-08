@@ -1,8 +1,11 @@
 # Contributing
 
-DaemonState is source-backed project memory for AI agents. Contributions
-should preserve the core contract: raw `SourceDocument` rows first, extracted
-facts second, relationships only with evidence, and honest connector states.
+DaemonState is a source-backed continuity layer for AI coding agents.
+Contributions should preserve its two context boundaries: Workspace Context is
+project-wide, durable, and objective-independent; Session Context is the
+checkpointed state of one coding session. Raw `SourceDocument` and repository
+observations come before extracted facts, relationships require evidence, and
+every connector or handoff state must describe only what the product observed.
 
 The project is temporarily not accepting outside code or documentation
 contributions because it does not yet have a contributor license agreement.
@@ -51,6 +54,14 @@ If a check cannot be run locally, call that out in the PR.
 
 ## Product Rules
 
+- Keep Workspace Context independent of a selected task or session. Do not
+  promote transient attempts, blockers, or unverified session claims into the
+  durable project foundation.
+- Keep Session Context tied to an exact provider session and immutable
+  checkpoint. Ambiguous identity, stale repository state, or a failed integrity
+  check must fail closed.
+- Distinguish requested desktop launch, copied context, started provider work,
+  and verified completion. None implies the next.
 - Keep the knowledge graph source-backed. Do not add workflow-pipeline nodes
   such as Input, LLM, KB, or Output to the graph.
 - Do not claim a connector works unless auth, sync, `SourceDocument` ingestion,

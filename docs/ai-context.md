@@ -7,6 +7,11 @@ sessions as raw source evidence, then extracts decisions, tasks, blockers, and
 file references. This lets the project carry useful memory from one agent run to
 the next instead of starting from a blank prompt every time.
 
+Local-session discovery and Library are available in the workstation browser
+product. The top-level Integrations route is currently under construction, so
+the manual import endpoints below are API contracts rather than a supported
+connector-onboarding UI.
+
 The session ID alone is not enough. Current imports require the session content.
 DaemonState does not log in to Codex or Claude and scrape a conversation from
 an ID.
@@ -15,7 +20,7 @@ an ID.
 
 | Path | Current behavior | Use when |
 |---|---|---|
-| `POST /api/connectors/ai-session/ingest` | Creates or updates one `agent_session` source document, processes it immediately, and updates the selected Codex/Claude/OpenCode connector summary. | Importing from the Connectors UI or a script for a workspace. |
+| `POST /api/connectors/ai-session/ingest` | Creates or updates one `agent_session` source document, processes it immediately, and updates the selected Codex/Claude/OpenCode connector summary. | Importing a supplied session through an API client or script. |
 | `POST /api/connectors/ai-context/import` | Creates one or more raw `SourceDocument` rows with `ai_context_*` source types. Graph extraction happens later through normal processing/build paths. | Bulk-loading exported sessions, plans, reviews, or handoff notes. |
 
 Both paths are source-first. They do not create graph facts without preserving
@@ -25,14 +30,14 @@ the raw session content.
 
 | Tool value | Stored source type | Notes |
 |---|---|---|
-| `codex` | `ai_context_codex` | First-class in catalog and frontend session import. |
-| `claude` / `claude_code` | `ai_context_claude_code` | First-class in catalog and frontend session import. |
-| `opencode` / `open_code` | `ai_context_opencode` | First-class in catalog and frontend session import. |
+| `codex` | `ai_context_codex` | First-class catalog, local-discovery, Library, and continuation support. |
+| `claude` / `claude_code` | `ai_context_claude_code` | First-class catalog, local-discovery, Library, and continuation support. |
+| `opencode` / `open_code` | `ai_context_opencode` | First-class catalog, local-discovery, Library, and continuation support. |
 | Any other value, including Cursor exports today | `ai_context` | Stored as generic AI context. Do not describe Cursor as first-class until it has catalog/test coverage. |
 
-The frontend also exposes dedicated Codex, Claude, and OpenCode session cards.
-`ai_context` remains the generic import bucket for plans, diffs, reviews, and
-other agent notes.
+Library and continuation surfaces distinguish Codex, Claude, and OpenCode
+sessions. `ai_context` remains the generic import bucket for plans, diffs,
+reviews, and other agent notes.
 
 ## Import Examples
 
@@ -137,7 +142,9 @@ python3 -m pytest tests/test_ingestion.py tests/test_adversarial_graph.py -q
 ## Current Limits
 
 - A session ID identifies and deduplicates a session; it does not fetch content.
-- Users must paste, upload, or otherwise provide the session content.
+- The content must come from workstation discovery, a local adapter, paste,
+  upload, or another explicit import; a provider session ID alone is not a
+  remote-fetch credential.
 - Cursor is accepted only as generic AI context today.
 - Imports do not fetch referenced files automatically.
 - `/api/connectors/ai-context/import` creates raw source documents; run graph

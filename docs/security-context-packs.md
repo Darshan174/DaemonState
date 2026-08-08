@@ -1,6 +1,11 @@
 # Security For Context Packs
 
-Status: proposed implementation contract for v2 trust handling.
+Status: mixed implementation and hardening contract. The current v2 runtime
+stores trust zones and prompt-injection risk scores, assigns conservative
+source defaults, penalizes risky evidence, excludes instruction candidates at
+or above the high-risk threshold, quotes untrusted citations as data, and gives
+MCP observations semi-trusted defaults. Requirements explicitly described as
+future hardening are not claims about the running detector.
 
 Context packs are executable-adjacent. A coding agent may paste them into a plan
 and run commands from them, so the compiler must separate generated instructions
@@ -33,16 +38,16 @@ Rules:
 
 ## Prompt-Injection Risk
 
-Every `EvidenceSpan` stores `prompt_injection_risk_score` from 0.0 to 1.0.
+Every `EvidenceSpan` stores `prompt_injection_risk_score` from 0.0 to 1.0. The
+current deterministic scorer applies bounded weighted patterns to the exact
+span text. It does not provide semantic adversarial detection and can miss
+novel wording.
 
-Minimum detector inputs:
+Current detector input:
 
-- source text;
-- source type and trust zone;
-- exact evidence quote;
-- surrounding 200 chars when offsets exist.
+- the exact evidence span text.
 
-Minimum risky patterns:
+Current risky pattern families include:
 
 - `ignore previous instructions`
 - `ignore all previous`
@@ -51,7 +56,6 @@ Minimum risky patterns:
 - `do not tell the user`
 - `exfiltrate`
 - `send credentials`
-- `steal`
 - `tool_call`
 - `function_call`
 - `run shell`
@@ -61,9 +65,9 @@ Minimum risky patterns:
 - `bypass`
 - `disable tests`
 
-Regex is not enough. The first implementation may combine regex and simple
-scoring, but it must store the score and make the selection effect visible in
-tests.
+Future hardening should add source/trust context, surrounding text, and
+non-regex signals without weakening the deterministic exclusion and audit
+boundary.
 
 Risk bands:
 
@@ -151,22 +155,12 @@ Trust zones for MCP-created sources:
   includes verifier metadata and evidence.
 - `close_task`: `semi_trusted_tool` unless backed by a trusted human note.
 
-## Acceptance Tests
+## Verification
 
-Agent 2:
+The current focused coverage includes:
 
-- `tests/test_evidence_ledger.py::test_default_trust_zone_is_assigned_by_source_type`
-- `tests/test_evidence_ledger.py::test_verify_context_item_cannot_broaden_trust_without_evidence`
-- `tests/test_evidence_ledger.py::test_prompt_injection_patterns_set_high_risk_score`
-
-Agent 3:
-
-- `tests/test_context_compiler.py::test_high_risk_evidence_is_excluded_from_plan_steps`
-- `tests/test_context_compiler.py::test_untrusted_external_evidence_is_quoted_only`
-- `tests/test_context_compiler.py::test_manifest_repeats_trust_zone_and_prompt_injection_score`
-
-Agent 4:
-
-- `tests/test_mcp_context_bridge.py::test_mcp_recorded_events_are_semi_trusted_tool_sources`
-- `tests/test_mcp_context_bridge.py::test_prepare_task_does_not_emit_untrusted_evidence_as_commands`
-- `app/evals/context_compiler/test_prompt_injection_leakage.py`
+- `tests/test_evidence_ledger.py::test_source_document_hash_and_trust_zone_defaults`
+- `tests/test_evidence_ledger.py::test_prompt_injection_risk_scoring`
+- `tests/test_context_compiler.py::test_prompt_injection_risk_is_excluded`
+- `tests/test_mcp.py::test_mcp_runtime_write_tools_persist_source_backed_loop`
+- prompt-injection leakage metrics under `app/evals/context_compiler/`

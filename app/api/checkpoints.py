@@ -5,7 +5,7 @@ import json
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +15,7 @@ from app.models import SessionEvent, SourceDocument, Workspace, WorkCheckpoint
 from app.services.access import AccessScope, source_access_predicate
 from app.services.checkpoint_verifier import compare_checkpoint_repository, verify_checkpoint
 from app.services.checkpoints import (
+    MAX_CONTINUATION_LEAD_CHARS,
     build_session_handoff_artifact,
     capture_checkpoint,
     checkpoint_to_dict,
@@ -26,6 +27,7 @@ from app.services.checkpoints import (
     resolve_session_handoff_attachment_descriptors,
     resolve_session_handoff_request_verbatim,
     resolve_session_handoff_supporting_context,
+    validate_continuation_lead,
 )
 from app.services.harness_launcher import HarnessLaunchError, launch_harness_session
 from app.services.session_context_policy import (
@@ -58,6 +60,16 @@ class CheckpointResumeRequest(BaseModel):
 
 class CheckpointHandoffRequest(BaseModel):
     workspace_id: UUID
+    continuation_lead: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAX_CONTINUATION_LEAD_CHARS,
+    )
+
+    @field_validator("continuation_lead")
+    @classmethod
+    def validate_lead(cls, value: str | None) -> str | None:
+        return validate_continuation_lead(value)
 
 
 @router.get("/checkpoints")
@@ -415,6 +427,7 @@ async def create_session_handoff(
             allow_local_artifacts=access_scope.principal_id == "local",
             checkpoint_data=data,
             repository_comparison=repository_comparison,
+            continuation_lead=body.continuation_lead,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

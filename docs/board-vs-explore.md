@@ -1,14 +1,20 @@
-# Project Map
+# Project map implementation note
 
-`/app/explain` is the selected workspace's project map. It is an inspection
-surface around the continuation runtime, not the primary workflow. It projects
-imported `SourceDocument` revisions and repository scope; it is not a provider
-client and it does not invent project intent.
+> **Browser status:** `/app/explain` is currently covered by the product's
+> **Under construction** overlay. The projection, APIs, and frontend component
+> described below exist, but the route is not a supported user-facing workflow
+> until that gate is removed. Use this document as an implementation note, not
+> as current onboarding guidance.
+
+The selected workspace's project-map component is an inspection surface around
+the continuation runtime, not the primary workflow. It projects imported
+`SourceDocument` revisions and repository scope; it is not a provider client
+and it does not invent project intent.
 
 `/app` is the primary Continue surface. The old `/app/dashboard` URL redirects
-there, while `/app/graph` redirects to `/app/explain`. Sources and Integrations
-remain setup destinations; Library, Memory, and Evidence are grouped
-as inspection surfaces.
+there, while `/app/graph` redirects to `/app/explain`. Continue, Library, and
+Execute are currently usable browser workflows. Evidence, Sources, and
+Integrations are visible destinations with explicit construction gates.
 
 ## Observed behavior
 

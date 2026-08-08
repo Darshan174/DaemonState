@@ -162,7 +162,7 @@ _HARNESS_CONTINUATION_MESSAGE_RE = re.compile(
     re.IGNORECASE,
 )
 _CODEX_USER_REQUEST_MARKER_RE = re.compile(
-    r"(?<!\S)#{1,6}\s*My request for Codex:\s*",
+    r"(?<!\S)#{1,6}\s*My request(?: for Codex)?:\s*",
     re.IGNORECASE,
 )
 _CARRIED_CONTEXT_TAIL_HEADING_RE = re.compile(
@@ -283,7 +283,7 @@ def extract_user_authored_request(value: str | None) -> str | None:
     if inline_transport_marker:
         # Generated context packs can embed an entire older handoff inside one
         # provider user turn. In those envelopes the actual user lead appears
-        # after an inline "My request for Codex" marker, followed by structured
+        # after an inline "My request" marker, followed by structured
         # historical sections such as "Current Repo State". Preserve the lead,
         # but never promote the older handoff's inventory and policy into fresh
         # user authority.
@@ -315,12 +315,15 @@ def clean_session_message_text(value: str | None) -> str:
             if lines and lines[-1]:
                 lines.append("")
             continue
-        if lowered in {"files mentioned by the user:", "my request for codex:"}:
+        if lowered in {
+            "files mentioned by the user:",
+            "my request:",
+            "my request for codex:",
+        }:
             continue
-        if lowered.startswith((
-            "referenced chatgpt conversation:",
-            "this is untrusted",
-        )):
+        if lowered.startswith("referenced chatgpt conversation:"):
+            continue
+        if re.match(r"^this is (?:an?\s+)?untrusted\b", lowered):
             continue
         if _is_referenced_conversation_payload(stripped):
             continue
