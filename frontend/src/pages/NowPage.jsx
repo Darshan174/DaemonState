@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import {
@@ -23,7 +23,11 @@ import ProductLoadingState from "../components/ProductLoadingState";
 import FloatingContextToggle from "../components/FloatingContextToggle";
 import PromptSnippetHistory from "../components/PromptSnippetHistory";
 import { HarnessContinuationCard } from "../components/HarnessCard";
-import { HARNESS_ORDER, harnessMeta } from "../components/HarnessBrand";
+import {
+  HARNESS_ORDER,
+  HarnessLogo,
+  harnessMeta,
+} from "../components/HarnessBrand";
 import {
   useCheckpointHandoff,
   useCheckpoints,
@@ -43,11 +47,117 @@ import {
   sessionIdentity,
 } from "../context-map/digest";
 import { copyReadySessionContextContent } from "./sessionContinuity";
-import { MINIMUM_SESSION_CONTEXT_COMPACTIONS } from "./sessionContextPolicy";
+import {
+  MINIMUM_SESSION_CONTEXT_COMPACTIONS,
+  sessionContextCompactionCount,
+} from "./sessionContextPolicy";
+import {
+  desktopOverlaySessionSelections,
+  executeSessionIdentity,
+  readExecuteActiveSessionIdentities,
+  readExecuteSessionContexts,
+  resolveExecuteSessionContexts,
+  writeExecuteActiveSessionIdentities,
+} from "./executeSessionSelection";
 import { useProductWorkspace } from "./useProductWorkspace";
 
 export default function NowPage() {
   const workspace = useProductWorkspace();
+  const customSessions = useMemo(() => {
+    if (!workspace.activeWorkspaceId) return [];
+    return resolveExecuteSessionContexts(
+      readExecuteSessionContexts(workspace.activeWorkspaceId),
+      undefined,
+    );
+  }, [
+    workspace.activeWorkspaceId,
+  ]);
+  // A saved selection is durable workspace intent. Navigation origin is not
+  // allowed to deactivate it or erase its native floating-control blades.
+  const customSessionFlow = customSessions.length > 0;
+  const customSessionsByProvider = useMemo(() => Object.fromEntries(
+    HARNESS_ORDER.map((provider) => [
+      provider,
+      customSessions.filter((session) => session.provider === provider),
+    ]),
+  ), [customSessions]);
+  const [activeCustomSessionState, setActiveCustomSessionState] = useState(() => ({
+    workspaceId: workspace.activeWorkspaceId || "",
+    identities: readExecuteActiveSessionIdentities(workspace.activeWorkspaceId),
+  }));
+  const activeCustomSessionIds = (
+    activeCustomSessionState.workspaceId === workspace.activeWorkspaceId
+      ? activeCustomSessionState.identities
+      : readExecuteActiveSessionIdentities(workspace.activeWorkspaceId)
+  );
+  const setActiveCustomSessionIds = useCallback((update) => {
+    setActiveCustomSessionState((current) => {
+      const currentIdentities = (
+        current.workspaceId === workspace.activeWorkspaceId
+          ? current.identities
+          : readExecuteActiveSessionIdentities(workspace.activeWorkspaceId)
+      );
+      return {
+        workspaceId: workspace.activeWorkspaceId || "",
+        identities: typeof update === "function"
+          ? update(currentIdentities)
+          : update,
+      };
+    });
+  }, [workspace.activeWorkspaceId]);
+  useEffect(() => {
+    setActiveCustomSessionIds((current) => Object.fromEntries(
+      HARNESS_ORDER.map((provider) => {
+        const sessions = customSessionsByProvider[provider] || [];
+        const currentIdentity = current[provider];
+        const selected = sessions.find(
+          (session) => executeSessionIdentity(session) === currentIdentity,
+        ) || sessions[0] || null;
+        return [provider, selected ? executeSessionIdentity(selected) : ""];
+      }),
+    ));
+  }, [customSessionsByProvider]);
+  useEffect(() => {
+    if (
+      !customSessionFlow
+      || !workspace.activeWorkspaceId
+      || activeCustomSessionState.workspaceId !== workspace.activeWorkspaceId
+    ) return;
+    writeExecuteActiveSessionIdentities(
+      workspace.activeWorkspaceId,
+      activeCustomSessionState.identities,
+    );
+  }, [
+    activeCustomSessionState,
+    customSessionFlow,
+    workspace.activeWorkspaceId,
+  ]);
+  const activeCustomSessions = useMemo(() => Object.fromEntries(
+    HARNESS_ORDER.map((provider) => [
+      provider,
+      (customSessionsByProvider[provider] || []).find(
+        (session) => (
+          executeSessionIdentity(session) === activeCustomSessionIds[provider]
+        ),
+      ) || customSessionsByProvider[provider]?.[0] || null,
+    ]),
+  ), [activeCustomSessionIds, customSessionsByProvider]);
+  const activeCustomSessionKey = customSessionFlow
+    ? JSON.stringify(HARNESS_ORDER.map((provider) => (
+        executeSessionIdentity(activeCustomSessions[provider])
+      )))
+    : "";
+  const customSessionRequestKey = JSON.stringify([
+    workspace.activeWorkspaceId || "",
+    activeCustomSessionKey,
+  ]);
+  const customSessionRequestKeyRef = useRef(customSessionRequestKey);
+  customSessionRequestKeyRef.current = customSessionRequestKey;
+  const activeCustomSessionsRef = useRef(activeCustomSessions);
+  activeCustomSessionsRef.current = activeCustomSessions;
+  const overlaySelectedSessions = customSessionFlow
+    ? desktopOverlaySessionSelections(customSessions)
+    : [];
   const latestSessionDiscoveryQuery = useLatestLocalAISessionDiscovery(
     workspace.activeWorkspaceId,
   );
@@ -71,9 +181,9 @@ export default function NowPage() {
     enabled: latestSessionDiscoverySucceeded,
   });
   const digestActivity = digestQuery.data?.activity?.primary || null;
-  // Continue is deliberately single-purpose: it always follows the newest
-  // available session. Historical session and checkpoint selection belongs to
-  // Prepare or Execute and cannot override this source through URL parameters.
+  // The default Continue action deliberately follows the newest available
+  // session. The explicit Continue -> Execute return flow below can expose a
+  // separately selected source, but URL parameters alone never supply one.
   const continuationDigestActivity = selectContinuationSessionActivity(
     digestQuery.data?.activity?.recent_sessions,
     digestActivity,
@@ -135,6 +245,36 @@ export default function NowPage() {
   );
   const stageContinuation = useStageContinuation();
   const checkpointHandoff = useCheckpointHandoff();
+  const workspaceRepoPaths = useMemo(() => {
+    const configuredPaths = workspace.activeWorkspace?.repo_paths || [];
+    const candidates = configuredPaths.length
+      ? configuredPaths
+      : workspace.activeWorkspace?.repo_path
+        ? [workspace.activeWorkspace.repo_path]
+        : digestQuery.data?.scope?.project_paths || [];
+    return Array.from(new Set(
+      candidates.map((path) => String(path || "").trim()).filter(Boolean),
+    ));
+  }, [
+    digestQuery.data?.scope?.project_paths,
+    workspace.activeWorkspace?.repo_path,
+    workspace.activeWorkspace?.repo_paths,
+  ]);
+  const workspaceRepoPathsKey = JSON.stringify(workspaceRepoPaths);
+  const repositorySelectionRequired = workspaceRepoPaths.length > 1;
+  const [selectedContinuationRepoPath, setSelectedContinuationRepoPath] = useState("");
+  useEffect(() => {
+    setSelectedContinuationRepoPath((current) => (
+      workspaceRepoPaths.includes(current)
+        ? current
+        : workspaceRepoPaths.length === 1
+          ? workspaceRepoPaths[0]
+          : ""
+    ));
+  }, [workspaceRepoPathsKey]);
+  const continuationRepoPath = repositorySelectionRequired
+    ? selectedContinuationRepoPath || null
+    : workspaceRepoPaths[0] || null;
   const capturedContinuationLead = rootSessionTaskCandidate(latestSession)
     || rootSessionTaskCandidate(continuationDigestActivity)
     || "";
@@ -169,14 +309,10 @@ export default function NowPage() {
     latestSession?.session_id || continuationDigestActivity?.session_id || "",
     latestSession?.updated_at || "",
     latestSession?.revision_number || "",
-    digestQuery.data?.scope?.project_paths?.[0]
-      || latestSession?.cwd
-      || digestActivity?.cwd
-      || primaryCheckpointQuery.data?.activity?.cwd
-      || workspace.activeWorkspace?.repo_path
-      || "",
+    continuationRepoPath || "",
     primaryCheckpointQuery.data?.sections?.goal?.[0]?.statement || "",
     continuationLead,
+    activeCustomSessionKey,
   ]);
   const continuationRequestKeyRef = useRef(continuationRequestKey);
   const continuationStageInFlightRef = useRef(false);
@@ -280,9 +416,7 @@ export default function NowPage() {
     (item) => item.boundary?.snapshot_phase === "pre_compaction",
   );
   const sessionCompactionCount = Math.max(
-    uniqueCompactionDescriptorCount(
-      latestDiscoveredSession?.compaction_checkpoints,
-    ),
+    sessionContextCompactionCount(latestDiscoveredSession),
     uniqueCapturedCompactionCount(sessionCompactions),
   );
   const sessionContextReady = (
@@ -308,12 +442,6 @@ export default function NowPage() {
     { authoritative: true },
   );
   const continuationLeadAvailable = Boolean(continuationLeadCandidate);
-  const continuationRepoPath = latestSession?.cwd
-    || continuationDigestActivity?.cwd
-    || currentCheckpoint?.activity?.cwd
-    || workspace.activeWorkspace?.repo_path
-    || digest.scope?.project_paths?.[0]
-    || null;
   // The source identity is the authority. Display text and saved checkpoints
   // cannot substitute an objective or recovery boundary into Continue.
   const continuationLeadSourceBound = Boolean(
@@ -325,14 +453,44 @@ export default function NowPage() {
     || (continuationSource
       ? "Task will be resolved from the selected session"
       : "");
-  const stageTaskContinuation = async (targetProvider, providerConfig = {}) => {
+  const stageTaskContinuation = async (
+    targetProvider,
+    selectedSession = null,
+  ) => {
+    const selectedSource = selectedSession
+      ? sessionDescriptorReference(selectedSession)
+      : null;
+    const requestedSource = customSessionFlow
+      ? selectedSource
+      : continuationSource;
+    const requestedContextReady = customSessionFlow
+      ? Number(selectedSession?.compactionCount || 0) >= MINIMUM_SESSION_CONTEXT_COMPACTIONS
+      : sessionContextReady;
+    const requestedObjective = customSessionFlow
+      ? rootSessionTaskCandidate(selectedSession)
+        || String(selectedSession?.topic || selectedSession?.preview || "").trim()
+      : continuationObjective;
+    // Recorded session CWDs are historical hints, not repository authority.
+    // Send only a uniquely verified workspace repository; otherwise the
+    // backend resolves the session directory or requires an explicit choice.
+    const requestedRepoPath = continuationRepoPath;
     if (
       !workspace.activeWorkspaceId
-      || !continuationAnchorAvailable
-      || !sessionContextReady
+      || !requestedSource
+      || !requestedContextReady
     ) return;
+    if (repositorySelectionRequired && !requestedRepoPath) {
+      setContinuationState("blocked");
+      setContinuationError({
+        title: "Choose a repository",
+        message: "This workspace contains multiple verified repositories.",
+        affectedTasks: requestedObjective ? [requestedObjective] : [],
+        action: "Choose the repository for this session, then select a harness.",
+      });
+      return;
+    }
     if (continuationStageInFlightRef.current) return;
-    if (!continuationLeadResolvable) {
+    if (!customSessionFlow && !continuationLeadResolvable) {
       setContinuationState("blocked");
       setContinuationError({
         title: "Choose work to continue",
@@ -346,12 +504,35 @@ export default function NowPage() {
       return;
     }
     continuationStageInFlightRef.current = true;
-    const stageRequestKey = continuationRequestKey;
-    const stageSourceKey = continuationLeadSourceKey;
+    const stageRequestKey = JSON.stringify([
+      continuationRequestKey,
+      requestedSource.provider,
+      requestedSource.sessionId,
+      requestedObjective,
+      requestedRepoPath || "",
+    ]);
+    const stageCustomSessionRequestKey = customSessionRequestKey;
+    const stageSourceKey = JSON.stringify([
+      requestedSource.provider,
+      requestedSource.sessionId,
+    ]);
     const stageRequestIsCurrent = () => (
       continuationPageMountedRef.current
-      && continuationRequestKeyRef.current === stageRequestKey
-      && continuationLeadSourceKeyRef.current === stageSourceKey
+      && (selectedSession
+        ? (
+          customSessionRequestKeyRef.current === stageCustomSessionRequestKey
+          && executeSessionIdentity(
+              activeCustomSessionsRef.current[targetProvider],
+            ) === executeSessionIdentity(selectedSession)
+        )
+        : (
+          continuationRequestKeyRef.current === continuationRequestKey
+          && continuationLeadSourceKeyRef.current === continuationLeadSourceKey
+          && stageSourceKey === JSON.stringify([
+            continuationSource?.provider || "",
+            continuationSource?.sessionId || "",
+          ])
+        ))
     );
     const requestReservation = continuationStageRequestReservation({
       workspaceId: workspace.activeWorkspaceId,
@@ -367,17 +548,11 @@ export default function NowPage() {
         workspace_id: workspace.activeWorkspaceId,
         idempotency_key: requestReservation.idempotencyKey,
         target_provider: targetProvider,
-        ...(providerConfig.provider_model
-          ? { provider_model: providerConfig.provider_model }
-          : {}),
-        ...(providerConfig.provider_effort
-          ? { provider_effort: providerConfig.provider_effort }
-          : {}),
-        ...(continuationRepoPath ? { repo_path: continuationRepoPath } : {}),
-        ...(continuationSource
+        ...(requestedRepoPath ? { repo_path: requestedRepoPath } : {}),
+        ...(requestedSource
           ? {
-              source_provider: continuationSource.provider,
-              source_session_id: continuationSource.sessionId,
+              source_provider: requestedSource.provider,
+              source_session_id: requestedSource.sessionId,
             }
           : {}),
       });
@@ -402,7 +577,7 @@ export default function NowPage() {
                 "The desktop open request and clipboard copy were not both "
                 + "confirmed. No successful handoff is claimed."
               ),
-              affectedTasks: continuationObjective ? [continuationObjective] : [],
+              affectedTasks: requestedObjective ? [requestedObjective] : [],
               action: "Open the desktop app, then retry Continue.",
             }
       );
@@ -436,8 +611,13 @@ export default function NowPage() {
       }
     }
   };
-  const actionInputsPending = latestSessionDiscoveryPending;
-  const continueAction = latestSessionDiscoveryFailed
+  const actionInputsPending = !customSessionFlow && latestSessionDiscoveryPending;
+  const continueAction = customSessionFlow
+    ? {
+        kind: "continue",
+        description: "",
+      }
+    : latestSessionDiscoveryFailed
     ? {
         kind: "discovery_error",
         description: (
@@ -487,23 +667,39 @@ export default function NowPage() {
   const activeContinuationRun = continuationProvidersQuery.data?.active_run || null;
   const latestContinuationRun = continuationProvidersQuery.data?.latest_run || null;
   const stagedContinuationHandoff = continuationProvidersQuery.data?.staged_handoff || null;
-  const latestRunMatchesCurrentTask = persistedRunMatchesContinuation(
-    latestContinuationRun,
-    {
+  const defaultContinuationMatchInput = {
       objective: continuationLead,
       source: continuationSource,
       checkpointId: null,
-    },
+  };
+  const latestRunMatchInput = customSessionFlow
+    ? customContinuationMatchInput(
+        latestContinuationRun,
+        activeCustomSessions,
+      )
+    : defaultContinuationMatchInput;
+  const stagedHandoffMatchInput = customSessionFlow
+    ? customContinuationMatchInput(
+        stagedContinuationHandoff,
+        activeCustomSessions,
+      )
+    : defaultContinuationMatchInput;
+  const latestRunMatchesCurrentTask = Boolean(
+    latestRunMatchInput
+    && persistedRunMatchesContinuation(
+      latestContinuationRun,
+      latestRunMatchInput,
+    )
   );
   const stagedHandoffVisible = Boolean(
     continuationState === "idle"
     && stagedContinuationHandoff
+    && stagedHandoffMatchInput
     && continuationStagingConfirmed(stagedContinuationHandoff)
-    && stagedHandoffMatchesContinuation(stagedContinuationHandoff, {
-      objective: continuationLead,
-      source: continuationSource,
-      checkpointId: null,
-    })
+    && stagedHandoffMatchesContinuation(
+      stagedContinuationHandoff,
+      stagedHandoffMatchInput,
+    )
   );
   const recoveredContinuationVisible = Boolean(
     latestContinuationRun
@@ -567,6 +763,9 @@ export default function NowPage() {
       const handoff = await checkpointHandoff.mutateAsync({
         workspaceId: workspace.activeWorkspaceId,
         checkpointId: latestSessionContextCheckpoint.id,
+        ...(repositorySelectionRequired && continuationRepoPath
+          ? { repoPath: continuationRepoPath }
+          : {}),
       });
       await writeClipboard(await copyReadySessionContextContent(handoff, {
         provider: latestSessionContextCheckpoint.provider,
@@ -596,7 +795,10 @@ export default function NowPage() {
         <div className="daemonstate-now-orbit pointer-events-none absolute -right-24 -top-32 h-80 w-80 rounded-full border border-[#b8b8b0]/45 dark:border-white/10" aria-hidden="true" />
         <div className="relative px-4 pb-5 pt-4 sm:px-6 sm:pb-6 sm:pt-5 lg:px-8">
           <div className="flex justify-end">
-            <FloatingContextToggle workspaceId={workspace.activeWorkspaceId} />
+            <FloatingContextToggle
+              workspaceId={workspace.activeWorkspaceId}
+              selectedSessions={overlaySelectedSessions}
+            />
           </div>
 
           <div className="mt-3 sm:mt-4">
@@ -608,7 +810,9 @@ export default function NowPage() {
                 Continue with Session Context
               </h1>
               <p className="mt-3 hidden max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#b8b8af] lg:block lg:text-[15px]">
-                The newest available session is selected by default. Choose a harness to open its Session Context.
+                {customSessionFlow && customSessions.length
+                  ? "Choose a numbered session for each harness, then open its exact Session Context."
+                  : "The newest available session is selected by default. Choose a harness to open its Session Context."}
               </p>
             </div>
 
@@ -627,7 +831,7 @@ export default function NowPage() {
               aria-label="Custom session selection"
             >
               <Link
-                to="/app/execute"
+                to="/app/execute?from=continue"
                 aria-label="Choose custom sessions in Execute"
                 className="group flex min-h-20 w-full items-center gap-3 rounded-2xl border border-[#d3d3cb] bg-white/70 px-4 py-3.5 text-left shadow-[0_8px_24px_rgba(23,23,19,0.04)] backdrop-blur-md transition hover:-translate-y-0.5 hover:border-[#9cad58] hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#849633]/70 motion-reduce:hover:translate-y-0 dark:border-white/[0.12] dark:bg-white/[0.045] dark:shadow-none dark:hover:border-[#d9ff68]/45 dark:hover:bg-white/[0.075] dark:focus-visible:ring-[#d9ff68]/70"
               >
@@ -642,9 +846,45 @@ export default function NowPage() {
               </Link>
             </nav>
 
+            {customSessionFlow && customSessions.length ? (
+              <ContinueSessionSwissKnife
+                sessions={customSessions}
+                sessionsByProvider={customSessionsByProvider}
+                activeSessionIds={activeCustomSessionIds}
+                disabled={continuationWorkflowPending}
+                onSelect={(provider, session) => {
+                  if (continuationWorkflowPending) return;
+                  setActiveCustomSessionIds((current) => ({
+                    ...current,
+                    [provider]: executeSessionIdentity(session),
+                  }));
+                }}
+              />
+            ) : null}
+
+            {repositorySelectionRequired ? (
+              <label className="mx-auto mt-4 block w-full max-w-4xl rounded-2xl border border-[#d3d3cb] bg-white/70 px-4 py-3 shadow-[0_8px_24px_rgba(23,23,19,0.04)] backdrop-blur-md dark:border-white/[0.12] dark:bg-white/[0.045]">
+                <span className="block text-[10px] font-black uppercase tracking-[0.12em] text-[#68685f] dark:text-[#c7c7bd]">
+                  Repository for this session
+                </span>
+                <select
+                  aria-label="Repository for Continue"
+                  value={selectedContinuationRepoPath}
+                  onChange={(event) => setSelectedContinuationRepoPath(event.target.value)}
+                  disabled={continuationWorkflowPending}
+                  className="mt-2 h-11 w-full rounded-xl border border-[#d3d3cb] bg-white px-3 text-sm font-semibold text-[#292922] outline-none focus:border-[#9dbc47] focus:ring-2 focus:ring-[#9dbc47]/25 disabled:cursor-wait disabled:opacity-60 dark:border-[#41413a] dark:bg-[#20201d] dark:text-white"
+                >
+                  <option value="">Choose repository…</option>
+                  {workspaceRepoPaths.map((path) => (
+                    <option key={path} value={path}>{path}</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+
             <div
               id="continuation-harnesses"
-              className="daemonstate-harness-fan relative -mx-4 mt-4 flex snap-x snap-mandatory items-stretch justify-start gap-4 overflow-x-auto overscroll-x-contain pb-5 pt-2 sm:-mx-6 md:mx-auto md:max-w-4xl md:snap-none md:gap-0 md:overflow-visible md:px-0 md:py-0"
+              className={`daemonstate-harness-fan relative -mx-4 flex snap-x snap-mandatory items-stretch justify-start gap-4 overflow-x-auto overscroll-x-contain pb-5 pt-2 sm:-mx-6 md:mx-auto md:max-w-4xl md:snap-none md:gap-0 md:overflow-visible md:px-0 md:py-0 ${customSessionFlow && customSessions.length ? "mt-2" : "mt-4"}`}
               aria-label="Continuation harnesses"
               onMouseLeave={() => setHoveredContinuationProvider(null)}
             >
@@ -656,6 +896,27 @@ export default function NowPage() {
                 );
                 const hovered = hoveredContinuationProvider === provider.provider;
                 const pending = pendingProvider === provider.provider;
+                const customSession = customSessionFlow
+                  ? activeCustomSessions[provider.provider]
+                  : null;
+                const customSessionOrdinal = customSession
+                  ? customSessions.findIndex(
+                      (session) => executeSessionIdentity(session) === executeSessionIdentity(customSession),
+                    ) + 1
+                  : 0;
+                const repositoryReady = (
+                  !repositorySelectionRequired || Boolean(continuationRepoPath)
+                );
+                const providerTaskReady = (
+                  (customSessionFlow ? Boolean(customSession) : continuationTaskReady)
+                  && repositoryReady
+                );
+                const providerContextReady = customSessionFlow
+                  ? Number(customSession?.compactionCount || 0) >= MINIMUM_SESSION_CONTEXT_COMPACTIONS
+                  : sessionContextReady;
+                const providerCompactionCount = customSessionFlow
+                  ? Number(customSession?.compactionCount || 0)
+                  : sessionCompactionCount;
                 const distanceFromHover = hoverIndex >= 0 ? index - hoverIndex : 0;
                 const translateX = hoverIndex >= 0 && !hovered
                   ? distanceFromHover * 24
@@ -674,14 +935,25 @@ export default function NowPage() {
                     pending={pending}
                     handoffRequested={loadedContinuationProvider === provider.provider}
                     workflowPending={continuationWorkflowPending}
-                    taskReady={continuationTaskReady}
+                    taskReady={providerTaskReady}
                     taskPending={continueAction.kind === "loading"}
-                    taskRequirement={continueAction.description}
-                    contextReady={sessionContextReady}
-                    compactionCount={sessionCompactionCount}
+                    taskRequirement={!repositoryReady
+                      ? "Choose the repository for this session above."
+                      : customSessionFlow && !customSession
+                        ? `Choose a ${harnessMeta(provider.provider).name} session above.`
+                        : continueAction.description}
+                    contextReady={providerContextReady}
+                    compactionCount={providerCompactionCount}
                     minimumCompactions={MINIMUM_SESSION_CONTEXT_COMPACTIONS}
+                    sessionOrdinal={customSessionOrdinal || null}
+                    sessionTitle={customSession?.title || ""}
                     onHover={() => setHoveredContinuationProvider(provider.provider)}
-                    onContinue={stageTaskContinuation}
+                    onContinue={(targetProvider) => (
+                      stageTaskContinuation(
+                        targetProvider,
+                        customSessionFlow ? customSession : null,
+                      )
+                    )}
                   />
                 );
               })}
@@ -766,7 +1038,7 @@ export default function NowPage() {
         />
       </header>
 
-      {latestSessionDiscoveryFailed ? (
+      {!customSessionFlow && latestSessionDiscoveryFailed ? (
         <div className="flex flex-col justify-between gap-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-3.5 text-red-800 sm:flex-row sm:items-center dark:border-red-900/60 dark:bg-red-950/25 dark:text-red-100">
           <div>
             <p className="text-xs font-semibold">Could not verify the newest local session</p>
@@ -830,6 +1102,144 @@ export default function NowPage() {
 
       <PromptSnippetHistory workspaceId={workspace.activeWorkspaceId} />
     </div>
+  );
+}
+
+
+function ContinueSessionSwissKnife({
+  sessions,
+  sessionsByProvider,
+  activeSessionIds,
+  disabled = false,
+  onSelect,
+}) {
+  const [openedProvider, setOpenedProvider] = useState(null);
+  const ordinalFor = (session) => (
+    sessions.findIndex(
+      (candidate) => executeSessionIdentity(candidate) === executeSessionIdentity(session),
+    ) + 1
+  );
+
+  return (
+    <section
+      aria-label="Custom Continue sessions"
+      className="relative z-50 mx-auto mt-4 grid w-full max-w-4xl grid-cols-3 gap-2 px-1 sm:gap-4"
+    >
+      {HARNESS_ORDER.map((provider) => {
+        const providerSessions = sessionsByProvider[provider] || [];
+        if (!providerSessions.length) {
+          return <span key={provider} aria-hidden="true" />;
+        }
+        const meta = harnessMeta(provider);
+        const active = providerSessions.find(
+          (session) => executeSessionIdentity(session) === activeSessionIds[provider],
+        ) || providerSessions[0];
+        const activeOrdinal = ordinalFor(active);
+        const expanded = openedProvider === provider;
+        return (
+          <div
+            key={provider}
+            className="relative flex min-w-0 justify-center"
+            onMouseEnter={() => setOpenedProvider(provider)}
+            onMouseLeave={() => setOpenedProvider((current) => (
+              current === provider ? null : current
+            ))}
+            onBlurCapture={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget)) {
+                setOpenedProvider((current) => (
+                  current === provider ? null : current
+                ));
+              }
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                setOpenedProvider(null);
+                event.currentTarget.querySelector("button")?.focus();
+              }
+            }}
+          >
+            <button
+              id={`continue-session-trigger-${provider}`}
+              type="button"
+              aria-expanded={expanded}
+              aria-haspopup="menu"
+              aria-busy={disabled || undefined}
+              aria-label={`${meta.name} custom sessions, session ${activeOrdinal} selected`}
+              onClick={() => setOpenedProvider(provider)}
+              className="relative z-20 flex min-h-12 w-full max-w-[240px] items-center gap-2 rounded-2xl border border-[#d3d3cb] bg-white/80 px-2.5 py-2 text-left shadow-[0_10px_28px_rgba(23,23,19,0.08)] backdrop-blur-xl transition hover:-translate-y-0.5 hover:border-[#9dbc47] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#849633]/70 aria-busy:cursor-wait aria-busy:opacity-70 dark:border-white/[0.13] dark:bg-black/25 dark:hover:border-[#d9ff68]/50 sm:px-3"
+            >
+              <HarnessLogo
+                type={provider}
+                size="small"
+                decorative
+                className="!h-8 !w-8 !rounded-xl sm:!h-9 sm:!w-9"
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[10px] font-black uppercase tracking-[0.1em] text-[#68685f] dark:text-[#c7c7bd]">
+                  {providerSessions.length} {meta.name}
+                </span>
+                <span className="mt-0.5 hidden truncate text-[10px] font-semibold text-[#77776e] dark:text-[#aaa9a0] sm:block">
+                  {active.title}
+                </span>
+              </span>
+              <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[#171713] px-1 font-mono text-[9px] font-black text-white dark:bg-[#d9ff68] dark:text-[#171713]">
+                {activeOrdinal}
+              </span>
+            </button>
+
+            {expanded ? (
+              <div className="absolute bottom-full left-1/2 z-10 w-[min(18rem,76vw)] -translate-x-1/2 pb-2">
+                <div
+                  role="menu"
+                  aria-label={`${meta.name} selected sessions`}
+                  className="flex flex-col gap-1.5 rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6]/95 p-2 shadow-[0_20px_48px_rgba(23,23,19,0.16)] backdrop-blur-xl dark:border-[#34342f] dark:bg-[#141411]/95"
+                >
+                  {providerSessions.map((session) => {
+                    const ordinal = ordinalFor(session);
+                    const selected = executeSessionIdentity(session) === executeSessionIdentity(active);
+                    return (
+                      <button
+                        key={executeSessionIdentity(session)}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={selected}
+                        disabled={disabled}
+                        onClick={() => {
+                          if (disabled) return;
+                          onSelect(provider, session);
+                          setOpenedProvider(null);
+                          document.getElementById(
+                            `continue-session-trigger-${provider}`,
+                          )?.focus();
+                        }}
+                        className={`flex min-h-11 items-center gap-2.5 rounded-xl border px-2.5 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#9dbc47] disabled:cursor-wait disabled:opacity-60 ${
+                          selected
+                            ? "border-[#9dbc47] bg-[#eef7d4] dark:border-[#d9ff68]/45 dark:bg-[#d9ff68]/10"
+                            : "border-transparent hover:border-[#d8d8cf] hover:bg-white dark:hover:border-white/10 dark:hover:bg-white/[0.05]"
+                        }`}
+                      >
+                        <HarnessLogo
+                          type={provider}
+                          size="small"
+                          decorative
+                          className="!h-8 !w-8 !rounded-xl"
+                        />
+                        <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[#171713] px-1 font-mono text-[9px] font-black text-white dark:bg-[#d9ff68] dark:text-[#171713]">
+                          {ordinal}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-xs font-bold">
+                          {session.title}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </section>
   );
 }
 
@@ -2885,6 +3295,50 @@ function verificationLabel(verification = {}) {
   return `${passed}/${observed} passed`;
 }
 
+function customContinuationMatchInput(record, activeSessions = {}) {
+  const identity = record?.continuation_identity
+    || record?.context_package?.continuation_identity
+    || record?.context_manifest?.continuation
+    || record?.preparation?.manifest?.continuation
+    || null;
+  const sourceProvider = normalizeProvider(
+    identity?.source_provider
+      || identity?.provider
+      || record?.delivery?.source_provider,
+  );
+  const sourceSessionId = String(
+    identity?.source_session_id
+      || identity?.session_id
+      || record?.delivery?.source_session_id
+      || record?.delivery?.harness_session?.source_session_id
+      || "",
+  ).trim();
+  if (!sourceProvider || !sourceSessionId) return null;
+  const session = Object.values(activeSessions).find((candidate) => {
+    const source = sessionDescriptorReference(candidate);
+    return (
+      source?.provider === sourceProvider
+      && source?.sessionId === sourceSessionId
+    );
+  });
+  if (!session) return null;
+  const persistedObjective = String(
+    identity?.selected_objective
+      || identity?.execution_objective
+      || record?.preparation?.objective
+      || "",
+  ).trim();
+  return {
+    // Custom Continue does not submit an editable objective. Once the exact
+    // selected source matches, use the backend-derived objective for recovery.
+    objective: persistedObjective
+      || rootSessionTaskCandidate(session)
+      || String(session?.topic || session?.preview || "").trim(),
+    source: sessionDescriptorReference(session),
+    checkpointId: null,
+  };
+}
+
 function persistedRunMatchesContinuation(latestRun, {
   objective,
   source,
@@ -2941,8 +3395,8 @@ function stagedHandoffMatchesContinuation(handoff, {
   ).trim();
   const currentProvider = normalizeProvider(source?.provider);
   const currentSessionId = String(source?.sessionId || "").trim();
-  // Restored handoffs are durable hints, not authority. Without an exact
-  // source identity they cannot displace the newest session selected by Now.
+  // Restored handoffs are durable hints, not authority. They only match the
+  // exact source currently selected by the active Continue mode.
   if (
     !stagedProvider
     || !stagedSessionId
@@ -3993,6 +4447,7 @@ function continuationStageRequestReservation({
       !forceNew
       && saved
       && /^continue-[A-Za-z0-9-]+$/.test(String(saved.idempotencyKey || ""))
+      && saved.requestFingerprint === requestFingerprint
     ) {
       return {
         storageKey,
@@ -4179,10 +4634,11 @@ function checkpointSessionReference(checkpoint) {
 }
 
 function sessionDescriptorReference(session) {
-  if (!session?.session_id || !(session.connector_type || session.provider)) return null;
+  const sessionId = session?.session_id || session?.sessionId;
+  if (!sessionId || !(session.connector_type || session.provider)) return null;
   return {
     provider: normalizeProvider(session.connector_type || session.provider),
-    sessionId: String(session.session_id),
+    sessionId: String(sessionId),
   };
 }
 
@@ -4193,20 +4649,6 @@ function queryHasSettled(query) {
     || query?.isError
     || (!query?.isLoading && query?.data !== undefined),
   );
-}
-
-function uniqueCompactionDescriptorCount(items) {
-  if (!Array.isArray(items)) return 0;
-  return new Set(
-    items.map((item, index) => (
-      String(
-        item?.id
-        || item?.window_id
-        || item?.occurred_at
-        || `descriptor-${index}`,
-      )
-    )),
-  ).size;
 }
 
 function uniqueCapturedCompactionCount(items) {

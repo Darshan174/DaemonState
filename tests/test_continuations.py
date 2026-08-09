@@ -800,6 +800,121 @@ async def test_prepare_continuation_uses_the_exact_requested_source_session(
     assert body["manifest"]["continuation"]["session_id"] == ("requested-claude-session")
 
 
+async def test_assistant_updates_cannot_evict_the_exact_source_user_request(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    goal = "Preserve the user-authored continuation root under verbose assistant output."
+    session_id = "assistant-heavy-exact-source"
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id=session_id,
+    )
+    document = await db_session.scalar(
+        select(SourceDocument).where(
+            SourceDocument.workspace_id == workspace.id,
+            SourceDocument.external_id == f"codex:session:{session_id}",
+        )
+    )
+    assert document is not None
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id=session_id,
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id=f"assistant-heavy-{index}",
+                sequence_number=2 + index,
+                event_type="assistant_update",
+                role="assistant",
+                content=f"Progress update {index}: inspection is still underway.",
+            )
+            for index in range(1, 7)
+        ],
+    )
+    await db_session.commit()
+    monkeypatch.setattr("app.services.continuation._MAX_REQUEST_EVENTS", 2)
+
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "source_provider": "codex",
+            "source_session_id": session_id,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["objective"] == goal
+    assert response.json()["source_session"]["session_id"] == session_id
+
+
+async def test_unrecoverable_superseded_request_does_not_poison_latest_goal(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    session_id = "superseded-truncated-request"
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal="Document the old deployment workflow.",
+        session_id=session_id,
+    )
+    document = await db_session.scalar(
+        select(SourceDocument).where(
+            SourceDocument.workspace_id == workspace.id,
+            SourceDocument.external_id == f"codex:session:{session_id}",
+        )
+    )
+    assert document is not None
+    latest_goal = "Build the independent billing readiness report."
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id=session_id,
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="superseded-truncated:corrupt",
+                sequence_number=3,
+                event_type="user_request",
+                role="user",
+                content="Repair a historical deployment branch.\n[output truncated]",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="superseded-truncated:latest",
+                sequence_number=4,
+                event_type="user_request",
+                role="user",
+                content=latest_goal,
+            ),
+        ],
+    )
+    await db_session.commit()
+
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "source_provider": "codex",
+            "source_session_id": session_id,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["objective"] == latest_goal
+
+
 async def test_exact_source_session_recovers_its_latest_truncated_request(
     client,
     db_session,
@@ -3904,9 +4019,25 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
             and not line.startswith(
                 "- Receiver-local protected-baseline manifest:"
             )
+            and not line.startswith(
+                "- Direct-copy delivery:"
+            )
+            and "receiver-local protected-baseline manifest" not in line.casefold()
+            and (
+                "captured branch, head, fingerprint, and bounded status inventory"
+                not in line.casefold()
+            )
         )
 
     assert without_capture_time(staged_context) == without_capture_time(canonical_context)
+    if brief_variant == "compact_v2":
+        assert "- Direct-copy delivery:" in canonical_context
+        assert "- Direct-copy delivery:" not in staged_context
+        assert "receiver-local protected-baseline manifest" in staged_context.casefold()
+        assert (
+            "captured branch, HEAD, fingerprint, and bounded status inventory"
+            in canonical_context
+        )
     expected_heading = (
         "# Continuation Brief v2\n"
         if brief_variant == "compact_v2"
@@ -4150,6 +4281,62 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     assert old_success_replay.json() == body
     assert len(launch_calls) == 1
     assert failed_launch_calls == 1
+
+
+async def test_stage_continuation_allows_a_readable_non_git_project(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    goal = "Continue the selected task in a project that does not use Git."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id="non-git-desktop-handoff",
+        provider="codex",
+        compaction_count=2,
+    )
+    launch_calls: list[dict[str, str]] = []
+
+    def fake_launch(provider: str, *, cwd: str, prompt: str):
+        launch_calls.append({"provider": provider, "cwd": cwd, "prompt": prompt})
+        return {
+            "open_requested": True,
+            "navigation_requested": True,
+            "prefill_requested": True,
+            "context_copied": True,
+            "execution_started": False,
+            "context_delivery": "desktop_composer_prefill_and_clipboard",
+        }
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.launch_harness_composer",
+        fake_launch,
+    )
+
+    response = await client.post(
+        "/api/continuations/stage",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "idempotency_key": "non-git-desktop-handoff",
+            "target_provider": "codex",
+            "source_provider": "codex",
+            "source_session_id": "non-git-desktop-handoff",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["preparation"]["repository"]["path"] == str(tmp_path)
+    assert body["preparation"]["repository"]["current"] is None
+    assert body["preparation"]["repository"]["resolution"]["status"] == "unavailable"
+    assert len(launch_calls) == 1
+    assert launch_calls[0]["cwd"] == str(tmp_path)
+    assert "Repository snapshot unavailable" in launch_calls[0]["prompt"]
+    assert "No Git snapshot is available." in launch_calls[0]["prompt"]
 
 
 async def test_stage_opens_visible_desktop_with_incomplete_foundation_warning(

@@ -30,7 +30,7 @@ describe("HarnessContinuationCard", () => {
     },
   );
 
-  it("restores Codex model and effort controls as requested desktop settings", () => {
+  it("leaves model and reasoning settings to Codex Desktop", () => {
     const onContinue = vi.fn();
     render(
       <HarnessContinuationCard
@@ -67,14 +67,9 @@ describe("HarnessContinuationCard", () => {
       "data-monochrome",
       "false",
     );
-    const model = screen.getByRole("combobox", { name: "Codex model" });
-    const effort = screen.getByRole("combobox", {
-      name: "Codex reasoning effort",
-    });
-    expect(model).toHaveValue("gpt-5.6-sol");
-    expect(effort).toHaveValue("medium");
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(screen.queryByText(/review them in Codex Desktop/i)).not.toBeInTheDocument();
     expect(screen.getByText("Ready")).toBeVisible();
-    expect(screen.getByText(/review them in Codex Desktop/i)).toBeVisible();
     expect(screen.getByRole("article")).toHaveClass(
       "daemonstate-harness-fan-card",
       "h-[23rem]",
@@ -94,16 +89,11 @@ describe("HarnessContinuationCard", () => {
     expect(screen.getByRole("article")).toHaveAttribute("data-fan-position", "left");
     expect(screen.getByRole("article")).not.toHaveClass("-ml-[88px]", "sm:-ml-[58px]");
 
-    fireEvent.change(model, { target: { value: "gpt-5.6-luna" } });
-    expect(effort).toHaveValue("high");
     fireEvent.click(screen.getByRole("button", {
       name: "Open desktop handoff in Codex",
     }));
 
-    expect(onContinue).toHaveBeenCalledWith("codex", {
-      provider_model: "gpt-5.6-luna",
-      provider_effort: "high",
-    });
+    expect(onContinue).toHaveBeenCalledWith("codex");
   });
 
   it("offers an explicit retry after a desktop open request", () => {
@@ -127,7 +117,7 @@ describe("HarnessContinuationCard", () => {
     expect(button).toHaveAttribute("data-desktop-open-requested", "true");
     expect(button).toHaveTextContent("Request again");
     fireEvent.click(button);
-    expect(onContinue).toHaveBeenCalledWith("codex", {});
+    expect(onContinue).toHaveBeenCalledWith("codex");
   });
 
   it("separates provider readiness from a missing task and removes the disabled Continue label", () => {
@@ -205,10 +195,7 @@ describe("HarnessContinuationCard", () => {
     expect(button).toHaveClass("disabled:pointer-events-none");
     expect(screen.getByText("1/2 compactions")).toBeVisible();
     expect(screen.getByText("Session Context locked")).toBeVisible();
-    expect(screen.getByRole("combobox", { name: "Codex model" })).toBeDisabled();
-    expect(screen.getByRole("combobox", {
-      name: "Codex reasoning effort",
-    })).toBeDisabled();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
 
     fireEvent.click(button);
     expect(onContinue).not.toHaveBeenCalled();
@@ -290,7 +277,7 @@ describe("HarnessContinuationCard", () => {
     },
   );
 
-  it("does not invent Codex model choices when capability discovery reports none", () => {
+  it("does not expose model controls when capability discovery reports none", () => {
     const onContinue = vi.fn();
     render(
       <HarnessContinuationCard
@@ -307,10 +294,10 @@ describe("HarnessContinuationCard", () => {
 
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open desktop handoff in Codex" }));
-    expect(onContinue).toHaveBeenCalledWith("codex", {});
+    expect(onContinue).toHaveBeenCalledWith("codex");
   });
 
-  it("keeps Codex controls usable without a manual access checkbox", () => {
+  it("ignores provider model catalogs and opens with desktop defaults", () => {
     const onContinue = vi.fn();
     render(
       <HarnessContinuationCard
@@ -349,24 +336,14 @@ describe("HarnessContinuationCard", () => {
     );
 
     expect(screen.getByText("Ready")).toBeVisible();
-    expect(screen.getByRole("combobox", { name: "Codex model" })).toBeEnabled();
-    expect(screen.getByRole("combobox", {
-      name: "Codex reasoning effort",
-    })).toBeEnabled();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     const handoff = screen.getByRole("button", {
       name: "Open desktop handoff in Codex",
     });
     expect(handoff).toBeEnabled();
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-    fireEvent.change(screen.getByRole("combobox", { name: "Codex model" }), {
-      target: { value: "gpt-5.6-terra" },
-    });
-    expect(handoff).toBeEnabled();
     fireEvent.click(handoff);
-    expect(onContinue).toHaveBeenCalledWith("codex", {
-      provider_model: "gpt-5.6-terra",
-      provider_effort: "high",
-    });
+    expect(onContinue).toHaveBeenCalledWith("codex");
   });
 
   it("opens an OpenCode draft without a manual account attestation", () => {
@@ -397,7 +374,7 @@ describe("HarnessContinuationCard", () => {
     expect(handoff).toBeEnabled();
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     fireEvent.click(handoff);
-    expect(onContinue).toHaveBeenCalledWith("opencode", {});
+    expect(onContinue).toHaveBeenCalledWith("opencode");
   });
 
   it.each([
@@ -428,7 +405,7 @@ describe("HarnessContinuationCard", () => {
       expect(handoff).toBeEnabled();
       expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
       fireEvent.click(handoff);
-      expect(onContinue).toHaveBeenCalledWith("codex", {});
+      expect(onContinue).toHaveBeenCalledWith("codex");
     },
   );
 

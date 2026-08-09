@@ -30,6 +30,7 @@ from app.services.checkpoints import (
     validate_continuation_lead,
 )
 from app.services.harness_launcher import HarnessLaunchError, launch_harness_session
+from app.services.project_scope import normalize_local_path, workspace_references
 from app.services.session_context_policy import (
     SessionContextCompactionsRequiredError,
     require_session_context_compactions,
@@ -60,11 +61,24 @@ class CheckpointResumeRequest(BaseModel):
 
 class CheckpointHandoffRequest(BaseModel):
     workspace_id: UUID
+    repo_path: str | None = Field(default=None, min_length=1)
     continuation_lead: str | None = Field(
         default=None,
         min_length=1,
         max_length=MAX_CONTINUATION_LEAD_CHARS,
     )
+    target_model: str | None = Field(default=None, min_length=1, max_length=255)
+    token_budget: int | None = Field(default=None, ge=300, le=1_000_000)
+
+    @field_validator("repo_path")
+    @classmethod
+    def validate_repo_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        if not normalized:
+            raise ValueError("repo_path must contain visible characters")
+        return normalized
 
     @field_validator("continuation_lead")
     @classmethod
@@ -292,6 +306,7 @@ async def run_checkpoint_verification(
 async def compare_checkpoint_with_repository(
     checkpoint_id: UUID,
     workspace_id: UUID,
+    repo_path: str | None = Query(default=None, min_length=1),
     session: AsyncSession = Depends(get_db_session),
     access_scope: AccessScope = Depends(get_access_scope),
 ) -> dict:
@@ -301,7 +316,12 @@ async def compare_checkpoint_with_repository(
         workspace_id,
         access_scope,
     )
-    return await compare_checkpoint_repository(checkpoint)
+    return await _resolved_checkpoint_repository_comparison(
+        session,
+        checkpoint,
+        workspace_id=workspace_id,
+        selected_repo_path=repo_path,
+    )
 
 
 @router.post("/checkpoints/{checkpoint_id}/resume")
@@ -417,7 +437,12 @@ async def create_session_handoff(
             "occurred_at": current_boundary.get("session_tip_at"),
         },
     )
-    repository_comparison = await compare_checkpoint_repository(checkpoint)
+    repository_comparison = await _resolved_checkpoint_repository_comparison(
+        session,
+        checkpoint,
+        workspace_id=body.workspace_id,
+        selected_repo_path=body.repo_path,
+    )
     try:
         return build_session_handoff_artifact(
             checkpoint,
@@ -428,6 +453,9 @@ async def create_session_handoff(
             checkpoint_data=data,
             repository_comparison=repository_comparison,
             continuation_lead=body.continuation_lead,
+            delivery_mode="direct_copy",
+            target_model=body.target_model,
+            token_budget=body.token_budget,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -444,6 +472,69 @@ async def _require_workspace(
     if workspace is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return workspace
+
+
+async def _resolved_checkpoint_repository_comparison(
+    session: AsyncSession,
+    checkpoint: WorkCheckpoint,
+    *,
+    workspace_id: UUID,
+    selected_repo_path: str | None = None,
+) -> dict:
+    _repositories, workspace_paths, _commits = await workspace_references(
+        session,
+        workspace_id,
+    )
+    selected = normalize_local_path(selected_repo_path)
+    allowed_paths = {
+        path
+        for raw in workspace_paths
+        if (path := normalize_local_path(raw)) is not None
+    }
+    checkpoint_root = normalize_local_path(checkpoint.repo_root)
+    if checkpoint_root:
+        allowed_paths.add(checkpoint_root)
+    if selected_repo_path is not None and (
+        selected is None or selected not in allowed_paths
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "checkpoint_repository_selection_invalid",
+                "message": (
+                    "Choose a repository already verified for this workspace."
+                ),
+            },
+        )
+    return await compare_checkpoint_repository(
+        checkpoint,
+        fallback_repo_paths=sorted(allowed_paths),
+        selected_repo_path=selected,
+        recorded_session_path=await _checkpoint_recorded_session_directory(
+            session,
+            checkpoint,
+        ),
+    )
+
+
+async def _checkpoint_recorded_session_directory(
+    session: AsyncSession,
+    checkpoint: WorkCheckpoint,
+) -> str | None:
+    source = await session.get(SourceDocument, checkpoint.source_document_id)
+    if source is None:
+        return None
+    try:
+        metadata = json.loads(source.metadata_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    for key in ("cwd", "workdir", "repo_path"):
+        value = normalize_local_path(metadata.get(key))
+        if value:
+            return value
+    return None
 
 
 async def _accessible_checkpoint(

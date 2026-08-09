@@ -1772,10 +1772,16 @@ export function useDesktopOverlayStatus(workspaceId, { enabled = true } = {}) {
 export function useSetDesktopOverlayVisibility() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ visible, workspaceId }) => api.put("/desktop/overlay", {
-      visible,
-      workspace_id: workspaceId,
-    }),
+    mutationFn: ({ visible, workspaceId, selectedSessions }) => api.put(
+      "/desktop/overlay",
+      {
+        visible,
+        workspace_id: workspaceId,
+        ...(Array.isArray(selectedSessions)
+          ? { selected_sessions: selectedSessions }
+          : {}),
+      },
+    ),
     onSuccess: (status, variables) => {
       queryClient.setQueriesData(
         { queryKey: ["desktop-overlay"] },
@@ -2031,10 +2037,20 @@ export function useResumeCheckpoint() {
 
 export function useCheckpointHandoff() {
   return useMutation({
-    mutationFn: ({ workspaceId, checkpointId, continuationLead }) =>
+    mutationFn: ({
+      workspaceId,
+      checkpointId,
+      repoPath,
+      continuationLead,
+      targetModel,
+      tokenBudget,
+    }) =>
       api.post(`/checkpoints/${encodeURIComponent(checkpointId)}/handoff`, {
         workspace_id: workspaceId,
+        ...(repoPath ? { repo_path: repoPath } : {}),
         ...(continuationLead ? { continuation_lead: continuationLead } : {}),
+        ...(targetModel ? { target_model: targetModel } : {}),
+        ...(Number.isInteger(tokenBudget) ? { token_budget: tokenBudget } : {}),
       }),
   });
 }

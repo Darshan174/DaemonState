@@ -6,6 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
@@ -25,6 +26,10 @@ from app.services.access import AccessScope, source_access_predicate
 from app.services.checkpoint_verifier import (
     compare_checkpoint_repository,
     verify_checkpoint,
+)
+from app.services.conversation_state import (
+    normalize_dialogue_user_request,
+    resolve_conversation_state,
 )
 from app.services.checkpoints import (
     capture_checkpoint,
@@ -51,7 +56,11 @@ from app.services.execution_prompt_renderer import (
     render_continuation_staging_context,
 )
 from app.services.local_harness import capture_repository_snapshot
-from app.services.project_scope import normalize_local_path, path_is_within
+from app.services.project_scope import (
+    normalize_local_path,
+    path_is_within,
+    workspace_references,
+)
 from app.services.repo_paths import validated_repository_path
 from app.services.request_artifacts import (
     TrustedRequestImageDescriptor,
@@ -75,7 +84,6 @@ from app.services.session_scope import (
 from app.services.session_summary import (
     extract_delegated_user_request,
     extract_user_authored_request,
-    is_substantive_user_request,
     normalize_substantive_user_request,
 )
 from app.services.task_workflow import TaskWorkflowService
@@ -333,7 +341,7 @@ class ContinuationService:
             )
             if current_goal is not None:
                 candidate_goal = _normalize_goal(current_goal.get("title"))
-                if is_substantive_user_request(candidate_goal):
+                if normalize_dialogue_user_request(candidate_goal) is not None:
                     normalized_objective = candidate_goal
                     authoritative_request_verbatim = str(
                         current_goal.get("title") or candidate_goal
@@ -498,7 +506,7 @@ class ContinuationService:
             checkpoint_goal = _normalize_goal(
                 legacy_restore.get("restore_context", {}).get("objective")
             )
-            if not is_substantive_user_request(checkpoint_goal):
+            if normalize_dialogue_user_request(checkpoint_goal) is None:
                 raise ContinuationError(
                     "checkpoint_goal_unavailable",
                     "The requested checkpoint has no source-backed objective.",
@@ -1120,15 +1128,96 @@ class ContinuationService:
             )
             or _candidate_repo_path(checkpoint_session_candidate)
         )
+        repository_resolution: dict[str, Any] = {
+            "status": "resolved" if current_repository is not None else "unavailable",
+            "source": "explicit" if requested_repo else "session",
+            "recorded_session_directory": _candidate_repo_path(
+                checkpoint_session_candidate
+            ),
+            "selected_repository": requested_repo,
+            "candidate_repositories": [],
+        }
         if current_repository is None and effective_repo_path:
             current_repository, current_repo_error = await _current_repository(
                 effective_repo_path
             )
-        if current_repo_error:
+            if current_repository is not None:
+                repository_resolution.update({
+                    "status": "resolved",
+                    "selected_repository": effective_repo_path,
+                })
+        if current_repository is None and requested_repo is None:
+            _repositories, workspace_paths, _commits = await workspace_references(
+                self.session,
+                workspace_id,
+            )
+            normalized_workspace_paths = tuple(sorted({
+                normalized
+                for raw in workspace_paths
+                if (normalized := normalize_local_path(raw)) is not None
+            }))
+            normalized_effective = normalize_local_path(effective_repo_path)
+            scoped_candidates = tuple(
+                path
+                for path in normalized_workspace_paths
+                if normalized_effective
+                and (
+                    path_is_within(normalized_effective, path)
+                    or path_is_within(path, normalized_effective)
+                )
+            )
+            candidate_paths = scoped_candidates or normalized_workspace_paths
+            readable_workspace_repositories: list[
+                tuple[str, dict[str, Any]]
+            ] = []
+            for candidate_path in candidate_paths:
+                candidate_repository, _candidate_error = await _current_repository(
+                    candidate_path
+                )
+                if candidate_repository is not None:
+                    readable_workspace_repositories.append(
+                        (candidate_path, candidate_repository)
+                    )
+            repository_resolution["candidate_repositories"] = [
+                path for path, _snapshot in readable_workspace_repositories
+            ]
+            if len(readable_workspace_repositories) == 1:
+                effective_repo_path, current_repository = (
+                    readable_workspace_repositories[0]
+                )
+                current_repo_error = None
+                repository_resolution.update({
+                    "status": "resolved",
+                    "source": "workspace_fallback",
+                    "selected_repository": effective_repo_path,
+                })
+            elif len(readable_workspace_repositories) > 1:
+                raise ContinuationError(
+                    "continuation_repository_ambiguous",
+                    (
+                        "Multiple verified workspace repositories are available. "
+                        "Choose the repository for this session before continuing."
+                    ),
+                    status_code=409,
+                )
+            else:
+                repository_resolution.update({
+                    "status": "unavailable",
+                    "source": "none",
+                    "selected_repository": None,
+                    "message": (
+                        "Repository snapshot unavailable: recorded session "
+                        "directory is not a Git repository."
+                        if effective_repo_path
+                        else "Repository snapshot unavailable: this workspace "
+                        "has no verified Git repository."
+                    ),
+                })
+        if current_repo_error and current_repository is None:
             attention.append(_attention(
                 "repository_freshness_unavailable",
                 "warning",
-                current_repo_error,
+                str(repository_resolution.get("message") or current_repo_error),
             ))
 
         repository_compilation_issues: list[str] = []
@@ -1598,6 +1687,7 @@ class ContinuationService:
                 "path": effective_repo_path,
                 "current": current_repository,
                 "freshness": freshness,
+                "resolution": repository_resolution,
             },
             context_pack_id=str(pack.context_pack_id),
             continuation_execution_id=str(
@@ -1836,7 +1926,6 @@ class ContinuationService:
 
         event_conditions = [
             SessionEvent.workspace_id == workspace_id,
-            SessionEvent.event_type.in_(("user_request", "runtime_instruction")),
             source_access_predicate(access_scope, workspace_id=workspace_id),
         ]
         if source_session is not None:
@@ -1846,63 +1935,168 @@ class ContinuationService:
                 ),
                 SessionEvent.session_id == source_session[1],
             ))
-        events = list(await self.session.scalars(
-            select(SessionEvent)
-            .join(
-                SourceDocument,
-                SessionEvent.source_document_id == SourceDocument.id,
-            )
-            .where(*event_conditions)
-            .order_by(
-                SessionEvent.occurred_at.desc().nulls_last(),
-                SessionEvent.created_at.desc(),
-                SessionEvent.sequence_number.desc(),
-                SessionEvent.id.desc(),
-            )
-            .limit(_MAX_REQUEST_EVENTS)
-        ))
-        latest_by_session: dict[
+        async def recent_events(event_types: tuple[str, ...]) -> list[SessionEvent]:
+            return list(await self.session.scalars(
+                select(SessionEvent)
+                .join(
+                    SourceDocument,
+                    SessionEvent.source_document_id == SourceDocument.id,
+                )
+                .where(
+                    *event_conditions,
+                    SessionEvent.event_type.in_(event_types),
+                )
+                .order_by(
+                    SessionEvent.occurred_at.desc().nulls_last(),
+                    SessionEvent.created_at.desc(),
+                    SessionEvent.sequence_number.desc(),
+                    SessionEvent.id.desc(),
+                )
+                .limit(_MAX_REQUEST_EVENTS)
+            ))
+
+        # First discover recent candidate sessions from user-authored turns
+        # only. Each candidate is replayed from its complete persisted event
+        # stream below, so this global bound cannot cut an active task segment.
+        request_events = await recent_events(("user_request", "runtime_instruction"))
+        resolved_by_session: dict[
             tuple[str, str],
             tuple[SessionEvent, str, str, bool],
         ] = {}
-        sessions_with_unrecoverable_truncation: set[tuple[str, str]] = set()
-        for event in events:
+        session_order: list[tuple[str, str]] = []
+        for event in request_events:
             key = normalize_session_key(event.provider, event.session_id)
-            if (
-                key not in documents_by_session
-                or key in latest_by_session
-                or key in sessions_with_unrecoverable_truncation
-            ):
+            if key not in documents_by_session:
                 continue
-            recovered_request: str | None = None
-            was_truncated = False
-            if event.event_type == "user_request":
+            if key not in session_order:
+                session_order.append(key)
+
+        for key in session_order:
+            session_events = list(await self.session.scalars(
+                select(SessionEvent)
+                .join(
+                    SourceDocument,
+                    SessionEvent.source_document_id == SourceDocument.id,
+                )
+                .where(
+                    SessionEvent.workspace_id == workspace_id,
+                    SessionEvent.provider.in_(session_provider_values(key[0])),
+                    SessionEvent.session_id == key[1],
+                    SessionEvent.event_type.in_((
+                        "user_request",
+                        "runtime_instruction",
+                        "assistant_update",
+                    )),
+                    source_access_predicate(access_scope, workspace_id=workspace_id),
+                )
+                .order_by(
+                    SessionEvent.sequence_number.asc(),
+                    SessionEvent.id.asc(),
+                )
+            ))
+            replay_events: list[SessionEvent | SimpleNamespace] = []
+            recovered_event_ids: set[str] = set()
+            unrecoverable_event_ids: set[str] = set()
+            original_by_id: dict[str, SessionEvent] = {}
+            for event in session_events:
+                event_id = str(event.provider_event_id or event.id)
+                original_by_id[event_id] = event
+                if event.event_type not in {"user_request", "runtime_instruction"}:
+                    replay_events.append(event)
+                    continue
                 exact_source = documents_by_id.get(event.source_document_id)
                 if exact_source is None:
-                    # The event query is access-filtered through SourceDocument,
-                    # so a missing exact revision is inconsistent and must not
-                    # be replaced with a different session document.
-                    sessions_with_unrecoverable_truncation.add(key)
+                    unrecoverable_event_ids.add(event_id)
+                    replay_events.append(event)
                     continue
-                (
-                    was_truncated,
-                    recovered_request,
-                ) = recover_truncated_session_request_from_source(
+                was_truncated, recovered_request = recover_truncated_session_request_from_source(
                     exact_source,
                     event_content=event.content,
                     event_type=event.event_type,
                 )
                 if was_truncated and recovered_request is None:
-                    sessions_with_unrecoverable_truncation.add(key)
+                    unrecoverable_event_ids.add(event_id)
+                    replay_events.append(event)
                     continue
-            goal = (
-                _normalize_goal(
-                    normalize_substantive_user_request(recovered_request)
+                if recovered_request is None:
+                    replay_events.append(event)
+                    continue
+                recovered_event_ids.add(event_id)
+                replay_events.append(
+                    SimpleNamespace(
+                        provider_event_id=event.provider_event_id,
+                        id=event.id,
+                        sequence_number=event.sequence_number,
+                        event_type=event.event_type,
+                        role=event.role,
+                        content=recovered_request,
+                    )
                 )
-                if recovered_request is not None
-                else _event_goal(event)
-            )
+            resolved = resolve_conversation_state(replay_events)
+            active_goal = resolved.active_goal
+            if active_goal is not None:
+                active_event_ids = set(active_goal.source_event_ids)
+                active_sequences = [
+                    original_by_id[event_id].sequence_number
+                    for event_id in active_event_ids
+                    if event_id in original_by_id
+                ]
+                latest_active_sequence = max(active_sequences, default=-1)
+                if (
+                    active_event_ids & unrecoverable_event_ids
+                    or any(
+                        original_by_id[event_id].sequence_number > latest_active_sequence
+                        for event_id in unrecoverable_event_ids
+                        if event_id in original_by_id
+                    )
+                ):
+                    continue
+            if objective and (
+                active_goal is None
+                or not _goals_compatible(
+                    objective,
+                    active_goal.composite_request_verbatim,
+                )
+            ):
+                new_goal_transitions = [
+                    item for item in resolved.transitions if item.act == "new_goal"
+                ]
+                for index in range(len(new_goal_transitions) - 1, -1, -1):
+                    transition = new_goal_transitions[index]
+                    if not _goals_compatible(
+                        objective,
+                        transition.resolved_statement or transition.user_text,
+                    ):
+                        continue
+                    next_sequence = (
+                        new_goal_transitions[index + 1].sequence_number
+                        if index + 1 < len(new_goal_transitions)
+                        else None
+                    )
+                    historical = resolve_conversation_state(
+                        replay_events,
+                        boundary_sequence=(next_sequence - 1 if next_sequence is not None else None),
+                    )
+                    if (
+                        historical.active_goal is not None
+                        and not (
+                            set(historical.active_goal.source_event_ids)
+                            & unrecoverable_event_ids
+                        )
+                    ):
+                        active_goal = historical.active_goal
+                        break
+            if active_goal is None:
+                continue
+            request_verbatim = active_goal.composite_request_verbatim
+            # The shared resolver has already classified and filtered every
+            # turn. Re-running the unary bootstrap-noise classifier here can
+            # discard legitimate tasks that merely mention policy vocabulary.
+            goal = _normalize_goal(request_verbatim)
             if not goal:
+                continue
+            goal_event = original_by_id.get(active_goal.root_event_id)
+            if goal_event is None:
                 continue
             if (
                 source_session is not None
@@ -1910,21 +2104,22 @@ class ContinuationService:
                 and not _goals_compatible(objective, goal)
             ):
                 continue
-            latest_by_session[key] = (
-                event,
+            resolved_by_session[key] = (
+                goal_event,
                 goal,
-                recovered_request
-                or _event_request_verbatim(event)
-                or goal,
-                was_truncated,
+                request_verbatim,
+                bool(recovered_event_ids & set(active_goal.source_event_ids)),
             )
 
-        for key, (
-            goal_event,
-            goal,
-            request_verbatim,
-            request_recovered,
-        ) in latest_by_session.items():
+        for key in session_order:
+            if key not in resolved_by_session:
+                continue
+            (
+                goal_event,
+                goal,
+                request_verbatim,
+                request_recovered,
+            ) = resolved_by_session[key]
             if objective and not _goals_compatible(objective, goal):
                 continue
             tip = await self.session.scalar(

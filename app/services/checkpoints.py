@@ -34,7 +34,14 @@ from app.schemas.continuation_execution import (
     is_non_verifiable_execution_guidance,
 )
 from app.services.access import AccessScope, source_access_predicate
+from app.services.conversation_state import (
+    ResolvedConversationState,
+    normalize_dialogue_user_request,
+    request_extends_active_task,
+    resolve_conversation_state,
+)
 from app.services.local_harness import RepositorySnapshot, capture_repository_snapshot
+from app.services.project_scope import workspace_references
 from app.services.request_artifacts import (
     TrustedRequestImageDescriptor,
     materialize_trusted_request_image_descriptor,
@@ -55,7 +62,6 @@ from app.services.session_summary import (
     extract_user_authored_request,
     is_continuation_control,
     is_session_instruction_noise,
-    is_substantive_user_request,
     normalize_substantive_user_request,
 )
 from app.time import utc_now
@@ -111,10 +117,9 @@ SESSION_HANDOFF_RENDERED_STATEMENT_CHARS = 300
 SESSION_HANDOFF_RENDERED_COMMAND_CHARS = 240
 SESSION_HANDOFF_RENDERED_RESULT_CHARS = 160
 MAX_CONTINUATION_LEAD_CHARS = 12_000
-# Roughly 1,750 model tokens: enough for bounded evidence without letting
-# session history dominate the authoritative current goal.
-SESSION_HANDOFF_MAX_OVERHEAD_CHARS = 7_000
-COMPACT_SESSION_HANDOFF_MAX_OVERHEAD_CHARS = 5_000
+SESSION_HANDOFF_TOKEN_ESTIMATION_METHOD = "chars_div_4.v1"
+SESSION_HANDOFF_SOFT_GENERATED_TOKEN_TARGET = 1_750
+COMPACT_SESSION_HANDOFF_SOFT_GENERATED_TOKEN_TARGET = 1_250
 
 _DECISION_SIGNAL = re.compile(
     r"\b(?:decid(?:e|ed)|we(?:'ll| will)|will use|keep|remove|replace|exclude|"
@@ -132,6 +137,18 @@ _BLOCKER_SIGNAL = re.compile(
     r"\bneed user input\b|\bwaiting for\b|\bpermission required\b|"
     r"\bfailed to authenticate\b|\bauthentication_error\b|"
     r"\b(?:access|oauth)\s+token\b.{0,80}\brevoked\b)",
+    re.IGNORECASE,
+)
+_BLOCKER_RESOLUTION_SIGNAL = re.compile(
+    r"\b(?:fixed|resolved|unblocked|addressed|cleared|implemented\s+the\s+fix)\b",
+    re.IGNORECASE,
+)
+_ANAPHORIC_BLOCKER_RESOLUTION_SIGNAL = re.compile(
+    r"\b(?:implemented|applied|completed|verified)\s+(?:the|that|this)\s+fix\b|"
+    r"\b(?:it|that|this)\s+(?:is|was)\s+"
+    r"(?:fixed|resolved|unblocked|addressed|cleared)\b|"
+    r"\b(?:resolved|fixed|cleared|addressed)\s+(?:the|that|this)\s+"
+    r"(?:blocker|issue|problem)\b",
     re.IGNORECASE,
 )
 _NEXT_SIGNAL = re.compile(
@@ -877,7 +894,17 @@ async def capture_checkpoint(
     source_document = await session.get(SourceDocument, boundary.source_document_id)
     if source_document is None:
         raise ValueError("Checkpoint source document no longer exists")
-    snapshot = await _capture_snapshot(events, source_document)
+    _repositories, workspace_paths, _commits = await workspace_references(
+        session,
+        workspace_id,
+    )
+    snapshot = await _capture_snapshot(
+        events,
+        source_document,
+        fallback_repository_paths=(
+            tuple(workspace_paths) if len(workspace_paths) == 1 else ()
+        ),
+    )
     sections = _build_sections(events, snapshot)
     _bind_checkpoint_goal_artifacts(
         sections,
@@ -1608,7 +1635,7 @@ def _safe_checkpoint_projection(
     goals = [
         item
         for item in projected["goal"]
-        if is_substantive_user_request(str(item.get("statement") or ""))
+        if normalize_dialogue_user_request(str(item.get("statement") or "")) is not None
     ]
     validated_recovery = _validated_session_request(recovered_goal)
     recovered_goal_projection = (
@@ -1661,14 +1688,43 @@ def _safe_checkpoint_projection(
     goal = goals[-1]
     projected["goal"] = [goal]
     goal_sequence = _item_sequence(goal)
-    latest_progress_sequence = max(
-        (
-            sequence
-            for item in projected["progress"]
-            if (sequence := _item_sequence(item)) is not None
-        ),
-        default=None,
-    )
+    resolved_reported_blocker_ids: set[int] = set()
+    for progress_item in sorted(
+        projected["progress"],
+        key=lambda item: _item_sequence(item) or -1,
+    ):
+        progress_sequence = _item_sequence(progress_item)
+        progress_statement = str(progress_item.get("statement") or "")
+        if progress_sequence is None or not (
+            _positive_completion_claim(progress_statement)
+            or _BLOCKER_RESOLUTION_SIGNAL.search(progress_statement)
+        ):
+            continue
+        candidates = [
+            item
+            for item in projected["blockers"]
+            if id(item) not in resolved_reported_blocker_ids
+            and str(item.get("truth_state") or "").casefold() == "reported"
+            and str(item.get("state") or "active").casefold() not in _INACTIVE_BLOCKER_STATES
+            and (sequence := _item_sequence(item)) is not None
+            and sequence < progress_sequence
+        ]
+        overlapping = [
+            item
+            for item in candidates
+            if _statements_overlap(
+                str(item.get("statement") or ""),
+                progress_statement,
+            )
+        ]
+        resolved = overlapping
+        if (
+            not resolved
+            and candidates
+            and _ANAPHORIC_BLOCKER_RESOLUTION_SIGNAL.search(progress_statement)
+        ):
+            resolved = [max(candidates, key=lambda item: _item_sequence(item) or -1)]
+        resolved_reported_blocker_ids.update(id(item) for item in resolved)
     latest_completion_sequence = max(
         (
             sequence
@@ -1742,13 +1798,10 @@ def _safe_checkpoint_projection(
             if (
                 category == "blockers"
                 and str(item.get("truth_state") or "").strip().lower() == "reported"
-                and latest_progress_sequence is not None
-                and sequence is not None
-                and sequence < latest_progress_sequence
+                and id(item) in resolved_reported_blocker_ids
             ):
-                # Intermediate agent commentary often announces a blocker and
-                # later reports successful progress. Preserve the earlier
-                # statement as history, but never present it as live authority.
+                # Preserve a blocker as history only when later progress carries
+                # blocker-specific or unambiguous anaphoric resolution evidence.
                 item = {**item, "state": "historical"}
             if (
                 filter_presentation_noise
@@ -1789,9 +1842,11 @@ def _safe_checkpoint_projection(
                 filter_presentation_noise
                 and category == "exact_next_action"
                 and _DERIVED_BLOCKER_NEXT_ACTION.match(statement.strip())
-                and latest_progress_sequence is not None
-                and sequence is not None
-                and sequence < latest_progress_sequence
+                and any(
+                    str(blocker.get("statement") or "") in statement
+                    for blocker in projected["blockers"]
+                    if id(blocker) in resolved_reported_blocker_ids
+                )
             ):
                 # This instruction was synthesized from a reported blocker that
                 # newer progress has already superseded.
@@ -2972,7 +3027,7 @@ async def resolve_session_handoff_supporting_context(
 
 def _validated_session_request(value: str | None) -> str | None:
     request = extract_user_authored_request(value)
-    if request is None or not is_substantive_user_request(request):
+    if request is None or normalize_dialogue_user_request(request) is None:
         return None
     return request
 
@@ -3033,7 +3088,7 @@ def _recover_truncated_request_from_sources(
                     if event_type == "runtime_instruction"
                     else extract_user_authored_request(turn)
                 )
-                if request is not None and is_substantive_user_request(request):
+                if request is not None and normalize_dialogue_user_request(request) is not None:
                     recovered.add(request)
     return recovered
 
@@ -4014,7 +4069,14 @@ def _stored_session_request_fragments(
         fragment_sha256 = str(raw_fragment.get("request_sha256") or "")
         if not fragment or (fragment_sha256 and fragment_sha256 != _sha256(fragment)):
             return []
-        fragments.append(fragment)
+        resolved = str(raw_fragment.get("resolved_statement") or "").strip()
+        resolved_sha256 = str(raw_fragment.get("resolved_statement_sha256") or "").strip()
+        if resolved:
+            if resolved_sha256 and resolved_sha256 != _sha256(resolved):
+                return []
+            fragments.append(resolved)
+        else:
+            fragments.append(fragment)
     return fragments
 
 
@@ -4977,6 +5039,7 @@ def _session_handoff_readiness(
     fresh_user_lead: bool = False,
     handoff_boundary_current: bool = True,
     repository_baseline_ready: bool = True,
+    repository_available: bool = True,
 ) -> dict[str, Any]:
     statuses = [str(item.get("status") or "unknown") for item in requirements]
     target = intent["target_resolution"]
@@ -5169,10 +5232,14 @@ def _session_handoff_readiness(
         elif task_type == "change" and not implementation_known:
             normalized_goal = str(intent.get("normalized_requirement") or "the requested change")
             next_action = (
-                "Inspect live `git status --short`, then locate the current "
-                f"implementation and verification surface for `{normalized_goal}` "
-                "using repository search before editing."
-                f"{candidate_suffix}"
+                (
+                    "Inspect live `git status --short`, then locate the current "
+                    if repository_available
+                    else "Inspect the live workspace files, then locate the current "
+                )
+                + f"implementation and verification surface for `{normalized_goal}` "
+                + "using code search before editing."
+                + candidate_suffix
             )
         elif target["required"] and target["status"] != "resolved" and target_phrase:
             next_action = (
@@ -5263,8 +5330,7 @@ def validate_continuation_lead(value: str | None) -> str | None:
         raise ValueError(
             f"The continuation lead must be at most {MAX_CONTINUATION_LEAD_CHARS:,} characters."
         )
-    normalized = normalize_substantive_user_request(raw)
-    if not raw.strip() or not is_substantive_user_request(normalized):
+    if not raw.strip() or normalize_dialogue_user_request(raw) is None:
         raise ValueError("The continuation lead must be a substantive user instruction.")
     return raw
 
@@ -5315,6 +5381,16 @@ def build_session_handoff_contract(
         recovered_goal=request_verbatim,
     )
     sections = _handoff_presentation_sections(data["sections"])
+    goal_payload = (
+        sections["goal"][-1].get("payload")
+        if sections.get("goal") and isinstance(sections["goal"][-1].get("payload"), dict)
+        else {}
+    )
+    conversation_state = (
+        goal_payload.get("conversation_state")
+        if isinstance(goal_payload.get("conversation_state"), dict)
+        else None
+    )
     derived_requirements = _derive_session_requirements_from_fragments(
         effective_request,
         request_fragments=(
@@ -5444,13 +5520,20 @@ def build_session_handoff_contract(
             or (data.get("currentness") or {}).get("state") == "superseded"
         ),
         repository_baseline_ready=bool(
-            repository.get("root")
-            and repository.get("status_truncated") is False
+            (repository.get("resolution") or {}).get("status") != "selection_required"
             and (
-                not repository.get("dirty")
-                or (repository.get("protected_baseline_manifest") or {}).get("complete") is True
+                not repository.get("root")
+                or (
+                    repository.get("status_truncated") is False
+                    and (
+                        not repository.get("dirty")
+                        or (repository.get("protected_baseline_manifest") or {}).get("complete")
+                        is True
+                    )
+                )
             )
         ),
+        repository_available=bool(repository.get("root")),
     )
     implementation_summary = [
         {
@@ -5477,6 +5560,7 @@ def build_session_handoff_contract(
         intent=intent,
         requirements=enriched_requirements,
         attachment_dependencies=attachment_dependencies,
+        repository=repository,
     )
     quality = _session_handoff_quality(
         dependency_required=dependency_required,
@@ -5490,6 +5574,7 @@ def build_session_handoff_contract(
         boundary=data.get("boundary"),
         task_mode=task_mode,
         readiness=readiness,
+        conversation_state=conversation_state,
     )
     if quality.get("status") == "blocked":
         if readiness.get("status") == "execution_ready":
@@ -5498,7 +5583,15 @@ def build_session_handoff_contract(
         blocking_codes = {
             str(item.get("code") or "") for item in quality.get("blocking_issues") or []
         }
-        if blocking_codes - {"session_boundary_current"}:
+        if "repository_snapshot_present" in blocking_codes and (
+            (repository.get("resolution") or {}).get("status")
+            == "selection_required"
+        ):
+            readiness["next_action"] = (
+                "Choose the verified workspace repository that belongs to this "
+                "session, then regenerate Session Context."
+            )
+        elif blocking_codes - {"session_boundary_current"}:
             readiness["next_action"] = (
                 "Resolve the Session Context quality warnings or blockers and "
                 "recapture a complete current repository snapshot before execution."
@@ -5510,7 +5603,13 @@ def build_session_handoff_contract(
             "permission_mode": ("workspace_write" if task_mode == "change" else "read_only"),
             "may_edit": task_mode == "change",
             "required_capability": (
-                "repository_write" if task_mode == "change" else "repository_read"
+                "repository_write"
+                if task_mode == "change" and repository.get("root")
+                else "repository_read"
+                if repository.get("root")
+                else "workspace_write"
+                if task_mode == "change"
+                else "workspace_read"
             ),
             "permission_observed_at_capture": ("unavailable"),
             "revalidate_live_permission": True,
@@ -5531,6 +5630,7 @@ def build_session_handoff_contract(
         },
         "intent": intent,
         "readiness": readiness,
+        "conversation_state": conversation_state,
         **(
             {
                 "continuation_lead": {
@@ -6189,6 +6289,9 @@ def _repository_baseline_manifest(
 ) -> dict[str, Any]:
     """Embed an exact, portable description of the protected dirty baseline."""
 
+    if not str(repository.get("root") or "").strip():
+        return {}
+
     exact = repository.get("protected_baseline")
     if isinstance(exact, dict) and isinstance(exact.get("entries"), list):
         exact_unsigned = {
@@ -6366,16 +6469,23 @@ def _session_handoff_repository(
         "snapshot_authority": "observed_at_checkpoint",
     }
     comparison = repository_comparison if isinstance(repository_comparison, dict) else {}
+    resolution = comparison.get("resolution")
+    resolution = resolution if isinstance(resolution, dict) else {}
     current = comparison.get("current")
     current = current if isinstance(current, dict) else None
     freshness_status = str(comparison.get("status") or "unavailable").strip().lower()
     active = current or captured
+    repository_available = bool(str(active.get("root") or "").strip())
     captured_at = (
-        current.get("captured_at") or comparison.get("checked_at")
-        if current is not None
-        else captured.get("captured_at")
-        or (data.get("boundary") or {}).get("captured_at")
-        or (data.get("boundary") or {}).get("occurred_at")
+        (
+            current.get("captured_at") or comparison.get("checked_at")
+            if current is not None
+            else captured.get("captured_at")
+            or (data.get("boundary") or {}).get("captured_at")
+            or (data.get("boundary") or {}).get("occurred_at")
+        )
+        if repository_available
+        else None
     )
     baseline_manifest = _repository_baseline_manifest(
         active,
@@ -6385,7 +6495,11 @@ def _session_handoff_repository(
         **active,
         "captured_at": _repository_snapshot_time(captured_at),
         "snapshot_authority": (
-            "observed_at_handoff" if current is not None else "observed_at_checkpoint"
+            "observed_at_handoff"
+            if current is not None
+            else "observed_at_checkpoint"
+            if repository_available
+            else "unavailable"
         ),
         "protected_baseline_manifest": baseline_manifest,
         "freshness": {
@@ -6394,6 +6508,23 @@ def _session_handoff_repository(
             "checked_at": comparison.get("checked_at"),
             "captured_head_commit": captured.get("head_commit"),
             "current_head_commit": (current.get("head_commit") if current is not None else None),
+        },
+        "resolution": {
+            "status": str(
+                resolution.get("status")
+                or ("resolved" if active.get("root") else "unavailable")
+            ),
+            "source": str(resolution.get("source") or "checkpoint"),
+            "recorded_session_directory": resolution.get(
+                "recorded_session_directory"
+            ),
+            "selected_repository": (
+                resolution.get("selected_repository") or active.get("root")
+            ),
+            "candidate_repositories": list(
+                resolution.get("candidate_repositories") or []
+            ),
+            "message": str(comparison.get("reason") or "").strip() or None,
         },
         "captured_snapshot": captured,
     }
@@ -6610,6 +6741,7 @@ def _session_handoff_verification_plan(
     intent: dict[str, Any],
     requirements: list[dict[str, Any]],
     attachment_dependencies: list[dict[str, Any]],
+    repository: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """Create future-facing checks without presenting them as completed proof."""
 
@@ -6666,13 +6798,22 @@ def _session_handoff_verification_plan(
             "implementation and record the result."
         )
     if task_mode == "change":
-        add(
-            "Review the final diff and confirm it contains only changes necessary "
-            "for the accepted requirements. If a shared component, token, or ancestor "
-            "style changed, inspect and report every affected usage. Preserve the "
-            "captured index and working-tree state of unrelated work.",
-            links=[],
-        )
+        if repository.get("root"):
+            add(
+                "Review the final diff and confirm it contains only changes necessary "
+                "for the accepted requirements. If a shared component, token, or ancestor "
+                "style changed, inspect and report every affected usage. Preserve the "
+                "captured index and working-tree state of unrelated work.",
+                links=[],
+            )
+        else:
+            add(
+                "Review every edited file and confirm each change is necessary for the "
+                "accepted requirements. If a shared component, token, or ancestor style "
+                "changed, inspect and report every affected usage. Preserve unrelated "
+                "workspace files; no Git snapshot is available for diff guarantees.",
+                links=[],
+            )
         add(
             "Report the exact files changed and the checks performed; do not claim "
             "completion for an uninspected state or unavailable artifact."
@@ -6693,10 +6834,21 @@ def _session_handoff_quality(
     boundary: dict[str, Any] | None,
     task_mode: str,
     readiness: dict[str, Any] | None = None,
+    conversation_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     readiness = readiness if isinstance(readiness, dict) else {}
     currentness = currentness if isinstance(currentness, dict) else {}
     boundary = boundary if isinstance(boundary, dict) else {}
+    conversation_state = conversation_state if isinstance(conversation_state, dict) else {}
+    unresolved_dialogue_references = [
+        item
+        for item in conversation_state.get("unresolved_references") or []
+        if isinstance(item, dict) and item.get("blocks_copy") is True
+    ]
+    repository_resolution = repository.get("resolution") or {}
+    repository_selection_required = (
+        repository_resolution.get("status") == "selection_required"
+    )
     requirement_ids = {str(item.get("id") or "") for item in requirements if item.get("id")}
     verified_requirement_ids = {
         requirement_id for item in verification for requirement_id in item["requirement_ids"]
@@ -6733,6 +6885,19 @@ def _session_handoff_quality(
         {
             "code": "requirements_present",
             "status": "pass" if requirements else "fail",
+        },
+        {
+            "code": "conversation_references_resolved",
+            "status": "fail" if unresolved_dialogue_references else "pass",
+            "unresolved_event_ids": [
+                str(item.get("event_id") or "") for item in unresolved_dialogue_references
+            ],
+            "message": (
+                "A context-dependent user answer could not be resolved against one "
+                "unique prior question, option, diagnosis, or proposal."
+                if unresolved_dialogue_references
+                else "Every context-dependent user answer is grounded or non-authoritative."
+            ),
         },
         {
             "code": "required_attachments_resolved",
@@ -6786,7 +6951,22 @@ def _session_handoff_quality(
         {
             "code": "repository_snapshot_present",
             "status": (
-                "pass" if repository.get("root") else "fail" if task_mode == "change" else "warning"
+                "pass"
+                if repository.get("root")
+                else "fail"
+                if repository_selection_required
+                else "warning"
+            ),
+            "message": (
+                "Choose one verified workspace repository before this Session Context is copied."
+                if repository_selection_required
+                else "A current Git snapshot is available."
+                if repository.get("root")
+                else str(repository_resolution.get("message") or "").strip()
+                or "Repository snapshot unavailable: this workspace has no verified Git repository."
+            ),
+            "candidate_repositories": list(
+                repository_resolution.get("candidate_repositories") or []
             ),
         },
         {
@@ -6885,6 +7065,17 @@ def _session_handoff_quality(
                 "message": (
                     "The handoff includes the current repository snapshot, but "
                     "prior session completion claims require fresh confirmation."
+                ),
+            }
+        )
+    if not repository.get("root") and not repository_selection_required:
+        warnings.append(
+            {
+                "code": "repository_snapshot_unavailable",
+                "status": "warning",
+                "message": (
+                    str(repository_resolution.get("message") or "").strip()
+                    or "Repository snapshot unavailable: this workspace has no verified Git repository."
                 ),
             }
         )
@@ -7784,13 +7975,19 @@ def render_legacy_session_handoff(
         ]
     )
     protected_count = len(handoff["files"].get("pre_existing_at_handoff") or [])
-    lines.append(
-        f"- Protected baseline: {protected_count} pre-existing change"
-        f"{'' if protected_count == 1 else 's'}. Preserve protected baseline "
-        "state regardless of authorship; dirty="
-        f"{repository.get('dirty') if repository.get('dirty') is not None else 'unknown'}; "
-        "inspect live `git status --short` before editing."
-    )
+    if repository.get("root"):
+        lines.append(
+            f"- Protected baseline: {protected_count} pre-existing change"
+            f"{'' if protected_count == 1 else 's'}. Preserve protected baseline "
+            "state regardless of authorship; dirty="
+            f"{repository.get('dirty') if repository.get('dirty') is not None else 'unknown'}; "
+            "inspect live `git status --short` before editing."
+        )
+    else:
+        lines.append(
+            "- Repository snapshot unavailable. Git history and working-tree guarantees "
+            "are not available; inspect the live workspace files and preserve unrelated work."
+        )
     baseline_manifest = repository.get("protected_baseline_manifest") or {}
     if baseline_manifest.get("receiver_availability") == "available":
         lines.append(
@@ -7963,12 +8160,50 @@ def _compact_session_capture_permission_label(handoff: dict[str, Any]) -> str:
 
 def _compact_session_required_capability_label(handoff: dict[str, Any]) -> str:
     policy = handoff.get("execution_policy") or {}
+    repository_available = bool(
+        str((handoff.get("repository") or {}).get("root") or "").strip()
+    )
     value = str(
         policy.get("required_capability")
         or ("repository_write" if policy.get("may_edit") else "repository_read")
     )
+    if not repository_available:
+        return (
+            "workspace write access"
+            if policy.get("may_edit")
+            else "read-only workspace access"
+        )
     return (
         "repository write access" if value == "repository_write" else "read-only repository access"
+    )
+
+
+def _compact_session_baseline_compare_step(handoff: dict[str, Any]) -> str:
+    delivery = handoff.get("delivery") or {}
+    repository = handoff.get("repository") or {}
+    if not str(repository.get("root") or "").strip():
+        return (
+            "No Git snapshot is available. Inspect the live workspace files before "
+            "editing, preserve unrelated user work, and do not claim Git-history or "
+            "working-tree guarantees."
+        )
+    manifest = repository.get("protected_baseline_manifest") or {}
+    receiver_reference = str(manifest.get("receiver_local_reference") or "").strip()
+    if (
+        delivery.get("mode") == "desktop_stage"
+        and manifest.get("receiver_availability") == "available"
+        and receiver_reference
+    ):
+        return (
+            "Run `git status --short` as a read-only check and compare it with "
+            f"the receiver-local protected-baseline manifest `{receiver_reference}`, "
+            "including each file's staged and unstaged status."
+        )
+    return (
+        "Run `git status --short` as a read-only check and compare it with the "
+        "captured branch, HEAD, fingerprint, and bounded status inventory below. "
+        "The exact structured baseline manifest is identified by hash but is not "
+        "embedded or dereferenceable in this pasted brief."
     )
 
 
@@ -8020,11 +8255,7 @@ def _compact_session_start_steps(handoff: dict[str, Any]) -> list[str]:
         )
         return [
             action,
-            (
-                "Run `git status --short` as a read-only check and compare it "
-                "with the embedded protected-baseline manifest, including each "
-                "file's staged and unstaged status."
-            ),
+            _compact_session_baseline_compare_step(handoff),
             inspect_step,
             (
                 "Search likely UI components and styles for transparent or alpha "
@@ -8042,13 +8273,16 @@ def _compact_session_start_steps(handoff: dict[str, Any]) -> list[str]:
         ]
     steps = [action]
     if may_edit and "git status --short" not in action:
-        steps.append(
-            "Run `git status --short` as a read-only check and compare it with "
-            "the embedded protected-baseline manifest, including each file's "
-            "staged and unstaged status, before editing."
-        )
+        steps.append(_compact_session_baseline_compare_step(handoff))
     elif not may_edit and "do not edit" not in action.casefold():
-        steps.append("Inspect the live repository state; do not edit files.")
+        repository_available = bool(
+            str((handoff.get("repository") or {}).get("root") or "").strip()
+        )
+        steps.append(
+            "Inspect the live repository state; do not edit files."
+            if repository_available
+            else "Inspect the live workspace files; do not edit files."
+        )
     return steps
 
 
@@ -8136,24 +8370,29 @@ def render_compact_session_handoff(
         "changed": "it differed from the saved checkpoint",
         "unchanged": "it matched the saved checkpoint",
         "matched": "it matched the saved checkpoint",
+        "resolved": "it was resolved from the workspace's verified repository",
+        "ambiguous": "repository selection is required",
         "unavailable": "comparison with the saved checkpoint was unavailable",
     }.get(repository_state, f"comparison state: {repository_state}")
     baseline_manifest = repository.get("protected_baseline_manifest") or {}
-    lines.extend(
-        [
-            "",
-            "## State now",
-            "",
-            f"- Task type: {_compact_session_task_type_label(handoff)}.",
-            f"- Required capability: {required_capability_label}.",
-            (
-                f"- Permission observed at capture: {captured_permission_label}. "
-                + (
-                    "Revalidate live write permission before editing."
-                    if may_edit
-                    else "This handoff does not authorize edits."
-                )
-            ),
+    lines.extend([
+        "",
+        "## State now",
+        "",
+        f"- Task type: {_compact_session_task_type_label(handoff)}.",
+        f"- Required capability: {required_capability_label}.",
+        (
+            f"- Permission observed at capture: {captured_permission_label}. "
+            + (
+                "Revalidate live write permission before editing."
+                if may_edit
+                else "This handoff does not authorize edits."
+            )
+        ),
+    ])
+    repository_resolution = repository.get("resolution") or {}
+    if repository.get("root"):
+        lines.extend([
             (
                 "- Repository at capture: "
                 f"{_compact_markdown_code(repository.get('root'))}; "
@@ -8170,8 +8409,28 @@ def render_compact_session_handoff(
                 "repository fingerprint "
                 f"{_compact_markdown_code(repository.get('status_fingerprint'))}."
             ),
-        ]
-    )
+        ])
+    elif repository_resolution.get("status") == "selection_required":
+        candidates = repository_resolution.get("candidate_repositories") or []
+        lines.append(
+            "- Repository selection required: choose one verified workspace repository: "
+            + ", ".join(_compact_markdown_code(path) for path in candidates)
+            + "."
+        )
+    else:
+        lines.append(
+            "- "
+            + (
+                str(repository_resolution.get("message") or "").strip()
+                or "Repository snapshot unavailable: this workspace has no verified Git repository."
+            )
+            + " Git history is optional; continue using the workspace files and session evidence."
+        )
+    if (handoff.get("delivery") or {}).get("mode") == "direct_copy":
+        lines.append(
+            "- Direct-copy delivery: `handoff://` references and manifest hashes "
+            "identify structured evidence but cannot be opened from the pasted text itself."
+        )
     if baseline_manifest.get("receiver_availability") == "available":
         lines.append(
             "- Receiver-local protected-baseline manifest: "
@@ -8314,6 +8573,7 @@ def render_compact_session_handoff(
     if not handoff.get("implementation_summary") and not handoff.get("verification"):
         lines.append("- No implementation change or current verification has been confirmed.")
     _append_compact_session_progress(lines, handoff)
+    _append_compact_conversation_state(lines, handoff)
     _append_compact_session_supporting_context(lines, handoff)
     _append_compact_session_attachments(lines, handoff)
 
@@ -8403,6 +8663,30 @@ def _append_compact_session_progress(
         )
 
 
+def _append_compact_conversation_state(
+    lines: list[str],
+    handoff: dict[str, Any],
+) -> None:
+    state = handoff.get("conversation_state") or {}
+    for decision in (state.get("decisions") or [])[-3:]:
+        statement = _single_line(str(decision.get("statement") or ""), 700)
+        if statement:
+            lines.append(f"- Resolved user dialogue decision: {statement}")
+    unresolved = [
+        item
+        for item in state.get("unresolved_references") or []
+        if isinstance(item, dict) and item.get("blocks_copy") is True
+    ]
+    for item in unresolved[-2:]:
+        user_text = _single_line(str(item.get("user_text") or ""), 240)
+        if user_text:
+            lines.append(
+                "- Unresolved user reference (clarification required): "
+                + _compact_markdown_code(user_text)
+                + "."
+            )
+
+
 def _append_compact_session_supporting_context(
     lines: list[str],
     handoff: dict[str, Any],
@@ -8458,6 +8742,7 @@ def _append_compact_session_attachments(
     if not attachments:
         return
     lines.append("- Required visual evidence:")
+    direct_copy = (handoff.get("delivery") or {}).get("mode") == "direct_copy"
     for attachment in attachments:
         linked = _compact_display_ids(attachment.get("requirement_ids") or []) or "unmapped"
         portable_reference = str(
@@ -8503,6 +8788,12 @@ def _append_compact_session_attachments(
                 else "."
             )
         )
+        if direct_copy and not receiver_available:
+            lines.append(
+                "    - Direct-copy note: the portable reference is an identity, not "
+                "an attachment the receiving chat can open; ask the user to attach "
+                "this exact image there before inspection."
+            )
         if receiver_available:
             lines.append(
                 f"    - Receiver-local reference: {_compact_markdown_code(receiver_reference)}."
@@ -8702,11 +8993,6 @@ def session_handoff_render_issues(
     required_headings = (
         COMPACT_SESSION_CONTEXT_REQUIRED_HEADINGS if compact else SESSION_CONTEXT_REQUIRED_HEADINGS
     )
-    max_overhead_chars = (
-        COMPACT_SESSION_HANDOFF_MAX_OVERHEAD_CHARS
-        if compact
-        else SESSION_HANDOFF_MAX_OVERHEAD_CHARS
-    )
     lines = set(content.splitlines())
     missing_sections = [heading for heading in required_headings if heading not in lines]
     issues: list[dict[str, Any]] = []
@@ -8723,33 +9009,6 @@ def session_handoff_render_issues(
                 ),
             }
         )
-    if request_verbatim is not None:
-        carried_request_chars = len(_self_contained_goal(request_verbatim))
-        carried_lead_chars = len(
-            str((handoff_contract or {}).get("continuation_lead", {}).get("text") or "")
-        )
-        carried_supporting_chars = sum(
-            len(_self_contained_goal(str(item.get("text") or "")))
-            for item in supporting_context
-            if isinstance(item, dict) and str(item.get("text") or "").strip()
-        )
-        overhead_chars = max(
-            0,
-            len(content) - carried_request_chars - carried_lead_chars - carried_supporting_chars,
-        )
-        if overhead_chars > max_overhead_chars:
-            issues.append(
-                {
-                    "code": "session_context_overhead_budget_exceeded",
-                    "status": "fail",
-                    "overhead_chars": overhead_chars,
-                    "max_overhead_chars": max_overhead_chars,
-                    "message": (
-                        "Session Context exceeds its model-facing overhead budget; "
-                        "keep detailed evidence in the structured handoff."
-                    ),
-                }
-            )
     if compact and handoff_contract is not None:
         missing_fragments = _compact_session_handoff_missing_fragments(
             content,
@@ -8882,6 +9141,26 @@ def _compact_session_handoff_missing_fragments(
             (f"supporting_context_{role}_line_{index}", line.strip())
             for index, line in enumerate(materialized.splitlines(), start=1)
             if line.strip()
+        )
+    conversation_state = handoff.get("conversation_state") or {}
+    for index, decision in enumerate((conversation_state.get("decisions") or [])[-3:], start=1):
+        expected.append(
+            (
+                f"conversation_decision_{index}",
+                _single_line(str(decision.get("statement") or ""), 700),
+            )
+        )
+    for index, unresolved in enumerate(
+        (conversation_state.get("unresolved_references") or [])[-2:],
+        start=1,
+    ):
+        if not isinstance(unresolved, dict) or unresolved.get("blocks_copy") is not True:
+            continue
+        expected.append(
+            (
+                f"conversation_unresolved_reference_{index}",
+                _compact_markdown_code(unresolved.get("user_text"), fallback=""),
+            )
         )
     for item in handoff.get("attachment_dependencies") or []:
         if item.get("required") is not True:
@@ -9028,6 +9307,273 @@ def _compact_generated_section(content: str, heading: str) -> str:
     return "\n".join(lines[start:end])
 
 
+def _session_handoff_token_accounting(
+    content: str,
+    *,
+    request_verbatim: str,
+    contract: dict[str, Any],
+    target_model: str | None,
+    token_budget: int | None,
+    render_variant: ContinuationBriefVariant,
+) -> dict[str, Any]:
+    """Describe destination fit without treating prose length as semantic quality."""
+
+    if token_budget is not None and token_budget < 300:
+        raise ValueError("token_budget is too small for mandatory Session Context sections")
+    estimated_tokens = max(1, (len(content) + 3) // 4)
+    authoritative_request = _self_contained_goal(request_verbatim)
+    authoritative_chars = len(authoritative_request)
+    authoritative_hashes = {_sha256(authoritative_request)}
+    continuation_text = str((contract.get("continuation_lead") or {}).get("text") or "")
+    for raw_text in [
+        continuation_text,
+        *[
+            str(item.get("text") or "")
+            for item in contract.get("supporting_context") or []
+            if isinstance(item, dict)
+        ],
+    ]:
+        if not raw_text.strip():
+            continue
+        authoritative_text = _self_contained_goal(raw_text)
+        authoritative_sha256 = _sha256(authoritative_text)
+        if authoritative_sha256 in authoritative_hashes:
+            continue
+        authoritative_hashes.add(authoritative_sha256)
+        authoritative_chars += len(authoritative_text)
+    authoritative_chars = min(len(content), authoritative_chars)
+    generated_chars = max(0, len(content) - authoritative_chars)
+    soft_generated_target = (
+        COMPACT_SESSION_HANDOFF_SOFT_GENERATED_TOKEN_TARGET
+        if render_variant is ContinuationBriefVariant.COMPACT_V2
+        else SESSION_HANDOFF_SOFT_GENERATED_TOKEN_TARGET
+    )
+    generated_tokens = max(1, (generated_chars + 3) // 4) if generated_chars else 0
+    budget_tokens = int(token_budget) if token_budget is not None else None
+    within_budget = (
+        estimated_tokens <= budget_tokens
+        if budget_tokens is not None
+        else None
+    )
+    within_soft_target = generated_tokens <= soft_generated_target
+    destination_status = (
+        "fits" if within_budget is True else "too_large" if within_budget is False else "unknown"
+    )
+    return {
+        "schema_version": "session_handoff_token_accounting.v1",
+        "estimated_tokens": estimated_tokens,
+        "total_chars": len(content),
+        "authoritative_chars": authoritative_chars,
+        "authoritative_tokens": (
+            max(1, (authoritative_chars + 3) // 4) if authoritative_chars else 0
+        ),
+        "generated_chars": generated_chars,
+        "generated_tokens": generated_tokens,
+        "estimation_method": SESSION_HANDOFF_TOKEN_ESTIMATION_METHOD,
+        "target_model": str(target_model or "").strip() or None,
+        "model_profile": None,
+        "efficiency_target": {
+            "generated_tokens": soft_generated_target,
+            "within_target": within_soft_target,
+            "overflow_tokens": max(0, generated_tokens - soft_generated_target),
+            "status": "within_target" if within_soft_target else "above_target",
+            "blocking": False,
+        },
+        "destination_limit": {
+            "total_tokens": budget_tokens,
+            "within_limit": within_budget,
+            "overflow_tokens": (
+                max(0, estimated_tokens - budget_tokens)
+                if budget_tokens is not None
+                else None
+            ),
+            "status": destination_status,
+            "source": "explicit" if budget_tokens is not None else "unknown",
+        },
+        "status": destination_status,
+        "blocks_copy": False,
+        "blocks_automatic_delivery": destination_status == "too_large",
+        "render_variant": render_variant.value,
+        "compaction": {
+            "attempted": False,
+            "applied": False,
+            "strategy": None,
+            "omitted_items": 0,
+        },
+    }
+
+
+def _session_handoff_evidence_access(contract: dict[str, Any]) -> dict[str, Any]:
+    required = [
+        item
+        for item in contract.get("attachment_dependencies") or []
+        if item.get("required") is True
+    ]
+    unavailable = [
+        str(item.get("id") or "")
+        for item in required
+        if item.get("available") is not True or not item.get("sha256")
+    ]
+    unmapped = [
+        str(item.get("id") or "")
+        for item in required
+        if not item.get("requirement_ids")
+    ]
+    receiver_pending = [
+        str(item.get("id") or "")
+        for item in required
+        if item.get("available") is True
+        and item.get("sha256")
+        and str(item.get("receiver_availability") or "") != "available"
+    ]
+    repository = contract.get("repository") or {}
+    repository_resolution = repository.get("resolution") or {}
+    repository_selection_required = (
+        repository_resolution.get("status") == "selection_required"
+    )
+    repository_snapshot_incomplete = bool(
+        str(repository.get("root") or "").strip()
+        and repository.get("status_truncated") is True
+    )
+    repository_available = bool(
+        str(repository.get("root") or "").strip()
+        and repository.get("status_truncated") is not True
+    )
+    # Git strengthens preservation and freshness guarantees, but it is not a
+    # prerequisite for carrying a user's task. Only an unresolved choice among
+    # multiple verified repositories blocks copy because choosing one would
+    # change the task's project scope.
+    repository_required = (
+        repository_selection_required or repository_snapshot_incomplete
+    )
+    repository_source_available = bool(
+        repository_available
+    )
+    repository_unavailable = (
+        repository_selection_required or repository_snapshot_incomplete
+    )
+    baseline_manifest = repository.get("protected_baseline_manifest") or {}
+    baseline_required = repository.get("dirty") is True
+    baseline_source_available = bool(
+        not baseline_required
+        or (
+            baseline_manifest.get("complete") is True
+            and str(baseline_manifest.get("manifest_sha256") or "").strip()
+        )
+    )
+    baseline_receiver_available = bool(
+        not baseline_required
+        or (
+            baseline_manifest.get("receiver_availability") == "available"
+            and str(baseline_manifest.get("receiver_local_reference") or "").strip()
+        )
+    )
+    baseline_unavailable = baseline_required and not baseline_source_available
+    baseline_receiver_pending = bool(
+        baseline_required and baseline_source_available and not baseline_receiver_available
+    )
+    status = (
+        "not_required"
+        if not required and not baseline_required and not repository_available
+        and not repository_selection_required
+        else "selection_required"
+        if repository_selection_required
+        else "unavailable"
+        if unavailable or unmapped or baseline_unavailable or repository_unavailable
+        else "materialization_required"
+        if receiver_pending or baseline_receiver_pending
+        else "available"
+    )
+    return {
+        "status": status,
+        "required_attachment_ids": [str(item.get("id") or "") for item in required],
+        "unavailable_attachment_ids": unavailable,
+        "unmapped_attachment_ids": unmapped,
+        "receiver_materialization_required_ids": receiver_pending,
+        "repository_snapshot": {
+            "required": repository_required,
+            "source_available": repository_source_available,
+            "root": repository.get("root"),
+            "status_truncated": repository.get("status_truncated") is True,
+            "selection_required": repository_selection_required,
+            "candidate_repositories": list(
+                repository_resolution.get("candidate_repositories") or []
+            ),
+            "message": repository_resolution.get("message"),
+        },
+        "protected_baseline": {
+            "required": baseline_required,
+            "source_available": baseline_source_available,
+            "receiver_available": baseline_receiver_available,
+            "manifest_id": baseline_manifest.get("id"),
+            "manifest_sha256": baseline_manifest.get("manifest_sha256"),
+        },
+        "blocks_copy": bool(
+            unavailable or unmapped or baseline_unavailable or repository_unavailable
+        ),
+        "ready_for_execution": bool(
+            not unavailable
+            and not unmapped
+            and not receiver_pending
+            and repository_available
+            and not baseline_unavailable
+            and not baseline_receiver_pending
+        ),
+    }
+
+
+def _session_handoff_readiness_dimensions(
+    contract: dict[str, Any],
+    *,
+    content: str,
+    render_variant: ContinuationBriefVariant,
+    token_accounting: dict[str, Any],
+    render_issues: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    quality = contract.get("quality_report") or {}
+    structural_issues = list(render_issues)
+    evidence_blocker_codes = {
+        "required_attachments_resolved",
+        "required_attachment_requirement_linkage",
+        "repository_snapshot_present",
+        "repository_status_capture_complete",
+        "repository_protected_baseline_exact",
+    }
+    semantic_blockers_by_key: dict[str, dict[str, Any]] = {}
+    for item in [*(quality.get("blocking_issues") or []), *structural_issues]:
+        code = str(item.get("code") or "session_context_semantic_blocker")
+        if code == "session_context_target_token_budget_exceeded" or (
+            code in evidence_blocker_codes
+        ):
+            continue
+        semantic_blockers_by_key.setdefault(code, item)
+    semantic_blockers = list(semantic_blockers_by_key.values())
+    coverage_missing = list(dict.fromkeys(
+        str(fragment)
+        for item in structural_issues
+        for fragment in (
+            item.get("missing_fragments")
+            or item.get("missing_sections")
+            or [item.get("code")]
+        )
+        if fragment
+    ))
+    return {
+        "semantic_readiness": {
+            "status": "blocked" if semantic_blockers or coverage_missing else "ready",
+            "copy_ready": not semantic_blockers and not coverage_missing,
+            "blocking_issue_codes": [str(item.get("code") or "") for item in semantic_blockers],
+        },
+        "budget_fit": token_accounting,
+        "evidence_access": _session_handoff_evidence_access(contract),
+        "critical_coverage": {
+            "status": "complete" if not coverage_missing else "incomplete",
+            "complete": not coverage_missing,
+            "missing_fragments": coverage_missing,
+        },
+    }
+
+
 def build_session_handoff_artifact(
     checkpoint: WorkCheckpoint,
     *,
@@ -9041,8 +9587,15 @@ def build_session_handoff_artifact(
     receiver_attachment_deliveries: dict[str, dict[str, str]] | None = None,
     receiver_baseline_delivery: dict[str, str] | None = None,
     render_variant: ContinuationBriefVariant | str | None = None,
+    delivery_mode: str = "direct_copy",
+    target_model: str | None = None,
+    token_budget: int | None = None,
 ) -> dict[str, Any]:
     """Build the one canonical Session Context artifact used by every surface."""
+
+    normalized_delivery_mode = str(delivery_mode or "").strip().casefold()
+    if normalized_delivery_mode not in {"direct_copy", "desktop_stage"}:
+        raise ValueError("delivery_mode must be direct_copy or desktop_stage")
 
     data = checkpoint_data or checkpoint_to_dict(
         checkpoint,
@@ -9060,6 +9613,57 @@ def build_session_handoff_artifact(
         receiver_attachment_deliveries=receiver_attachment_deliveries,
         receiver_baseline_delivery=receiver_baseline_delivery,
     )
+    required_delivery_attachments = [
+        item
+        for item in contract.get("attachment_dependencies") or []
+        if item.get("required") is True
+    ]
+    attachment_delivery_complete = all(
+        str(item.get("receiver_availability") or "") == "available"
+        and str(item.get("receiver_local_reference") or "").strip()
+        for item in required_delivery_attachments
+    )
+    repository_contract = contract.get("repository") or {}
+    baseline_manifest = repository_contract.get("protected_baseline_manifest") or {}
+    baseline_delivery_required = bool(
+        (contract.get("files") or {}).get("pre_existing_at_handoff")
+    )
+    baseline_delivery_complete = bool(
+        not baseline_delivery_required
+        or (
+            baseline_manifest.get("receiver_availability") == "available"
+            and str(baseline_manifest.get("receiver_local_reference") or "").strip()
+        )
+    )
+    delivery = {
+        "schema_version": "session_handoff_delivery.v1",
+        "mode": normalized_delivery_mode,
+        "receiver_bound": normalized_delivery_mode == "desktop_stage",
+        "portable_references_dereferenceable": bool(
+            normalized_delivery_mode == "desktop_stage"
+            and attachment_delivery_complete
+            and baseline_delivery_complete
+        ),
+        "target_model": str(target_model or "").strip() or None,
+        "model_profile": None,
+    }
+    contract["delivery"] = delivery
+    if normalized_delivery_mode == "direct_copy":
+        receiver_pending_attachment_ids = [
+            str(item.get("id") or "")
+            for item in contract.get("attachment_dependencies") or []
+            if item.get("required") is True
+            and str(item.get("receiver_availability") or "") != "available"
+            and str(item.get("id") or "")
+        ]
+        if receiver_pending_attachment_ids:
+            contract.setdefault("readiness", {})["next_action"] = (
+                "Ask the user to reattach the exact required image "
+                + ", ".join(receiver_pending_attachment_ids)
+                + " in the receiving chat. Treat the visual evidence as unavailable "
+                "until it is materialized there; inspect it before choosing or editing "
+                "the target, and do not claim attachment-dependent work complete sooner."
+            )
     resolved_variant = resolve_continuation_brief_variant(
         render_variant or settings.session_handoff_brief_variant
     )
@@ -9078,6 +9682,14 @@ def build_session_handoff_artifact(
         handoff_contract=contract,
         variant=resolved_variant,
     )
+    token_accounting = _session_handoff_token_accounting(
+        content,
+        request_verbatim=request_verbatim,
+        contract=contract,
+        target_model=target_model,
+        token_budget=token_budget,
+        render_variant=resolved_variant,
+    )
     if render_issues:
         quality = contract["quality_report"]
         quality["status"] = "blocked"
@@ -9088,6 +9700,60 @@ def build_session_handoff_artifact(
             *quality["blocking_issues"],
             *render_issues,
         ]
+    quality = contract["quality_report"]
+    budget_warnings: list[dict[str, Any]] = []
+    efficiency_target = token_accounting["efficiency_target"]
+    if efficiency_target["within_target"] is False:
+        budget_warnings.append(
+            {
+                "code": "session_context_generated_overhead_above_soft_target",
+                "status": "warning",
+                "generated_tokens": token_accounting["generated_tokens"],
+                "target_generated_tokens": efficiency_target["generated_tokens"],
+                "overflow_tokens": efficiency_target["overflow_tokens"],
+                "message": (
+                    "Session Context is semantically copy-safe but its generated "
+                    "overhead is above the renderer's optimization target."
+                ),
+            }
+        )
+    destination_limit = token_accounting["destination_limit"]
+    if destination_limit["status"] == "too_large":
+        budget_warnings.append(
+            {
+                "code": "session_context_destination_token_limit_exceeded",
+                "status": "warning",
+                "estimated_tokens": token_accounting["estimated_tokens"],
+                "destination_limit_tokens": destination_limit["total_tokens"],
+                "overflow_tokens": destination_limit["overflow_tokens"],
+                "message": (
+                    "Session Context exceeds the explicitly selected destination token limit."
+                ),
+            }
+        )
+        quality["automatic_execution_ready"] = False
+    readiness_dimensions = _session_handoff_readiness_dimensions(
+        contract,
+        content=content,
+        render_variant=resolved_variant,
+        token_accounting=token_accounting,
+        render_issues=render_issues,
+    )
+    quality["semantic_readiness"] = readiness_dimensions["semantic_readiness"]
+    quality["budget_fit"] = readiness_dimensions["budget_fit"]
+    quality["evidence_access"] = readiness_dimensions["evidence_access"]
+    quality["critical_coverage"] = readiness_dimensions["critical_coverage"]
+    if readiness_dimensions["evidence_access"]["ready_for_execution"] is False:
+        quality["automatic_execution_ready"] = False
+    delivery.update(
+        {
+            "target_model": token_accounting["target_model"],
+            "model_profile": token_accounting["model_profile"],
+            "ready_for_target": (
+                token_accounting["destination_limit"]["status"] != "too_large"
+            ),
+        }
+    )
     return {
         "schema_version": SESSION_HANDOFF_SCHEMA_VERSION,
         "scope": "session",
@@ -9100,10 +9766,14 @@ def build_session_handoff_artifact(
         "captured_at": data["boundary"].get("occurred_at"),
         "currentness": data.get("currentness"),
         "render_variant": resolved_variant.value,
+        "delivery": delivery,
+        "token_accounting": token_accounting,
+        "advisories": budget_warnings,
+        "readiness_dimensions": readiness_dimensions,
         **contract,
         "content": content,
         "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-        "estimated_tokens": max(1, (len(content) + 3) // 4),
+        "estimated_tokens": token_accounting["estimated_tokens"],
     }
 
 
@@ -9397,41 +10067,36 @@ def _request_extends_active_session_task(
     *,
     active_requests: Iterable[str],
 ) -> bool:
-    if _SESSION_TASK_RESET_RE.search(request):
-        return False
-    if _SESSION_TASK_FOLLOWUP_RE.search(request):
-        return True
-
-    request_words = re.findall(r"[a-z0-9]+", request.casefold())
-    if len(request_words) <= 40 and _SESSION_TASK_DELIVERY_FOLLOWUP_RE.search(request):
-        return True
-
-    active_text = "\n".join(active_requests)
-    shared = _session_task_tokens(request) & _session_task_tokens(active_text)
-    if len(shared) >= 2:
-        return True
-    return bool(len(request_words) <= 30 and any(len(token) >= 6 for token in shared))
+    return request_extends_active_task(request, active_requests=active_requests)
 
 
 def _active_session_request_chain(
     events: Iterable[SessionEvent],
+    *,
+    resolved_state: ResolvedConversationState | None = None,
 ) -> list[tuple[SessionEvent, str, str]]:
-    """Return the latest standalone request plus its dependent follow-ups."""
+    """Project the shared dialogue resolver's active goal into checkpoint inputs."""
 
+    values = list(events)
+    state = resolved_state or resolve_conversation_state(values)
+    if state.active_goal is None:
+        return []
+    events_by_id = {
+        str(event.provider_event_id or event.id): event
+        for event in values
+    }
     chain: list[tuple[SessionEvent, str, str]] = []
-    for event in events:
-        normalized = _checkpoint_user_request(event)
-        if normalized is None:
+    for fragment in state.active_goal.fragments:
+        event = events_by_id.get(fragment.event_id)
+        if event is None:
             continue
-        request_verbatim = _validated_session_request(_checkpoint_request_verbatim(event))
-        if request_verbatim is None:
-            request_verbatim = normalized
-        if chain and not _request_extends_active_session_task(
-            normalized,
-            active_requests=(item[1] for item in chain),
-        ):
-            chain = []
-        chain.append((event, normalized, request_verbatim))
+        chain.append(
+            (
+                event,
+                fragment.resolved_statement or fragment.normalized_request,
+                fragment.request_verbatim,
+            )
+        )
     return chain
 
 
@@ -9465,10 +10130,15 @@ def _build_sections(
     snapshot: RepositorySnapshot | None,
 ) -> dict[str, list[DraftItem]]:
     sections: dict[str, list[DraftItem]] = {category: [] for category in CHECKPOINT_CATEGORIES}
-    request_chain = _active_session_request_chain(events)
+    conversation_state = resolve_conversation_state(events)
+    request_chain = _active_session_request_chain(events, resolved_state=conversation_state)
     goal_events = [item[0] for item in request_chain]
     goal_event = goal_events[0] if goal_events else None
-    goal_statement = _compose_session_goal_request(request_chain)
+    goal_statement = (
+        conversation_state.active_goal.composite_request_verbatim
+        if conversation_state.active_goal is not None
+        else ""
+    )
     final_goal_event = goal_events[-1] if goal_events else None
     continuation_events = [
         event
@@ -9502,19 +10172,38 @@ def _build_sections(
                 supporting_context.append(item)
         stored_requirements = _derive_session_requirements_from_fragments(
             request_verbatim or str(goal_statement or ""),
-            request_fragments=[fragment for _, _, fragment in request_chain],
+            request_fragments=[
+                fragment.resolved_statement or fragment.request_verbatim
+                for fragment in (
+                    conversation_state.active_goal.fragments
+                    if conversation_state.active_goal is not None
+                    else ()
+                )
+            ],
             supporting_context=supporting_context,
         )
         goal_payload: dict[str, Any] = {
             "request_fragments": [
                 {
-                    "provider_event_id": event.provider_event_id,
-                    "sequence_number": event.sequence_number,
-                    "request_verbatim": fragment,
-                    "request_sha256": _sha256(fragment),
+                    "provider_event_id": fragment.event_id,
+                    "sequence_number": fragment.sequence_number,
+                    "request_verbatim": fragment.request_verbatim,
+                    "request_sha256": _sha256(fragment.request_verbatim),
+                    "dialogue_act": fragment.act,
+                    "resolved_statement": fragment.resolved_statement,
+                    "resolved_statement_sha256": (
+                        _sha256(fragment.resolved_statement)
+                        if fragment.resolved_statement
+                        else None
+                    ),
                 }
-                for event, _, fragment in request_chain
+                for fragment in (
+                    conversation_state.active_goal.fragments
+                    if conversation_state.active_goal is not None
+                    else ()
+                )
             ],
+            "conversation_state": conversation_state.to_dict(),
         }
         if request_verbatim:
             goal_payload.update(
@@ -9594,6 +10283,28 @@ def _build_sections(
                         ),
                     )
                 )
+    dialogue_events_by_id = {
+        str(event.provider_event_id or event.id): event
+        for event in events
+    }
+    for decision in conversation_state.decisions:
+        event = dialogue_events_by_id.get(decision.event_id)
+        if event is None:
+            continue
+        decisions.append(
+            DraftItem(
+                category="decisions",
+                statement=_statement(decision.statement),
+                truth_state="user_asserted",
+                events=[event],
+                payload={
+                    "dialogue_act": decision.act,
+                    "source_user_text": decision.source_user_text,
+                    "assistant_event_id": decision.assistant_event_id,
+                    "conversation_state_sha256": conversation_state.state_sha256,
+                },
+            )
+        )
     sections["decisions"] = _dedupe_drafts(decisions)[-MAX_ITEMS_PER_CATEGORY:]
 
     reported_failures: list[DraftItem] = []
@@ -9849,14 +10560,43 @@ def _build_sections(
                             events=[event],
                         )
                     )
-    latest_progress_sequence = max(
-        (item.events[-1].sequence_number for item in progress if item.events),
-        default=None,
-    )
-    if latest_progress_sequence is not None:
-        for blocker in blockers:
-            if blocker.events and blocker.events[-1].sequence_number < latest_progress_sequence:
-                blocker.state = "historical"
+    for progress_item in sorted(
+        (item for item in progress if item.events),
+        key=lambda item: item.events[-1].sequence_number,
+    ):
+        progress_sequence = progress_item.events[-1].sequence_number
+        progress_statement = str(progress_item.statement or "")
+        if not (
+            _positive_completion_claim(progress_statement)
+            or _BLOCKER_RESOLUTION_SIGNAL.search(progress_statement)
+        ):
+            continue
+        candidates = [
+            blocker
+            for blocker in blockers
+            if blocker.state != "historical"
+            and blocker.events
+            and blocker.events[-1].sequence_number < progress_sequence
+        ]
+        overlapping = [
+            blocker
+            for blocker in candidates
+            if _statements_overlap(blocker.statement, progress_statement)
+        ]
+        resolved = overlapping
+        if (
+            not resolved
+            and candidates
+            and _ANAPHORIC_BLOCKER_RESOLUTION_SIGNAL.search(progress_statement)
+        ):
+            # Anaphoric statements such as "implemented the fix" can resolve
+            # only the most recent blocker, never every older blocker by time.
+            resolved = [max(
+                candidates,
+                key=lambda blocker: blocker.events[-1].sequence_number,
+            )]
+        for blocker in resolved:
+            blocker.state = "historical"
     sections["blockers"] = _dedupe_drafts(blockers)[-MAX_ITEMS_PER_CATEGORY:]
 
     latest_verification_by_command: dict[tuple[str, str], DraftItem] = {}
@@ -10018,6 +10758,8 @@ def _checkpoint_request_verbatim(event: SessionEvent) -> str | None:
 async def _capture_snapshot(
     events: list[SessionEvent],
     source_document: SourceDocument,
+    *,
+    fallback_repository_paths: Iterable[str] = (),
 ) -> RepositorySnapshot | None:
     candidates: list[str] = []
     for event in reversed(events):
@@ -10028,7 +10770,8 @@ async def _capture_snapshot(
     for key in ("cwd", "workdir", "repo_path"):
         if metadata.get(key):
             candidates.append(str(metadata[key]))
-    for raw in candidates:
+    candidates.extend(str(path) for path in fallback_repository_paths)
+    for raw in dict.fromkeys(candidates):
         try:
             path = Path(raw).expanduser()
             if path.exists():

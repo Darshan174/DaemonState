@@ -350,6 +350,15 @@ async def test_visible_desktop_stage_allows_only_incomplete_core_advisory(
             "copy_ready": True,
             "blocking_issues": [],
         },
+        "readiness_dimensions": {
+            "semantic_readiness": {"copy_ready": True},
+            "evidence_access": {"blocks_copy": False},
+        },
+        "token_accounting": {
+            "blocks_automatic_delivery": False,
+            "efficiency_target": {"status": "above_target"},
+        },
+        "delivery": {"ready_for_target": True},
     }
     preparation = SimpleNamespace(
         project_context={
@@ -376,6 +385,25 @@ async def test_visible_desktop_stage_allows_only_incomplete_core_advisory(
     )
     assert staged_session == session_content
     assert staged_session.startswith("# Session Context — task-level working memory\n")
+
+    destination_blocked = {
+        **session_context,
+        "token_accounting": {
+            **session_context["token_accounting"],
+            "blocks_automatic_delivery": True,
+            "destination_limit": {"status": "too_large"},
+        },
+        "delivery": {"ready_for_target": False},
+    }
+    with pytest.raises(ContinuationRunError) as exc_info:
+        _staging_context_for_preparation(
+            preparation,
+            contract=contract,
+            expected_lead=contract.task.request_verbatim,
+            session_context=destination_blocked,
+        )
+    assert exc_info.value.code == "session_context_staging_blocked"
+    assert "explicit destination token limit" in str(exc_info.value)
 
     for code in (
         "project_context_foundation_stale",

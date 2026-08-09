@@ -23,7 +23,7 @@ export async function copyReadySessionContextContent(handoff, expected = {}) {
       "The checkpoint service returned an incomplete Current Session Context.",
     );
   }
-  if (handoff.quality_report.copy_ready !== true) {
+  if (!sessionContextSemanticCopyReady(handoff)) {
     throw new Error(sessionContextQualityMessage(handoff));
   }
   if (
@@ -56,6 +56,102 @@ export async function copyReadySessionContextContent(handoff, expected = {}) {
     "Current Session Context",
   );
   return handoff.content;
+}
+
+export function sessionContextSemanticCopyReady(handoff) {
+  const report = handoff?.quality_report;
+  const dimensions = sessionContextReadinessDimensions(handoff);
+  const semantic = dimensions?.semantic_readiness;
+  const evidence = dimensions?.evidence_access;
+  return Boolean(
+    report?.copy_ready === true
+    && isRecord(semantic)
+    && semantic.copy_ready === true
+    && isRecord(evidence)
+    && evidence.blocks_copy === false
+  );
+}
+
+export function sessionContextReadinessLabel(handoff) {
+  if (!handoff?.content) return "Unavailable";
+  const dimensions = sessionContextReadinessDimensions(handoff);
+  const evidence = isRecord(dimensions?.evidence_access)
+    ? dimensions.evidence_access
+    : {};
+  const budget = isRecord(dimensions?.budget_fit)
+    ? dimensions.budget_fit
+    : isRecord(handoff?.token_accounting)
+      ? handoff.token_accounting
+      : {};
+  if (!sessionContextSemanticCopyReady(handoff)) {
+    return evidence.status === "selection_required"
+      ? "Repository selection required"
+      : evidence.status === "unavailable"
+      ? "Required evidence unavailable"
+      : "Needs clarification";
+  }
+  if (budget?.destination_limit?.status === "too_large") {
+    return "Copy-ready · Over destination limit";
+  }
+  if (handoff?.readiness?.status === "discovery_required") {
+    return "Discovery brief ready";
+  }
+  if (handoff?.render_variant === "compact_v2") return "Ready · Compacted";
+  return "Ready";
+}
+
+export function sessionContextAdvisories(handoff) {
+  const dimensions = sessionContextReadinessDimensions(handoff);
+  const budget = isRecord(dimensions?.budget_fit)
+    ? dimensions.budget_fit
+    : isRecord(handoff?.token_accounting)
+      ? handoff.token_accounting
+      : {};
+  const evidence = isRecord(dimensions?.evidence_access)
+    ? dimensions.evidence_access
+    : {};
+  const messages = [];
+  if (budget?.efficiency_target?.within_target === false) {
+    messages.push(
+      `Generated context is ${Number(budget.efficiency_target.overflow_tokens || 0).toLocaleString()} tokens above its optimization target; copying remains available.`,
+    );
+  }
+  if (budget?.destination_limit?.status === "too_large") {
+    messages.push(
+      `This context is ${Number(budget.destination_limit.overflow_tokens || 0).toLocaleString()} tokens above the selected destination limit; manual copying remains available.`,
+    );
+  }
+  if (evidence?.status === "materialization_required") {
+    messages.push(
+      "Required evidence is identified, but the receiving chat still needs it attached or materialized before inspection.",
+    );
+  }
+  const repositorySnapshot = isRecord(evidence?.repository_snapshot)
+    ? evidence.repository_snapshot
+    : {};
+  if (
+    repositorySnapshot.source_available === false
+    && repositorySnapshot.selection_required !== true
+    && cleanText(repositorySnapshot.message)
+  ) {
+    messages.push(cleanText(repositorySnapshot.message));
+  }
+  return messages;
+}
+
+function sessionContextReadinessDimensions(handoff) {
+  if (Object.prototype.hasOwnProperty.call(handoff || {}, "readiness_dimensions")) {
+    return isRecord(handoff.readiness_dimensions)
+      ? handoff.readiness_dimensions
+      : null;
+  }
+  return isRecord(handoff?.quality_report)
+    ? handoff.quality_report
+    : null;
+}
+
+function isRecord(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 export async function requireMatchingContentSha256(content, expected, label) {
