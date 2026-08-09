@@ -31,10 +31,14 @@ from app.services.context_compiler import (
 )
 from app.services.model_profiles import profile_for_target_model
 from app.services.repo_indexer import IndexedFile, RepoFrame
-from app.schemas.workspace_foundation import verify_workspace_foundation_sha256
+from app.schemas.workspace_foundation import (
+    WORKSPACE_FOUNDATION_SCHEMA_VERSION,
+    verify_workspace_foundation_sha256,
+)
 from app.services.workspace_foundation_verification import (
     WorkspaceVerificationObservation,
 )
+from app.services.workspace_foundation import RepositoryObservationValidationError
 
 
 def test_model_profile_selection_maps_small_coder_names():
@@ -1056,7 +1060,7 @@ async def test_project_snapshot_is_task_free_and_falls_back_to_repository_invent
     }
     assert payload["markdown"].startswith("# Workspace Context\n")
     foundation = manifest["workspace_foundation"]
-    assert foundation["schema_version"] == "workspace_foundation.v1"
+    assert foundation["schema_version"] == WORKSPACE_FOUNDATION_SCHEMA_VERSION
     assert foundation["objective_independent"] is True
     assert verify_workspace_foundation_sha256(foundation) is True
     assert manifest["repo_state"]["workspace_foundation_sha256"] == (foundation["semantic_sha256"])
@@ -1700,6 +1704,54 @@ async def test_api_budget_error_has_typed_contract(client, tmp_path):
     detail = response.json()["detail"]
     assert detail["code"] == "context_budget_too_small"
     assert detail["minimum_required_tokens"] > 300
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    [
+        (ValueError("internal compiler invariant failed"), "context_prepare_failed"),
+        (
+            RepositoryObservationValidationError(
+                "repository semantic delta for 'broken.py' is invalid"
+            ),
+            "context_prepare_repository_observation_invalid",
+        ),
+    ],
+)
+async def test_api_prepare_correlates_internal_compiler_failures(
+    client,
+    monkeypatch,
+    failure,
+    expected_code,
+):
+    logged: list[tuple[str, dict]] = []
+
+    async def fail_compile(*args, **kwargs):
+        raise failure
+
+    def capture_log(event, *args, **kwargs):
+        logged.append((event, kwargs.get("extra") or {}))
+
+    monkeypatch.setattr(ContextCompiler, "compile_context_pack", fail_compile)
+    monkeypatch.setattr("app.api.context.logger.exception", capture_log)
+    request_id = f"context-prepare-{expected_code}"
+
+    response = await client.post(
+        "/api/context/prepare",
+        headers={"X-Request-ID": request_id},
+        json={"objective": "exercise the compiler error boundary"},
+    )
+
+    assert response.status_code == 500
+    assert response.headers["X-Request-ID"] == request_id
+    detail = response.json()["detail"]
+    assert detail["code"] == expected_code
+    assert detail["request_id"] == request_id
+    assert len(logged) == 1
+    _, fields = logged[0]
+    assert fields["context_error_code"] == expected_code
+    assert fields["request_id"] == request_id
+    assert fields["error_type"] == type(failure).__name__
 
 
 async def test_workspace_scoped_compile_does_not_read_other_or_global_components(

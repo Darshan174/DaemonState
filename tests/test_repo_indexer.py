@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import select
 
 from app.models import CodeEdge, CodeFile, CodeSymbol, Workspace
+from app.schemas.workspace_foundation import RepositorySemanticDelta
 from app.services import repo_indexer
 from app.services.repo_indexer import RepoIndexer
 
@@ -23,7 +24,7 @@ def test_git_state_preserves_porcelain_index_and_worktree_columns(
         command = tuple(args)
         if command == ("rev-parse", "--is-inside-work-tree"):
             return "true\n"
-        if command == ("status", "--short"):
+        if command == ("status", "--short", "--untracked-files=all"):
             return "M  index.py\n M worktree.py\n?? notes.txt\n"
         if command == ("rev-parse", "--abbrev-ref", "HEAD"):
             return "main\n"
@@ -40,6 +41,38 @@ def test_git_state_preserves_porcelain_index_and_worktree_columns(
         " M",
         "??",
     ]
+
+
+def test_git_state_expands_untracked_directories_to_file_rows(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    resources = tmp_path / "Resources"
+    resources.mkdir()
+    (resources / "icon.png").write_bytes(b"not-a-real-png")
+
+    state = repo_indexer._git_state(tmp_path)
+
+    assert [item["path"] for item in state["changed_files"]] == [
+        "Resources/icon.png",
+    ]
+
+
+def test_unreadable_semantic_delta_is_a_valid_non_observation():
+    delta = repo_indexer._semantic_change_delta(
+        None,
+        None,
+        previous_raw=None,
+        current_raw=None,
+        line_counts=(4, 2),
+        complete=False,
+    )
+
+    validated = RepositorySemanticDelta.model_validate(delta)
+
+    assert validated.status == "not_observed"
+    assert validated.parser_coverage.value == "not_observed"
+    assert validated.reason == "repository_path_unavailable_during_scan"
+    assert validated.lines_added is None
+    assert validated.lines_removed is None
 
 
 async def test_repo_frame_reports_bounded_head_vs_worktree_semantic_delta(tmp_path):

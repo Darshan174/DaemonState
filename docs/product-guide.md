@@ -156,8 +156,10 @@ project-wide parent     task-specific child
 
 ## Continue
 
-Continue is intentionally single-purpose. It carries the newest eligible
-in-project session forward.
+Continue carries the newest eligible in-project session forward by default.
+Its explicit **Choose custom sessions in Execute** path can return up to three
+workspace-scoped sessions as numbered, provider-matched choices without
+changing that default.
 
 ### Selection
 
@@ -166,16 +168,18 @@ newest first. Project scope is determined from the workspace repository and
 session metadata such as current working directory, project path, and repository
 identity. Internal sessions and sessions from another project are excluded.
 
-Continue does not use:
+The default Continue action does not use:
 
 - a historical Library selection;
-- an Execute selection;
+- an Execute selection unless the user entered Execute from Continue and
+  explicitly returned with that custom-session flow;
 - an arbitrary session ID in the URL;
 - a saved recovery point as a silent replacement; or
 - an older indexed session when latest-session discovery failed.
 
-If no eligible latest session exists, the action remains disabled. Historical
-work belongs in Library and Execute.
+If no eligible latest session exists, the default action remains disabled.
+The custom path only offers sessions explicitly selected through Execute, and
+each choice preserves its exact provider and session identity.
 
 ### Preparation
 

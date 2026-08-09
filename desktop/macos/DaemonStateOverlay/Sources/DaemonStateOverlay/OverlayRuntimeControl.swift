@@ -4,10 +4,110 @@ import Foundation
 
 private let overlayStateSchema = "context_overlay_state.v1"
 private let overlayControlSchema = "context_overlay_control.v1"
+private let maximumOverlaySelectedSessions = 3
 
 enum OverlayRuntimeControlError: Error, Equatable {
     case anotherInstanceIsRunning
     case runtimeDirectoryUnavailable
+}
+
+struct OverlaySelectedSession: Codable, Equatable, Hashable, Sendable {
+    let provider: String
+    let sessionID: String
+    let title: String
+    let ordinal: Int
+
+    init(provider: String, sessionID: String, title: String, ordinal: Int) {
+        self.provider = provider
+        self.sessionID = sessionID
+        self.title = title
+        self.ordinal = ordinal
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case sessionID = "session_id"
+        case title
+        case ordinal
+    }
+
+    var identity: String {
+        "\(provider)\u{0}\(sessionID)"
+    }
+
+    var providerDisplayName: String {
+        switch provider {
+        case "codex":
+            return "Codex"
+        case "claude":
+            return "Claude Code"
+        case "opencode":
+            return "OpenCode"
+        default:
+            return "AI session"
+        }
+    }
+
+    var ordinalLabel: String {
+        String(ordinal)
+    }
+}
+
+func normalizedOverlaySelectedSessions(
+    _ values: [OverlaySelectedSession]
+) -> [OverlaySelectedSession] {
+    var seenIdentities = Set<String>()
+    var seenOrdinals = Set<Int>()
+    var result: [OverlaySelectedSession] = []
+
+    for value in values.sorted(by: {
+        if $0.ordinal != $1.ordinal { return $0.ordinal < $1.ordinal }
+        return $0.identity < $1.identity
+    }) {
+        let provider = normalizedOverlayProvider(value.provider)
+        let sessionID = value.sessionID.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard ["codex", "claude", "opencode"].contains(provider),
+              !sessionID.isEmpty,
+              (1...maximumOverlaySelectedSessions).contains(value.ordinal)
+        else {
+            continue
+        }
+        let identity = "\(provider)\u{0}\(sessionID)"
+        guard seenIdentities.insert(identity).inserted,
+              seenOrdinals.insert(value.ordinal).inserted
+        else {
+            continue
+        }
+        let title = value.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        result.append(
+            OverlaySelectedSession(
+                provider: provider,
+                sessionID: sessionID,
+                title: title.isEmpty ? "Selected session" : title,
+                ordinal: value.ordinal
+            )
+        )
+        if result.count == maximumOverlaySelectedSessions { break }
+    }
+    return result
+}
+
+private func normalizedOverlayProvider(_ value: String) -> String {
+    var provider = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+    if provider.hasPrefix("daemonstate:") {
+        provider.removeFirst("daemonstate:".count)
+    }
+    switch provider {
+    case "claude code", "claude_code", "claude-code":
+        return "claude"
+    case "open code", "open_code", "open-code":
+        return "opencode"
+    default:
+        return provider
+    }
 }
 
 struct OverlayRuntimeState: Codable, Equatable {
@@ -16,7 +116,28 @@ struct OverlayRuntimeState: Codable, Equatable {
     let controlToken: String
     let visible: Bool
     let workspaceID: String?
+    let selectedSessions: [OverlaySelectedSession]
     let updatedAt: String
+
+    init(
+        schemaVersion: String,
+        processIdentifier: Int32,
+        controlToken: String,
+        visible: Bool,
+        workspaceID: String?,
+        selectedSessions: [OverlaySelectedSession] = [],
+        updatedAt: String
+    ) {
+        self.schemaVersion = schemaVersion
+        self.processIdentifier = processIdentifier
+        self.controlToken = controlToken
+        self.visible = visible
+        self.workspaceID = workspaceID
+        self.selectedSessions = normalizedOverlaySelectedSessions(
+            selectedSessions
+        )
+        self.updatedAt = updatedAt
+    }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -24,7 +145,27 @@ struct OverlayRuntimeState: Codable, Equatable {
         case controlToken = "control_token"
         case visible
         case workspaceID = "workspace_id"
+        case selectedSessions = "selected_sessions"
         case updatedAt = "updated_at"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(String.self, forKey: .schemaVersion)
+        processIdentifier = try container.decode(
+            Int32.self,
+            forKey: .processIdentifier
+        )
+        controlToken = try container.decode(String.self, forKey: .controlToken)
+        visible = try container.decode(Bool.self, forKey: .visible)
+        workspaceID = try container.decodeIfPresent(String.self, forKey: .workspaceID)
+        selectedSessions = normalizedOverlaySelectedSessions(
+            try container.decodeIfPresent(
+                [OverlaySelectedSession].self,
+                forKey: .selectedSessions
+            ) ?? []
+        )
+        updatedAt = try container.decode(String.self, forKey: .updatedAt)
     }
 }
 
@@ -33,18 +174,40 @@ struct OverlayRuntimeCommand: Codable, Equatable {
     let targetToken: String
     let visible: Bool
     let workspaceID: String?
+    let selectedSessions: [OverlaySelectedSession]?
+
+    init(
+        schemaVersion: String,
+        targetToken: String,
+        visible: Bool,
+        workspaceID: String?,
+        selectedSessions: [OverlaySelectedSession]? = nil
+    ) {
+        self.schemaVersion = schemaVersion
+        self.targetToken = targetToken
+        self.visible = visible
+        self.workspaceID = workspaceID
+        self.selectedSessions = selectedSessions.map(
+            normalizedOverlaySelectedSessions
+        )
+    }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case targetToken = "target_token"
         case visible
         case workspaceID = "workspace_id"
+        case selectedSessions = "selected_sessions"
     }
 }
 
 @MainActor
 final class OverlayRuntimeController {
-    typealias CommandHandler = (_ visible: Bool, _ workspaceID: String?) -> Void
+    typealias CommandHandler = (
+        _ visible: Bool,
+        _ workspaceID: String?,
+        _ selectedSessions: [OverlaySelectedSession]?
+    ) -> Void
 
     nonisolated static let stateFileName = "daemonstate-overlay-state.json"
     nonisolated static let controlFileName = "daemonstate-overlay-control.json"
@@ -63,6 +226,7 @@ final class OverlayRuntimeController {
     private var commandHandler: CommandHandler?
     private var lastPublishedVisible: Bool?
     private var lastPublishedWorkspaceID: String?
+    private var lastPublishedSelectedSessions: [OverlaySelectedSession] = []
 
     init(
         controlToken: String,
@@ -125,9 +289,16 @@ final class OverlayRuntimeController {
     }
 
     @discardableResult
-    func publish(visible: Bool, workspaceID: String?) -> Bool {
+    func publish(
+        visible: Bool,
+        workspaceID: String?,
+        selectedSessions: [OverlaySelectedSession] = []
+    ) -> Bool {
         lastPublishedVisible = visible
         lastPublishedWorkspaceID = normalizedWorkspaceID(workspaceID)
+        lastPublishedSelectedSessions = normalizedOverlaySelectedSessions(
+            selectedSessions
+        )
         return writeLatestState()
     }
 
@@ -139,6 +310,7 @@ final class OverlayRuntimeController {
             controlToken: controlToken,
             visible: visible,
             workspaceID: lastPublishedWorkspaceID,
+            selectedSessions: lastPublishedSelectedSessions,
             updatedAt: ISO8601DateFormatter().string(from: Date())
         )
         do {
@@ -152,14 +324,19 @@ final class OverlayRuntimeController {
     private func ensureLatestStateIsPublished() -> Bool {
         guard let visible = lastPublishedVisible,
               let data = try? Data(contentsOf: stateURL),
+              let object = try? JSONSerialization.jsonObject(with: data)
+                  as? [String: Any],
+              object["selected_sessions"] is [Any],
               let state = try? JSONDecoder().decode(
                   OverlayRuntimeState.self,
                   from: data
               ),
+              state.schemaVersion == overlayStateSchema,
               state.processIdentifier == ProcessInfo.processInfo.processIdentifier,
               state.controlToken == controlToken,
               state.visible == visible,
-              state.workspaceID == lastPublishedWorkspaceID
+              state.workspaceID == lastPublishedWorkspaceID,
+              state.selectedSessions == lastPublishedSelectedSessions
         else {
             return writeLatestState()
         }
@@ -179,7 +356,8 @@ final class OverlayRuntimeController {
         }
         commandHandler?(
             command.visible,
-            normalizedWorkspaceID(command.workspaceID)
+            normalizedWorkspaceID(command.workspaceID),
+            command.selectedSessions.map(normalizedOverlaySelectedSessions)
         )
     }
 
@@ -191,6 +369,7 @@ final class OverlayRuntimeController {
         commandHandler = nil
         lastPublishedVisible = nil
         lastPublishedWorkspaceID = nil
+        lastPublishedSelectedSessions = []
         removeOwnedRuntimeFiles()
         if lockFileDescriptor >= 0 {
             _ = Darwin.lockf(lockFileDescriptor, F_ULOCK, 0)

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import re
+from types import SimpleNamespace
 from typing import Any, Iterable
 
+from app.services.conversation_state import resolve_conversation_state
 from app.services.session_summary import (
     clean_session_message_text,
     derive_latest_session_topic,
@@ -92,9 +94,13 @@ def list_session_checkpoints(
             **descriptor,
             "label": "Before context compact",
             "objective": restored["objective"],
-            "objective_preview": _cap(restored["objective"], 180),
+            "objective_preview": (
+                _cap(restored["objective"], 180)
+                if restored["restorable"]
+                else restored["objective_label"]
+            ),
             "agent_state_preview": _cap(restored["agent_reported_state"], 180),
-            "restorable": True,
+            "restorable": restored["restorable"],
         })
     return cards
 
@@ -154,18 +160,63 @@ def build_restored_context(
     turns = _session_turns(content)
     turn_count = min(max(int(descriptor.get("turn_count") or 0), 0), len(turns))
     before_compaction = turns[:turn_count]
-    user_messages = _meaningful_messages(before_compaction, role="user")
-    assistant_messages = _meaningful_messages(before_compaction, role="assistant")
+    replay_turns = _meaningful_turns(before_compaction)
+    user_messages = [text for role, text in replay_turns if role == "user"]
+    assistant_messages = [text for role, text in replay_turns if role == "assistant"]
 
-    objective = user_messages[-1] if user_messages else (session_title or "Continue this session")
-    earlier_requirements = _distinct_recent(user_messages[:-1], limit=4)
+    dialogue_state = resolve_conversation_state([
+        SimpleNamespace(
+            provider_event_id=f"restored-turn-{index}",
+            sequence_number=index,
+            event_type="user_request" if role == "user" else "assistant_update",
+            role=role,
+            content=text,
+        )
+        for index, (role, text) in enumerate(replay_turns, start=1)
+    ])
+    metadata_preview_fallback = bool(not replay_turns and str(session_title or "").strip())
+    restorable = dialogue_state.active_goal is not None or metadata_preview_fallback
+    objective = (
+        dialogue_state.active_goal.composite_request_verbatim
+        if dialogue_state.active_goal is not None
+        else str(session_title or "").strip()
+        if metadata_preview_fallback
+        else ""
+    )
+    active_fragment_texts = {
+        fragment.request_verbatim.strip()
+        for fragment in (
+            dialogue_state.active_goal.fragments
+            if dialogue_state.active_goal is not None
+            else ()
+        )
+    }
+    # The restored objective follows only the active task, while earlier
+    # independent user requests remain explicitly labelled historical context.
+    # This preserves durable context without folding an old task into the goal.
+    earlier_requirements = (
+        _distinct_recent(
+            [
+                message
+                for message in user_messages
+                if message.strip() not in active_fragment_texts
+            ],
+            limit=4,
+        )
+        if restorable
+        else []
+    )
     agent_state = assistant_messages[-1] if assistant_messages else "No agent-reported state was captured before compaction."
-    prefix_content = _format_turns(before_compaction)
-    objective_label = derive_latest_session_topic(
-        prefix_content,
-        explicit_title=None,
-    ) or _cap(objective, 96)
-    files = _referenced_files("\n".join(text for _, text in before_compaction))
+    prefix_content = _format_turns(replay_turns)
+    objective_label = (
+        derive_latest_session_topic(
+            prefix_content,
+            explicit_title=None,
+        ) or _cap(objective, 96)
+        if restorable
+        else "No active task at this checkpoint"
+    )
+    files = _referenced_files("\n".join(text for _, text in replay_turns))
     markdown = _render_restore_markdown(
         descriptor=descriptor,
         objective=objective,
@@ -176,6 +227,14 @@ def build_restored_context(
     return {
         "objective": objective,
         "objective_label": objective_label,
+        "restorable": restorable,
+        "readiness_status": (
+            "metadata_preview"
+            if metadata_preview_fallback
+            else "ready"
+            if restorable
+            else "no_active_objective"
+        ),
         "earlier_requirements": earlier_requirements,
         "agent_reported_state": agent_state,
         "referenced_files": files,
@@ -183,6 +242,7 @@ def build_restored_context(
         "markdown": markdown,
         "provenance": "transcript_before_provider_compaction",
         "truth_status": "reported_not_verified",
+        "conversation_state": dialogue_state.to_dict(),
     }
 
 
@@ -242,10 +302,16 @@ def _meaningful_messages(
     *,
     role: str,
 ) -> list[str]:
-    result: list[str] = []
-    for turn_role, raw_text in turns:
-        if turn_role != role:
-            continue
+    return [
+        text
+        for turn_role, text in _meaningful_turns(turns)
+        if turn_role == role
+    ]
+
+
+def _meaningful_turns(turns: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    result: list[tuple[str, str]] = []
+    for role, raw_text in turns:
         text = clean_session_message_text(raw_text)
         compact = re.sub(r"\s+", " ", text).strip()
         lowered = compact.lower()
@@ -254,7 +320,7 @@ def _meaningful_messages(
         # Provider-compaction restoration may supply the authoritative request
         # when no structured checkpoint exists. Keep the cleaned message
         # lossless; only display labels and previews may be capped.
-        result.append(text.strip())
+        result.append((role, text.strip()))
     return result
 
 
@@ -306,7 +372,7 @@ def _render_restore_markdown(
         "",
         "## Continue from",
         "",
-        objective,
+        objective or "No active user objective exists at this checkpoint; do not resume it.",
     ]
     if earlier_requirements:
         lines.extend(["", "## Earlier user requirements", ""])

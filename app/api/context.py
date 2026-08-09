@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -54,8 +55,46 @@ from app.services.session_checkpoints import (
 )
 from app.services.session_summary import derive_session_topic
 from app.services.workspace_scope import metadata_dict
+from app.services.workspace_foundation import RepositoryObservationValidationError
 
 router = APIRouter()
+logger = logging.getLogger("daemonstate.context")
+
+
+def _context_prepare_request_id(request: Request) -> str:
+    return str(getattr(request.state, "request_id", "-") or "-")
+
+
+def _context_prepare_error_detail(
+    request: Request,
+    *,
+    code: str,
+    message: str,
+    **fields: Any,
+) -> dict[str, Any]:
+    return {
+        "code": code,
+        "message": message,
+        "request_id": _context_prepare_request_id(request),
+        **fields,
+    }
+
+
+def _context_prepare_log_fields(
+    request: Request,
+    payload: "ContextPrepareRequest",
+    *,
+    code: str,
+    exc: Exception,
+) -> dict[str, Any]:
+    return {
+        "request_id": _context_prepare_request_id(request),
+        "context_error_code": code,
+        "context_mode": payload.mode,
+        "workspace_id": str(payload.workspace_id) if payload.workspace_id else None,
+        "repository_supplied": bool(payload.repo_path),
+        "error_type": type(exc).__name__,
+    }
 
 
 @router.get("/context/claims/{claim_id}/timeline")
@@ -423,6 +462,7 @@ async def get_run_outcomes(
 @router.post("/context/prepare", response_model=ContextPrepareResponse)
 async def prepare_context(
     payload: ContextPrepareRequest,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
     access_scope: AccessScope = Depends(get_access_scope),
 ) -> ContextPrepareResponse:
@@ -435,7 +475,28 @@ async def prepare_context(
             source_access_predicate(access_scope, workspace_id=payload.workspace_id),
         ))
         if checkpoint_document is None:
-            raise HTTPException(status_code=404, detail="Session checkpoint source not found")
+            code = "session_checkpoint_source_not_found"
+            logger.warning(
+                "context_prepare_rejected",
+                extra={
+                    "request_id": _context_prepare_request_id(request),
+                    "context_error_code": code,
+                    "context_mode": payload.mode,
+                    "workspace_id": (
+                        str(payload.workspace_id) if payload.workspace_id else None
+                    ),
+                    "repository_supplied": bool(payload.repo_path),
+                    "error_type": "SessionCheckpointSourceNotFound",
+                },
+            )
+            raise HTTPException(
+                status_code=404,
+                detail=_context_prepare_error_detail(
+                    request,
+                    code=code,
+                    message="Session checkpoint source not found",
+                ),
+            )
         checkpoint_metadata = metadata_dict(checkpoint_document)
         connector_type = str(
             checkpoint_metadata.get("connector_type")
@@ -467,7 +528,21 @@ async def prepare_context(
                 source_content_sha256=checkpoint_document.content_sha256,
             )
         except SessionCheckpointNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            code = "session_checkpoint_not_found"
+            logger.warning(
+                "context_prepare_rejected",
+                extra=_context_prepare_log_fields(
+                    request, payload, code=code, exc=exc
+                ),
+            )
+            raise HTTPException(
+                status_code=404,
+                detail=_context_prepare_error_detail(
+                    request,
+                    code=code,
+                    message=str(exc),
+                ),
+            ) from exc
     compiler = ContextCompiler(session)
     try:
         result = await compiler.compile_context_pack(
@@ -486,46 +561,128 @@ async def prepare_context(
         await session.commit()
     except ContextBudgetExceededError as exc:
         await session.rollback()
+        code = "context_budget_too_small"
+        logger.warning(
+            "context_prepare_rejected",
+            extra=_context_prepare_log_fields(
+                request, payload, code=code, exc=exc
+            ),
+        )
         raise HTTPException(
             status_code=422,
-            detail={
-                "code": "context_budget_too_small",
-                "message": str(exc),
-                "minimum_required_tokens": exc.minimum_required_tokens,
-            },
+            detail=_context_prepare_error_detail(
+                request,
+                code=code,
+                message=str(exc),
+                minimum_required_tokens=exc.minimum_required_tokens,
+            ),
         ) from exc
     except FocusValidationError as exc:
         await session.rollback()
+        logger.warning(
+            "context_prepare_rejected",
+            extra=_context_prepare_log_fields(
+                request, payload, code=exc.code, exc=exc
+            ),
+        )
         raise HTTPException(
             status_code=exc.status_code,
-            detail={"code": exc.code, "message": str(exc)},
+            detail=_context_prepare_error_detail(
+                request,
+                code=exc.code,
+                message=str(exc),
+            ),
         ) from exc
-    except (InvalidGoalError, InvalidRepoPathError, ValueError) as exc:
+    except (InvalidGoalError, InvalidRepoPathError) as exc:
         await session.rollback()
+        code = "context_prepare_invalid_request"
+        logger.warning(
+            "context_prepare_rejected",
+            extra=_context_prepare_log_fields(
+                request, payload, code=code, exc=exc
+            ),
+        )
         raise HTTPException(
             status_code=422,
-            detail={"code": "context_prepare_invalid_request", "message": str(exc)},
+            detail=_context_prepare_error_detail(
+                request,
+                code=code,
+                message=str(exc),
+            ),
+        ) from exc
+    except RepositoryObservationValidationError as exc:
+        await session.rollback()
+        code = "context_prepare_repository_observation_invalid"
+        logger.exception(
+            "context_prepare_repository_observation_invalid",
+            extra=_context_prepare_log_fields(
+                request, payload, code=code, exc=exc
+            ),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=_context_prepare_error_detail(
+                request,
+                code=code,
+                message=str(exc),
+            ),
         ) from exc
     except ContextPersistenceError as exc:
         await session.rollback()
+        code = "context_persistence_failed"
+        logger.exception(
+            "context_prepare_persistence_failed",
+            extra=_context_prepare_log_fields(
+                request, payload, code=code, exc=exc
+            ),
+        )
         raise HTTPException(
             status_code=500,
-            detail={"code": "context_persistence_failed", "message": str(exc)},
+            detail=_context_prepare_error_detail(
+                request,
+                code=code,
+                message=str(exc),
+            ),
         ) from exc
     except Exception as exc:
         await session.rollback()
+        code = "context_prepare_failed"
+        logger.exception(
+            "context_prepare_failed",
+            extra=_context_prepare_log_fields(
+                request, payload, code=code, exc=exc
+            ),
+        )
         raise HTTPException(
             status_code=500,
-            detail={"code": "context_prepare_failed", "message": str(exc)},
+            detail=_context_prepare_error_detail(
+                request,
+                code=code,
+                message=str(exc),
+            ),
         ) from exc
 
     if not result.context_pack_id:
+        code = "context_persistence_failed"
+        logger.error(
+            "context_prepare_missing_context_pack_id",
+            extra={
+                "request_id": _context_prepare_request_id(request),
+                "context_error_code": code,
+                "context_mode": payload.mode,
+                "workspace_id": (
+                    str(payload.workspace_id) if payload.workspace_id else None
+                ),
+                "repository_supplied": bool(payload.repo_path),
+            },
+        )
         raise HTTPException(
             status_code=500,
-            detail={
-                "code": "context_persistence_failed",
-                "message": "compiler returned no durable context_pack_id",
-            },
+            detail=_context_prepare_error_detail(
+                request,
+                code=code,
+                message="compiler returned no durable context_pack_id",
+            ),
         )
     return ContextPrepareResponse(
         context_pack_id=result.context_pack_id,

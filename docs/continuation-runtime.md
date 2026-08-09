@@ -30,7 +30,7 @@ and current repository state.
 
 | Artifact | Scope and purpose | Behavior |
 |---|---|---|
-| **Session Context** | The task-specific child captured from one session's latest immutable tip. It records that session's current working state and its relationship to the Project Context parent. Repository freshness is checked at handoff time and the current snapshot is used when available. | Continue always selects the newest available session, renders the canonical `session_handoff.v1` artifact, copies it, requests a visible composer in the selected desktop app, and waits for the user to submit. Historical Library sessions and recovery points route through Prepare or Execute and never override Continue. |
+| **Session Context** | The task-specific child captured from one session's latest immutable tip. It records that session's current working state and its relationship to the Project Context parent. Repository freshness is checked at handoff time and the current snapshot is used when available. | Continue selects the newest available session by default. An explicit Continue → Execute selection flow may instead expose up to three exact, numbered session choices above their matching providers. The chosen source renders the canonical `session_handoff.v1` artifact, copies it, requests a visible composer in the selected desktop app, and waits for the user to submit. |
 | **Project / Workspace Context** | The durable parent foundation shared by every session in the workspace. It is compiled from all current workspace evidence without using the current prompt, objective, file overlap, selected session, or task ranking. Durable project facts and syntax-level repository observations remain separate. | Mechanically verified, human-confirmed, and corroborated durable facts may enter the current parent. Provisional claims stay outside it; superseded or conflicting facts remain historical. Execute's direct artifact is `workspace_foundation.v2` rendered by `workspace_foundation_renderer.v2`; Continue embeds the compatible parent projection in `continuation_staging_context.v1`. |
 | **Execution Prompt** | The provider-neutral worker command rendered as `continuation_execution_prompt.v1` from the typed `continuation_execution.v1` contract. | Used only by an automatic run path that starts the worker, observes it, and applies requirement-linked verification. |
 | **Audit ContextPack** | `context_pack.v2`, with complete selection, exclusion, provenance, citation, risk, and reconciliation records. | Durable audit and advanced inspection only. Its Markdown is never the continuation worker instruction. |
@@ -57,6 +57,14 @@ they are execution-critical. A generic “continue the current request” record
 cannot reopen a requirement with a newer scoped completion claim. Prior-agent
 interpretations that make a deictic request self-contained are retained only as
 explicitly unverified historical scope.
+
+Session Context size is reported on two separate axes. The renderer-owned
+generated-overhead target is a soft efficiency target: exceeding it emits an
+advisory but never makes an otherwise valid brief unsafe to copy. An optional
+destination total-token limit is a delivery constraint: exceeding it still
+allows manual copy, but prevents automatic desktop staging for that destination.
+Semantic readiness, evidence access, and structural integrity are independent
+copy-safety dimensions; only failures in those dimensions disable manual copy.
 
 ### Compact Session Context experiment
 
@@ -187,7 +195,9 @@ editor that retained focus, but it never presses Enter and does not weaken the
 same context identity, quality, or hash checks.
 
 Direct copy paths fail closed. Session Context requires
-`quality_report.copy_ready=true`; direct Workspace Context requires a valid
+`quality_report.copy_ready=true`,
+`readiness_dimensions.semantic_readiness.copy_ready=true`, and
+`readiness_dimensions.evidence_access.blocks_copy=false`; direct Workspace Context requires a valid
 `workspace_foundation.v2` artifact with
 `workspace_foundation.quality_report.copy_ready=true`. Superseded session boundaries, unresolved
 referenced conversations, incomplete repository snapshots, missing required
@@ -524,10 +534,13 @@ no re-explanation, less discovery, and no stale-context mistake.
 
 The Continue page calls the canonical local-only staging endpoint and exposes
 one card for each target provider. Each card reports the selected desktop app's
-installation and visible-handoff readiness. Continue carries the exact newest
-session identity through preparation; URL state, a Library selection, or a
-saved recovery point cannot replace it. Library routes historical session and
-topic choices to Prepare, while Execute owns explicit multi-session context.
+installation and visible-handoff readiness. By default, Continue carries the
+exact newest session identity through preparation; URL state, a Library
+selection, or a saved recovery point cannot silently replace it. The explicit
+Continue → Execute flow is the exception: after the user confirms up to three
+workspace-scoped sessions, Continue renders numbered choices above matching
+providers and stages only the exact chosen identity. Direct Execute visits do
+not activate those controls.
 Provider readiness starts immediately. In parallel, Continue uses
 `POST /api/session-library/latest` to enumerate local history metadata,
 resolve newest-first, and ingest only the newest eligible root session. The

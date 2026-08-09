@@ -23,7 +23,8 @@ let package = Package(
         ),
         .executableTarget(
             name: "DaemonStateOverlay",
-            dependencies: ["DaemonStateOverlayCore"]
+            dependencies: ["DaemonStateOverlayCore"],
+            resources: [.process("Resources")]
         ),
         .testTarget(
             name: "DaemonStateOverlayCoreTests",

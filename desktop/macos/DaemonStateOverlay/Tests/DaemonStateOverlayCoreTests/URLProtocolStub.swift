@@ -60,13 +60,16 @@ final class URLProtocolStub: URLProtocol {
     static func response(
         for request: URLRequest,
         statusCode: Int = 200,
+        headerFields: [String: String] = [:],
         json: String
     ) -> (HTTPURLResponse, Data) {
+        var headers = headerFields
+        headers["Content-Type"] = "application/json"
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: statusCode,
             httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": "application/json"]
+            headerFields: headers
         )!
         return (response, Data(json.utf8))
     }

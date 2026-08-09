@@ -252,3 +252,14 @@ def test_replay_hash_is_stable_and_boundary_scoped() -> None:
     assert bounded.active_goal is not None
     assert len(bounded.active_goal.fragments) == 1
     assert bounded.state_sha256 != first.state_sha256
+
+
+def test_single_goal_preserves_the_exact_user_request_boundary() -> None:
+    request = "  Fix the session cards exactly.\n"
+
+    state = resolve_conversation_state([event(1, "user", request)])
+
+    assert state.active_goal is not None
+    assert state.active_goal.root_request_verbatim == request
+    assert state.active_goal.composite_request_verbatim == request
+    assert state.active_goal.fragments[0].request_verbatim == request

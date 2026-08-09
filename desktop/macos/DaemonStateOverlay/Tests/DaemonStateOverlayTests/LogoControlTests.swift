@@ -10,9 +10,13 @@ struct LogoControlTests {
     func firstMouseIsAcceptedWithoutMakingThePanelKey() {
         let control = LogoControl(frame: NSRect(x: 0, y: 0, width: 56, height: 56))
         let panelController = OverlayPanelController(savedOrigin: nil)
+        var showedAccessibleMenu = false
+        control.onContextMenu = { _ in showedAccessibleMenu = true }
 
         #expect(control.acceptsFirstMouse(for: nil))
         #expect(control.isAccessibilityElement())
+        #expect(control.accessibilityPerformShowMenu())
+        #expect(showedAccessibleMenu)
         #expect(panelController.window?.canBecomeKey == false)
         #expect(panelController.window?.canBecomeMain == false)
     }
@@ -43,24 +47,105 @@ struct LogoControlTests {
 
     @Test
     @MainActor
-    func longStatusMessageWrapsWithoutGrowingPastItsPanel() {
+    func selectedSessionFanOrbitsTheHubInStaggeredOrdinalOrder() throws {
+        let controller = OverlayPanelController(savedOrigin: nil)
+        defer { controller.hide() }
+        let sessions = selectedSessionFixtures()
+        var chosenSession: OverlaySelectedSession?
+        controller.onSelectSession = {
+            chosenSession = $0
+        }
+
+        controller.setSelectedSessions(sessions)
+
+        #expect(controller.window?.frame.width == 72)
+        #expect(controller.sessionButtons.count == 3)
+        #expect(controller.sessionButtons.allSatisfy { $0.isHidden })
+
+        controller.expand()
+
+        #expect(controller.isExpanded)
+        #expect(controller.window?.frame.width == 200)
+        #expect(controller.window?.frame.height == 152)
+        #expect(controller.sessionButtons.allSatisfy { !$0.isHidden })
+        let first = try #require(controller.sessionButtons[safe: 0])
+        let second = try #require(controller.sessionButtons[safe: 1])
+        let third = try #require(controller.sessionButtons[safe: 2])
+        let hubFrame = controller.logoControl.frame
+        #expect(first.frame.midX < hubFrame.midX)
+        #expect(second.frame.midX > hubFrame.midX)
+        #expect(third.frame.midY > first.frame.midY)
+        #expect(first.lastRevealDelay == 0)
+        #expect(abs(second.lastRevealDelay - 0.075) < 0.001)
+        #expect(abs(third.lastRevealDelay - 0.15) < 0.001)
+        #expect(
+            second.accessibilityLabel()
+                == "Session 2, Claude Code, Review the architecture"
+        )
+        #expect(
+            second.toolTip?.hasPrefix("Paste Session 2 Context · Claude Code") == true
+        )
+        #expect(second.accessibilityPerformPress())
+        #expect(chosenSession == sessions[1])
+        #expect(second.accessibilityValue() as? String == "Pastes immediately")
+
+        controller.collapse()
+
+        #expect(!controller.isExpanded)
+        #expect(controller.window?.frame.width == 72)
+        #expect(controller.sessionButtons.allSatisfy { $0.isHidden })
+    }
+
+    @Test
+    @MainActor
+    func workspaceScopeUsesDistinctAccessibilityWithoutSessionArming() {
+        let control = LogoControl(frame: NSRect(x: 0, y: 0, width: 56, height: 56))
+
+        control.scope = .project
+        #expect(control.accessibilityLabel() == "Insert Workspace Context")
+        #expect(control.accessibilityValue() as? String == "Workspace Context")
+        #expect(control.toolTip?.contains("switch and insert") == true)
+
+        control.scope = .session
+        #expect(control.accessibilityLabel() == "Insert Session Context")
+        #expect(control.accessibilityValue() as? String == "Session Context")
+    }
+
+    @Test
+    @MainActor
+    func longStatusMessageWrapsWithoutClipping() throws {
         let controller = StatusPanelController()
         defer { controller.hide() }
 
+        let message = (
+            "Current Session Context is unavailable: the service did not "
+            + "return a complete checkpoint at the current session tip"
+        )
+
         controller.show(
-            "Current Session Context is unavailable: choose an active session in Library, then try again",
+            message,
             relativeTo: nil,
             dismissAfter: nil
         )
 
-        let panel = controller.window
-        let label = panel?.contentView?.subviews
+        let panel = try #require(controller.window)
+        let label = try #require(panel.contentView?.subviews
             .compactMap { $0 as? NSTextField }
-            .first
-        #expect(panel?.frame.width == 340)
-        #expect(panel?.frame.height ?? 0 > 42)
-        #expect(label?.frame.width == 312)
-        #expect(label?.maximumNumberOfLines == 2)
+            .first)
+        let requiredBounds = (message as NSString).boundingRect(
+            with: NSSize(
+                width: label.frame.width,
+                height: .greatestFiniteMagnitude
+            ),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: label.font as Any]
+        )
+
+        #expect(panel.frame.width == 340)
+        #expect(panel.frame.height > 42)
+        #expect(label.frame.width == 312)
+        #expect(label.maximumNumberOfLines == 4)
+        #expect(label.frame.height >= ceil(requiredBounds.height))
     }
 
     @Test
@@ -71,7 +156,7 @@ struct LogoControlTests {
         defer { status.hide() }
 
         status.show(
-            "Workspace Context selected",
+            "Workspace Context pasted",
             relativeTo: overlay.window,
             dismissAfter: nil
         )
@@ -83,6 +168,23 @@ struct LogoControlTests {
         )
         #expect(panel?.collectionBehavior.contains(.canJoinAllSpaces) == true)
         #expect(panel?.collectionBehavior.contains(.fullScreenAuxiliary) == true)
+    }
+
+    @Test
+    @MainActor
+    func statusFeedbackUsesThemeAdaptiveSemanticColors() {
+        let light = StatusPanelController.textColor(
+            for: .success,
+            darkMode: false
+        ).usingColorSpace(.deviceRGB)
+        let dark = StatusPanelController.textColor(
+            for: .success,
+            darkMode: true
+        ).usingColorSpace(.deviceRGB)
+
+        #expect((light?.greenComponent ?? 1) < 0.5)
+        #expect((dark?.greenComponent ?? 0) > 0.9)
+        #expect(light != dark)
     }
 
     @Test
@@ -231,6 +333,35 @@ struct LogoControlTests {
     private func waitPastClickDeadline() async throws {
         let milliseconds = Int((NSEvent.doubleClickInterval + 0.14) * 1_000)
         try await Task.sleep(for: .milliseconds(milliseconds))
+    }
+
+    private func selectedSessionFixtures() -> [OverlaySelectedSession] {
+        [
+            OverlaySelectedSession(
+                provider: "codex",
+                sessionID: "codex-session-1",
+                title: "Implement the control",
+                ordinal: 1
+            ),
+            OverlaySelectedSession(
+                provider: "claude",
+                sessionID: "claude-session-2",
+                title: "Review the architecture",
+                ordinal: 2
+            ),
+            OverlaySelectedSession(
+                provider: "opencode",
+                sessionID: "opencode-session-3",
+                title: "Test the overlay",
+                ordinal: 3
+            ),
+        ]
+    }
+}
+
+private extension Collection {
+    subscript(safe index: Index) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }
 

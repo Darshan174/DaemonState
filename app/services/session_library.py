@@ -17,8 +17,10 @@ from app.models import Connector, SourceDocument, Workspace
 from app.services.access import AccessScope, source_access_predicate
 from app.services.ingest import IngestionService
 from app.services.session_checkpoints import list_session_checkpoints
+from app.services.session_context_policy import session_context_compaction_counts
 from app.services.session_scope import (
     enrich_session_scope_metadata,
+    session_reference,
     scoped_session_documents,
     workspace_session_scope,
 )
@@ -27,6 +29,7 @@ from app.services.session_summary import (
     build_session_library_summary,
     is_internal_session_content,
     normalize_substantive_user_request,
+    sanitize_session_topics,
 )
 from app.services.workspace_scope import current_source_documents
 from app.sync.ai_session import ingest_ai_session
@@ -186,20 +189,11 @@ async def sync_local_session_library(
                     and existing.content.strip() == resolved.content.strip()
                     and not resolved.events
                 ):
-                    current_metadata = _loads_dict(existing.metadata_json)
-                    refreshed_metadata = {
-                        **current_metadata,
-                        **{
-                            key: value
-                            for key, value in resolved.metadata.items()
-                            if value not in (None, "", [])
-                        },
-                        "connector_type": result.connector_type,
-                        "tool": result.connector_type,
-                        "session_id": resolved.session_id,
-                    }
-                    if refreshed_metadata != current_metadata:
-                        existing.metadata_json = json.dumps(refreshed_metadata)
+                    if _refresh_resolved_session_metadata(
+                        existing,
+                        resolved,
+                        connector_type=result.connector_type,
+                    ):
                         await session.flush()
                     provider_summary["unchanged"] += 1
                     totals["unchanged"] += 1
@@ -231,19 +225,26 @@ async def sync_local_session_library(
                 totals["updated"] += revised
                 totals["unchanged"] += unchanged
 
+                document = await session.get(
+                    SourceDocument,
+                    UUID(str(ingest_result["document_id"])),
+                )
+                if document is not None and unchanged:
+                    if _refresh_resolved_session_metadata(
+                        document,
+                        resolved,
+                        connector_type=result.connector_type,
+                    ):
+                        await session.flush()
                 if created or revised:
-                    document = await session.get(
-                        SourceDocument,
-                        UUID(str(ingest_result["document_id"])),
-                    )
                     if document is not None and document.processed_at is None:
                         await IngestionService(session).process_document(document.id)
                         if commit:
                             await session.commit()
                         else:
                             await session.flush()
-                    if document is not None:
-                        current_by_external_id[external_id] = document
+                if document is not None:
+                    current_by_external_id[external_id] = document
             except Exception as exc:  # one corrupt session must not block the library
                 provider_summary["failed"] += 1
                 totals["failed"] += 1
@@ -295,6 +296,7 @@ async def sync_latest_local_session(
     workspace_id: UUID,
     *,
     connector_types: Iterable[str] | None = None,
+    access_scope: AccessScope | None = None,
 ) -> dict[str, Any]:
     """Discover and ingest only the newest eligible local root session."""
 
@@ -397,6 +399,7 @@ async def sync_latest_local_session(
         }
 
     resolved = discovery.session
+    active_access_scope = access_scope or AccessScope.local()
     ingest_result = await ingest_ai_session(
         resolved.connector_type,
         session,
@@ -428,6 +431,16 @@ async def sync_latest_local_session(
     await session.commit()
     await session.refresh(document)
     entry = _session_entry(document)
+    latest_compaction_counts = await session_context_compaction_counts(
+        session,
+        workspace_id=workspace_id,
+        session_keys=((entry["connector_type"], entry["session_id"]),),
+        access_scope=active_access_scope,
+    )
+    entry["compaction_count"] = latest_compaction_counts.get(
+        (entry["connector_type"], entry["session_id"]),
+        0,
+    )
     entry["root_task_title"] = _latest_resolved_user_request(resolved)
     return {
         "sync": {
@@ -498,7 +511,6 @@ async def build_session_library(
         select(SourceDocument)
         .options(defer(SourceDocument.content, raiseload=True))
         .where(
-            SourceDocument.workspace_id == workspace_id,
             SourceDocument.source_type == "agent_session",
             source_access_predicate(active_access_scope, workspace_id=workspace_id),
         )
@@ -536,6 +548,20 @@ async def build_session_library(
                 content=content,
                 summary=summary,
             )
+        )
+    compaction_counts = await session_context_compaction_counts(
+        session,
+        workspace_id=workspace_id,
+        session_keys=(
+            (item["connector_type"], item["session_id"])
+            for item in sessions
+        ),
+        access_scope=active_access_scope,
+    )
+    for item in sessions:
+        item["compaction_count"] = compaction_counts.get(
+            (item["connector_type"], item["session_id"]),
+            0,
         )
     sessions.sort(key=lambda item: item["updated_at"] or "", reverse=True)
 
@@ -845,6 +871,11 @@ def _session_library_summary(
                     dict(item) for item in checkpoints
                 ],
             }
+    if isinstance(raw, dict):
+        # A persisted summary from another schema version is stale by
+        # definition. Rebuild it from the transcript instead of falling through
+        # to the top-level resolver fields that produced the stale summary.
+        return None
 
     # Sessions imported before summary metadata was introduced already carry
     # resolver-derived title/topics/checkpoint descriptors. They are safe to
@@ -863,7 +894,18 @@ def _session_library_summary(
         or not all(isinstance(item, str) and item.strip() for item in topics)
     ):
         return None
-    normalized_topics = [item.strip() for item in topics]
+    raw_topics = [item.strip() for item in topics]
+    normalized_topics = sanitize_session_topics(
+        topics,
+        cwd=metadata.get("cwd"),
+    )
+    if not normalized_topics:
+        return None
+    if len(normalized_topics) != len(raw_topics):
+        # Noise removal proves the old projection was lossy and may have hit
+        # the six-topic cap before later real work. Rebuild from the transcript
+        # so cleanup does not merely hide noise while also hiding valid tasks.
+        return None
     summary_text = " ".join([title, *normalized_topics]).lower()
     internal = (
         "the following is the codex agent history whose request action you are assessing"
@@ -871,7 +913,21 @@ def _session_library_summary(
         and "transcript start" in summary_text
     )
     latest_topic = metadata.get("latest_topic")
-    if not isinstance(latest_topic, str) or not latest_topic.strip():
+    sanitized_latest = sanitize_session_topics(
+        [latest_topic] if isinstance(latest_topic, str) else [],
+        cwd=metadata.get("cwd"),
+        max_topics=1,
+    )
+    if sanitized_latest:
+        latest_topic = sanitized_latest[0]
+        latest_key = _topic_key(latest_topic)
+        normalized_topics = [
+            item
+            for item in normalized_topics
+            if _topic_key(item) != latest_key
+        ]
+        normalized_topics = [*normalized_topics[:5], latest_topic]
+    else:
         latest_topic = normalized_topics[-1]
     preview = metadata.get("preview")
     if not isinstance(preview, str) or not preview.strip():
@@ -891,21 +947,21 @@ def _session_entry(
     *,
     content: str | None = None,
     summary: dict[str, Any] | None = None,
+    compaction_count: int = 0,
 ) -> dict[str, Any]:
     metadata = _loads_dict(document.metadata_json)
-    connector_type = str(
-        metadata.get("connector_type") or metadata.get("tool") or "unknown"
-    ).strip().lower()
-    if connector_type == "claude_code":
-        connector_type = "claude"
-    session_id = str(metadata.get("session_id") or document.external_id.rsplit(":", 1)[-1])
+    connector_type, session_id = session_reference(document, metadata=metadata)
     resolved_summary = summary or _session_library_summary(document)
     transcript = content
     if resolved_summary is None:
         transcript = document.content if content is None else content
+        explicit_title = _restore_legacy_numeric_title(
+            metadata.get("title"),
+            transcript,
+        )
         resolved_summary = build_session_library_summary(
             transcript,
-            explicit_title=metadata.get("title"),
+            explicit_title=explicit_title,
             cwd=metadata.get("cwd"),
             tool=connector_type,
             session_id=session_id,
@@ -955,6 +1011,10 @@ def _session_entry(
             "linked_to_local_history": bool(metadata.get("source_path")),
         },
         "preview": resolved_summary["preview"],
+        # The event ledger is the sole authority. Callers that do not project
+        # it explicitly fail closed at zero instead of reviving stale resolver
+        # metadata or legacy checkpoint descriptors.
+        "compaction_count": max(int(compaction_count or 0), 0),
         "compaction_checkpoints": compaction_checkpoints,
     }
 
@@ -1001,6 +1061,56 @@ def _connector_type_for_document(document: SourceDocument) -> str:
         or ""
     ).strip().lower()
     return "claude" if connector_type == "claude_code" else connector_type
+
+
+def _refresh_resolved_session_metadata(
+    document: SourceDocument,
+    resolved: ResolvedSession,
+    *,
+    connector_type: str,
+) -> bool:
+    """Refresh derived session metadata when transcript content is unchanged."""
+
+    current = _loads_dict(document.metadata_json)
+    refreshed = {
+        **current,
+        **{
+            key: value
+            for key, value in resolved.metadata.items()
+            if value not in (None, "", [])
+        },
+        "connector_type": connector_type,
+        "tool": connector_type,
+        "session_id": resolved.session_id,
+    }
+    if refreshed == current:
+        return False
+    document.metadata_json = json.dumps(refreshed)
+    return True
+
+
+def _restore_legacy_numeric_title(
+    value: object,
+    content: str,
+) -> str | None:
+    """Undo the historical Markdown cleaner that changed 20x/10x to X."""
+
+    title = str(value or "").strip()
+    if not title:
+        return None
+    match = re.match(r"^x\s+(.+)$", title, re.IGNORECASE)
+    if not match:
+        return title
+    remainder = match.group(1)
+    first_word = re.split(r"[^a-z0-9]+", remainder.lower(), maxsplit=1)[0]
+    if not first_word:
+        return title
+    prefix = re.search(
+        rf"\b(\d+x)\s+{re.escape(first_word)}\b",
+        content,
+        re.IGNORECASE,
+    )
+    return f"{prefix.group(1)} {remainder}" if prefix else title
 
 
 def _loads_dict(value: Any) -> dict[str, Any]:

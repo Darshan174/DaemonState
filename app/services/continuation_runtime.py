@@ -1645,10 +1645,17 @@ def _desktop_stage_baseline_identity(
     # Git baseline delivery protects changes that existed before the handoff.
     # A normal change task in a non-Git project has no baseline to materialize
     # and must remain stageable.
-    baseline_required = bool(
-        files.get("pre_existing_at_handoff")
-        if isinstance(files, Mapping)
-        else False
+    change_task_with_git_snapshot = bool(
+        str(session_context.get("task_mode") or "").strip().casefold() == "change"
+        and (str(repository.get("root") or "").strip() or manifest)
+    )
+    baseline_required = (
+        change_task_with_git_snapshot
+        or bool(
+            files.get("pre_existing_at_handoff")
+            if isinstance(files, Mapping)
+            else False
+        )
     )
     exact_payload = {
         "schema_version": manifest.get("schema_version"),

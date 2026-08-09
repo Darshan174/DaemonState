@@ -254,7 +254,12 @@ def resolve_conversation_state(
             if event_type == "runtime_instruction"
             else extract_user_authored_request(content)
         )
-        user_text = str(raw or "").strip()
+        # Dialogue classification needs a trimmed view, but the checkpoint
+        # contract needs the exact user-authored bytes (including a terminal
+        # newline). Keep both representations so replay never silently rewrites
+        # the source request while deciding what kind of turn it is.
+        request_verbatim = str(raw or "")
+        user_text = request_verbatim.strip()
         if not user_text:
             continue
         # Runtime/bootstrap policy is transport, not dialogue. Keeping it as an
@@ -301,7 +306,16 @@ def resolve_conversation_state(
             if resolved:
                 decisions.append(_decision(transition, resolved))
                 if root_fragment is not None:
-                    fragments.append(_fragment(event, user_text, "select", resolved, pending))
+                    fragments.append(
+                        _fragment(
+                            event,
+                            user_text,
+                            "select",
+                            resolved,
+                            pending,
+                            request_verbatim=request_verbatim,
+                        )
+                    )
             lifecycle = "active" if root_fragment is not None else "unresolved"
             pending = None
         elif _ACCEPT_RE.fullmatch(user_text) or _REJECT_RE.fullmatch(user_text):
@@ -325,7 +339,16 @@ def resolve_conversation_state(
                     (accepted and pending_kind == "proposal")
                     or pending_kind == "binary_question"
                 ):
-                    fragments.append(_fragment(event, user_text, act, resolved, pending))
+                    fragments.append(
+                        _fragment(
+                            event,
+                            user_text,
+                            act,
+                            resolved,
+                            pending,
+                            request_verbatim=request_verbatim,
+                        )
+                    )
             lifecycle = (
                 "user_accepted_unverified"
                 if accepted and pending_kind in {"completion_claim", "result"}
@@ -375,7 +398,16 @@ def resolve_conversation_state(
                 blocks_copy=blocks,
             )
             if root_fragment is not None and resolved:
-                fragments.append(_fragment(event, user_text, "amend", resolved, pending))
+                fragments.append(
+                    _fragment(
+                        event,
+                        user_text,
+                        "amend",
+                        resolved,
+                        pending,
+                        request_verbatim=request_verbatim,
+                    )
+                )
                 lifecycle = "active"
             pending = None
         else:
@@ -386,7 +418,15 @@ def resolve_conversation_state(
                     "non-substantive user turn leaves the active task unchanged", 1.0,
                 )
             else:
-                fragment = _fragment(event, user_text, "new_goal", None, pending, normalized)
+                fragment = _fragment(
+                    event,
+                    user_text,
+                    "new_goal",
+                    None,
+                    pending,
+                    normalized,
+                    request_verbatim=request_verbatim,
+                )
                 extends = bool(
                     root_fragment is not None
                     and request_extends_active_task(
@@ -453,7 +493,10 @@ def _resolved_goal(
         return None
     primary = root.request_verbatim.strip()
     if len(fragments) == 1:
-        composite = primary
+        # With one authoritative request there is nothing to synthesize. The
+        # composite is therefore the original request byte-for-byte, rather
+        # than a normalized rendering of it.
+        composite = root.request_verbatim
     else:
         lines = [primary, "", "## Additional user-authored requirements"]
         for index, fragment in enumerate(fragments[1:], start=1):
@@ -564,11 +607,15 @@ def _fragment(
     resolved: str | None,
     pending: PendingInteraction | None,
     normalized: str | None = None,
+    *,
+    request_verbatim: str | None = None,
 ) -> GoalFragment:
     return GoalFragment(
         event_id=_event_id(event),
         sequence_number=_event_sequence(event),
-        request_verbatim=user_text,
+        request_verbatim=(
+            request_verbatim if request_verbatim is not None else user_text
+        ),
         normalized_request=normalized or user_text,
         act=act,
         resolved_statement=resolved,

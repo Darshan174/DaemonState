@@ -121,6 +121,7 @@ async def sync_latest_session(
         return await sync_latest_local_session(
             session,
             body.workspace_id,
+            access_scope=access_scope,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

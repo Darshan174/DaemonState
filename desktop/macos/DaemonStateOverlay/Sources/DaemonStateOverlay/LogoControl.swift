@@ -184,6 +184,15 @@ final class LogoControl: NSControl {
         return true
     }
 
+    override func accessibilityPerformShowMenu() -> Bool {
+        guard let onContextMenu else { return false }
+        pendingSingleClick?.cancel()
+        pendingSingleClick = nil
+        onGestureCancelled?()
+        onContextMenu(NSPoint(x: bounds.midX, y: bounds.midY))
+        return true
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         NSGraphicsContext.current?.imageInterpolation = .high
@@ -254,9 +263,13 @@ final class LogoControl: NSControl {
         let color: NSColor?
         switch visualState {
         case .loading:
-            color = NSColor(calibratedRed: 0.85, green: 1, blue: 0.41, alpha: 0.88)
+            color = scope == .project
+                ? NSColor(calibratedRed: 0.85, green: 1, blue: 0.41, alpha: 0.88)
+                : NSColor(calibratedWhite: 0, alpha: 0.24)
         case .success:
-            color = NSColor(calibratedRed: 0.46, green: 0.78, blue: 0.46, alpha: 0.9)
+            color = scope == .project
+                ? NSColor(calibratedRed: 0.46, green: 0.78, blue: 0.46, alpha: 0.9)
+                : NSColor(calibratedWhite: 0, alpha: 0.30)
         case .failure:
             color = NSColor(calibratedRed: 0.94, green: 0.22, blue: 0.25, alpha: 0.9)
         case .idle:
@@ -381,7 +394,7 @@ final class LogoControl: NSControl {
             let noun = selectedPromptCount == 1 ? "prompt" : "prompts"
             return "\(selectedPromptCount) \(noun) selected — click to paste; use the dropdown to change selection"
         }
-        return "\(scopeLabel) — click to insert; triple-click to switch scope; drag to move"
+        return "\(scopeLabel) — click to insert; triple-click to switch and insert; drag to move"
     }
 
     private func updateAccessibility() {
@@ -397,7 +410,7 @@ final class LogoControl: NSControl {
             setAccessibilityLabel("Insert \(scopeLabel)")
             setAccessibilityValue(scopeLabel)
             setAccessibilityHelp(
-                "Click once to copy and paste verified context. Triple-click to switch between Session and Workspace Context. Right-click for the same controls."
+                "Click once to copy and paste verified context. Triple-click to switch context and paste it immediately. Right-click for direct context actions."
             )
         }
     }
