@@ -221,6 +221,76 @@ struct ContextValidatorTests {
     }
 
     @Test
+    func sessionSemanticReadinessRejectsDespiteLegacyCopyReady() throws {
+        let handoff = try sessionHandoff(
+            content: "Semantically blocked session context",
+            sha256: sha256("Semantically blocked session context"),
+            copyReady: true,
+            semanticCopyReady: false
+        )
+
+        do {
+            _ = try ContextValidator.verifiedSessionContext(
+                handoff,
+                workspaceID: "workspace-1",
+                activeSession: activeSession,
+                checkpoint: try checkpoint()
+            )
+            Issue.record("Expected semantic readiness to block copying")
+        } catch let error as DaemonStateError {
+            guard case .contextNotCopyReady(scope: .session, _) = error else {
+                Issue.record("Unexpected error: \(error)")
+                return
+            }
+        }
+    }
+
+    @Test
+    func sessionEvidenceReadinessRejectsDespiteLegacyCopyReady() throws {
+        let handoff = try sessionHandoff(
+            content: "Evidence-blocked session context",
+            sha256: sha256("Evidence-blocked session context"),
+            copyReady: true,
+            evidenceBlocksCopy: true
+        )
+
+        do {
+            _ = try ContextValidator.verifiedSessionContext(
+                handoff,
+                workspaceID: "workspace-1",
+                activeSession: activeSession,
+                checkpoint: try checkpoint()
+            )
+            Issue.record("Expected evidence readiness to block copying")
+        } catch let error as DaemonStateError {
+            guard case .contextNotCopyReady(scope: .session, _) = error else {
+                Issue.record("Unexpected error: \(error)")
+                return
+            }
+        }
+    }
+
+    @Test
+    func sessionSoftOverheadAdvisoryRemainsCopyReady() throws {
+        let content = "Session context above the generated-overhead target"
+        let handoff = try sessionHandoff(
+            content: content,
+            sha256: sha256(content),
+            copyReady: true,
+            generatedOverheadAboveTarget: true
+        )
+
+        let verified = try ContextValidator.verifiedSessionContext(
+            handoff,
+            workspaceID: "workspace-1",
+            activeSession: activeSession,
+            checkpoint: try checkpoint()
+        )
+
+        #expect(verified.content == content)
+    }
+
+    @Test
     func sessionSHA256MismatchIsRejected() throws {
         let handoff = try sessionHandoff(
             content: "Tampered session context",
@@ -355,6 +425,22 @@ struct ContextValidatorTests {
     }
 
     @Test
+    func historicalCheckpointAtExactTipRemainsUsable() throws {
+        let historical = try checkpoint(currentnessState: "historical")
+
+        #expect(ContextValidator.isCurrentSessionTip(historical))
+        try ContextValidator.requireCurrentSessionTip(historical)
+    }
+
+    @Test
+    func unknownOrSupersededCurrentnessStillFailsClosed() throws {
+        for state in ["unknown", "superseded"] {
+            let candidate = try checkpoint(currentnessState: state)
+            #expect(!ContextValidator.isCurrentSessionTip(candidate))
+        }
+    }
+
+    @Test
     func unsupportedCheckpointSchemaStillFailsClosed() throws {
         let candidate = try checkpoint(schemaVersion: "work_checkpoint.v11")
         #expect(!ContextValidator.isCurrentSessionTip(candidate))
@@ -382,7 +468,8 @@ struct ContextValidatorTests {
 
     private func checkpoint(
         schemaVersion: String = "work_checkpoint.v10",
-        boundaryEventID: String? = "event-20"
+        boundaryEventID: String? = "event-20",
+        currentnessState: String = "captured"
     ) throws -> LatestCheckpointEnvelope {
         let eventIdentity = boundaryEventID.map {
             #""event_id": "\#($0)","#
@@ -398,7 +485,7 @@ struct ContextValidatorTests {
               "schema_version": "\(schemaVersion)",
               "capture_status": "complete",
               "projection": {"valid": true},
-              "currentness": {"state": "captured"},
+              "currentness": {"state": "\(currentnessState)"},
               "boundary": {
                 \(eventIdentity)
                 "sequence_number": 20,
@@ -418,11 +505,16 @@ struct ContextValidatorTests {
         content: String,
         sha256: String,
         copyReady: Bool,
+        semanticCopyReady: Bool? = nil,
+        evidenceBlocksCopy: Bool = false,
+        generatedOverheadAboveTarget: Bool = false,
         boundaryEventID: String = "event-20",
         sessionTipSequence: Int = 20,
         hasNewerEvents: Bool = false
     ) throws -> SessionHandoffEnvelope {
-        try decode(
+        let semanticReady = semanticCopyReady ?? copyReady
+        let budgetStatus = generatedOverheadAboveTarget ? "above_target" : "within_target"
+        return try decode(
             SessionHandoffEnvelope.self,
             """
             {
@@ -447,6 +539,20 @@ struct ContextValidatorTests {
                     "message": "The session boundary is superseded."
                   }
                 ]
+              },
+              "readiness_dimensions": {
+                "semantic_readiness": {
+                  "copy_ready": \(semanticReady)
+                },
+                "evidence_access": {
+                  "blocks_copy": \(evidenceBlocksCopy)
+                },
+                "budget_fit": {
+                  "efficiency_target": {
+                    "status": "\(budgetStatus)",
+                    "blocking": false
+                  }
+                }
               }
             }
             """

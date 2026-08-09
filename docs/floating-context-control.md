@@ -13,14 +13,29 @@ artifacts; Session Context does not embed the Project Context payload.
 | Gesture | Behavior |
 |---|---|
 | Single click | Prepares and verifies the selected context, copies it, and pastes it into the editable field that was focused when the gesture began. It never presses Return or submits the prompt. |
-| Triple click | Switches between Session Context and Workspace Context. It does not copy or paste. Session Context is the default on every launch. |
+| Hover, then numbered session click | Unfolds the selected sessions around the control and immediately prepares and pastes that exact Session Context into the focused editor. No second logo click is required. |
+| Triple click | Switches between Session Context and Workspace Context and immediately prepares and pastes the newly chosen context. Session Context is the default on every launch. |
 | Double click | Resolves as one single-click action, never two insertions. |
-| Right click | Provides an accessible alternative for scope and workspace selection, opens the dashboard, or quits the companion. |
+| Right click | Provides direct **Paste Session Context**, **Paste Workspace Context**, and exact-session actions, plus workspace selection, recent error details, dashboard access, and Quit. |
 | Drag | Moves the logo and remembers its position. |
 
 The normal logo is Session Context. A lime halo indicates Workspace Context.
 Transient animation and a small status bubble report preparation, success,
 copy-only fallback, or failure; the bubble disappears when idle.
+
+## Error diagnostics
+
+The control retains the full text of the 20 most recent runtime failures in
+memory. Right-click the logo and choose **Copy Recent Error Details** to copy
+the newest-first diagnostic history, including the operation that failed and
+its timestamp. The status bubble stays concise, but preserves a service request
+ID when one is available.
+
+Every non-successful `POST /api/context/prepare` compilation is also recorded
+by the service with its error class, context mode, workspace identity, error
+code, and the same request ID returned in the response. Invalid client input
+is reported as HTTP 422. Repository-observation or compiler invariant failures
+are server errors and are never mislabeled as invalid input.
 
 For Workspace Context, the control calls `POST /api/context/prepare` in
 `project_snapshot` mode and validates the returned `workspace_foundation.v2`
@@ -39,6 +54,10 @@ The Continue page has a **Floating button** switch beside the activity status:
   workspace, or to show it again if it is already running in the background.
 - Turn it **Off** to remove the logo from the screen. The lightweight companion
   stays running so the same switch can restore it immediately.
+- Session Contexts selected in Execute are durable workspace intent. While the
+  companion is visible, Execute and Continue reconcile its numbered session
+  blades to that saved selection. Direct navigation or a page reload must not
+  clear them; removing the saved selections does.
 
 The switch reports the native companion's confirmed state; it does not pretend
 that the logo changed before macOS acknowledges the request. It is available
@@ -66,7 +85,7 @@ or packaged DaemonState control in:
 
 `System Settings → Privacy & Security → Accessibility`
 
-Then return to the focused chat editor and click the logo again to paste.
+Then return to the focused chat editor and choose the context again to paste.
 
 When exactly one project workspace is available, it is selected automatically.
 With multiple workspaces, right-click the logo and choose one. A workspace can
@@ -96,6 +115,11 @@ The same settings can be supplied as `DAEMONSTATE_WORKSPACE_ID` and
   when needed, and verifies the exact provider, session, checkpoint, boundary,
   `copy_ready` flag, and SHA-256. Missing or ambiguous session identity fails
   closed.
+- Checkpoint age is presentation metadata, not tip identity. A deliberately
+  selected session remains eligible after its boundary is labeled
+  `historical` when that boundary still equals the latest observed event and
+  the service reports no newer events. `superseded` and unknown boundaries
+  continue to fail closed or trigger recapture.
 - Workspace insertion recompiles Workspace Context from all current evidence
   in the selected workspace, independent of the current lead, and verifies its
   `project_snapshot` scope, `workspace_foundation.v2` artifact, core-section

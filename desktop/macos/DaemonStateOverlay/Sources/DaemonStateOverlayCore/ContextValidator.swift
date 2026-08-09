@@ -18,6 +18,10 @@ enum ContextValidator {
     static let workspaceSchema = "workspace_context.v1"
     static let activitySchema = "now_activity.v1"
     static let linkedRefreshLimit = 8
+    private static let exactTipCurrentnessStates = Set([
+        "captured",
+        "historical",
+    ])
 
     static func activeSession(
         from digest: ContextDigestEnvelope,
@@ -234,10 +238,16 @@ enum ContextValidator {
     }
 
     static func isCurrentSessionTip(_ checkpoint: LatestCheckpointEnvelope) -> Bool {
+        // `historical` is an age label, not evidence of a newer session event.
+        // Tip exactness comes from the bound event identity and sequence
+        // relationship below. Keep age and boundary relation orthogonal so an
+        // explicitly selected inactive session remains copyable after 24 hours.
         guard checkpoint.schemaVersion == currentCheckpointSchema,
               normalizedKey(checkpoint.captureStatus) == "complete",
               checkpoint.projection?.valid == true,
-              normalizedKey(checkpoint.currentness?.state) == "captured",
+              exactTipCurrentnessStates.contains(
+                  normalizedKey(checkpoint.currentness?.state)
+              ),
               visible(checkpoint.boundary?.eventID) != nil,
               checkpoint.boundary?.hasNewerEvents == false,
               let sequence = checkpoint.boundary?.sequenceNumber,
@@ -335,7 +345,19 @@ enum ContextValidator {
                 "handoff.quality_report.copy_ready is missing"
             )
         }
-        guard copyReady else {
+        guard let semanticCopyReady = handoff.readinessDimensions?
+            .semanticReadiness?.copyReady else {
+            throw DaemonStateError.invalidPayload(
+                "handoff.readiness_dimensions.semantic_readiness.copy_ready is missing"
+            )
+        }
+        guard let evidenceBlocksCopy = handoff.readinessDimensions?
+            .evidenceAccess?.blocksCopy else {
+            throw DaemonStateError.invalidPayload(
+                "handoff.readiness_dimensions.evidence_access.blocks_copy is missing"
+            )
+        }
+        guard copyReady, semanticCopyReady, !evidenceBlocksCopy else {
             let issues = handoff.qualityReport?.blockingIssues
                 ?? handoff.qualityReport?.issues?.filter {
                     normalizedKey($0.severity) == "blocking"

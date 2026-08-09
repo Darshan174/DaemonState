@@ -24,8 +24,26 @@ from app.services.desktop_overlay import (
     STATE_SCHEMA,
     DesktopOverlayError,
     DesktopOverlayManager,
+    DesktopOverlaySelectedSession,
     DesktopOverlayStatus,
 )
+
+
+_MISSING = object()
+
+
+def _selected_session(
+    provider: str = "codex",
+    session_id: str = "session-one",
+    title: str = "Session one",
+    ordinal: int = 1,
+) -> dict[str, str | int]:
+    return {
+        "provider": provider,
+        "session_id": session_id,
+        "title": title,
+        "ordinal": ordinal,
+    }
 
 
 def _manager(tmp_path: Path, monkeypatch) -> DesktopOverlayManager:
@@ -57,27 +75,26 @@ def _write_state(
     token: str = "test-control-token-1234567890",
     visible: bool = True,
     workspace_id: UUID | None = None,
+    selected_sessions: object = _MISSING,
 ) -> None:
+    payload = {
+        "schema_version": STATE_SCHEMA,
+        "pid": pid,
+        "control_token": token,
+        "visible": visible,
+        "workspace_id": str(workspace_id) if workspace_id else None,
+    }
+    if selected_sessions is not _MISSING:
+        payload["selected_sessions"] = selected_sessions
     manager.state_path.write_text(
-        json.dumps(
-            {
-                "schema_version": STATE_SCHEMA,
-                "pid": pid,
-                "control_token": token,
-                "visible": visible,
-                "workspace_id": str(workspace_id) if workspace_id else None,
-            }
-        ),
+        json.dumps(payload),
         encoding="utf-8",
     )
     manager.state_path.chmod(0o600)
 
 
 def _verified_command(token: str = "test-control-token-1234567890") -> str:
-    return (
-        "/tmp/DaemonStateOverlay "
-        f"--control-token {token} --workspace-id ignored"
-    )
+    return f"/tmp/DaemonStateOverlay --control-token {token} --workspace-id ignored"
 
 
 def test_status_reports_platform_unavailable(tmp_path: Path, monkeypatch) -> None:
@@ -124,8 +141,61 @@ def test_status_accepts_only_token_bound_overlay_process(
     assert status.running is True
     assert status.visible is True
     assert status.workspace_id == str(workspace_id)
+    assert status.selected_sessions == ()
     assert status.code == "overlay_visible"
     assert "control_token" not in status.to_dict()
+
+
+def test_status_decodes_and_canonicalizes_selected_sessions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    workspace_id = uuid4()
+    _write_state(
+        manager,
+        workspace_id=workspace_id,
+        selected_sessions=[
+            _selected_session(
+                provider=" OPENCODE ",
+                session_id=" session-two ",
+                title=" Session two ",
+                ordinal=2,
+            ),
+            _selected_session(),
+        ],
+    )
+    monkeypatch.setattr(manager, "_pid_command", lambda _pid: _verified_command())
+
+    status = manager.status()
+
+    assert status.to_dict()["selected_sessions"] == [
+        _selected_session(),
+        _selected_session(
+            provider="opencode",
+            session_id="session-two",
+            title="Session two",
+            ordinal=2,
+        ),
+    ]
+
+
+def test_status_rejects_invalid_native_selected_sessions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    duplicate = _selected_session()
+    _write_state(
+        manager,
+        selected_sessions=[duplicate, duplicate],
+    )
+    monkeypatch.setattr(manager, "_pid_command", lambda _pid: _verified_command())
+
+    with pytest.raises(DesktopOverlayError) as error:
+        manager.status()
+
+    assert error.value.code == "overlay_state_invalid"
 
 
 def test_status_reports_missing_swift_toolchain(
@@ -261,6 +331,169 @@ def test_hiding_running_overlay_writes_token_bound_control_then_signals(
     assert status.code == "overlay_hidden"
 
 
+def test_omitted_selection_preserves_same_workspace_native_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    workspace_id = uuid4()
+    selected_sessions = [_selected_session()]
+    _write_state(
+        manager,
+        visible=True,
+        workspace_id=workspace_id,
+        selected_sessions=selected_sessions,
+    )
+    monkeypatch.setattr(manager, "_pid_command", lambda _pid: _verified_command())
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        "app.services.desktop_overlay.os.kill",
+        lambda pid, sig: signals.append((pid, sig)),
+    )
+
+    status = manager.set_visible(True, workspace_id=workspace_id)
+
+    assert signals == []
+    assert not manager.control_path.exists()
+    assert status.to_dict()["selected_sessions"] == selected_sessions
+
+
+def test_explicit_empty_selection_clears_same_workspace_native_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    workspace_id = uuid4()
+    token = "test-control-token-1234567890"
+    _write_state(
+        manager,
+        token=token,
+        visible=True,
+        workspace_id=workspace_id,
+        selected_sessions=[_selected_session()],
+    )
+    monkeypatch.setattr(
+        manager,
+        "_pid_command",
+        lambda _pid: _verified_command(token),
+    )
+
+    def apply_control(pid: int, _sig: int) -> None:
+        control = json.loads(manager.control_path.read_text(encoding="utf-8"))
+        _write_state(
+            manager,
+            pid=pid,
+            token=token,
+            visible=control["visible"],
+            workspace_id=workspace_id,
+            selected_sessions=control["selected_sessions"],
+        )
+
+    monkeypatch.setattr("app.services.desktop_overlay.os.kill", apply_control)
+
+    status = manager.set_visible(
+        True,
+        workspace_id=workspace_id,
+        selected_sessions=[],
+    )
+
+    control = json.loads(manager.control_path.read_text(encoding="utf-8"))
+    assert control["selected_sessions"] == []
+    assert status.selected_sessions == ()
+
+
+def test_workspace_retarget_clears_omitted_old_workspace_sessions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    old_workspace_id = uuid4()
+    new_workspace_id = uuid4()
+    token = "test-control-token-1234567890"
+    _write_state(
+        manager,
+        token=token,
+        visible=True,
+        workspace_id=old_workspace_id,
+        selected_sessions=[_selected_session()],
+    )
+    monkeypatch.setattr(
+        manager,
+        "_pid_command",
+        lambda _pid: _verified_command(token),
+    )
+
+    def apply_control(pid: int, _sig: int) -> None:
+        control = json.loads(manager.control_path.read_text(encoding="utf-8"))
+        _write_state(
+            manager,
+            pid=pid,
+            token=token,
+            visible=control["visible"],
+            workspace_id=new_workspace_id,
+            selected_sessions=control["selected_sessions"],
+        )
+
+    monkeypatch.setattr("app.services.desktop_overlay.os.kill", apply_control)
+
+    status = manager.set_visible(True, workspace_id=new_workspace_id)
+
+    control = json.loads(manager.control_path.read_text(encoding="utf-8"))
+    assert control["workspace_id"] == str(new_workspace_id)
+    assert control["selected_sessions"] == []
+    assert status.workspace_id == str(new_workspace_id)
+    assert status.selected_sessions == ()
+
+
+def test_control_wait_requires_selected_session_confirmation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    manager = _manager(tmp_path, monkeypatch)
+    workspace_id = uuid4()
+    token = "test-control-token-1234567890"
+    original = [_selected_session()]
+    _write_state(
+        manager,
+        token=token,
+        visible=True,
+        workspace_id=workspace_id,
+        selected_sessions=original,
+    )
+    monkeypatch.setattr(
+        manager,
+        "_pid_command",
+        lambda _pid: _verified_command(token),
+    )
+    monkeypatch.setattr(
+        "app.services.desktop_overlay.CONTROL_TIMEOUT_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(
+        "app.services.desktop_overlay.POLL_INTERVAL_SECONDS",
+        0,
+    )
+    monkeypatch.setattr(
+        "app.services.desktop_overlay.os.kill",
+        lambda _pid, _sig: None,
+    )
+
+    with pytest.raises(DesktopOverlayError) as error:
+        manager.set_visible(
+            True,
+            workspace_id=workspace_id,
+            selected_sessions=[
+                _selected_session(
+                    provider="claude",
+                    session_id="session-two",
+                    title="Session two",
+                )
+            ],
+        )
+
+    assert error.value.code == "overlay_control_timeout"
+
+
 def test_show_launches_only_fixed_repository_command(
     tmp_path: Path,
     monkeypatch,
@@ -317,9 +550,7 @@ def test_show_launches_only_fixed_repository_command(
     ]
     assert options["cwd"] == str(manager.launcher_path.parents[1])
     assert options["start_new_session"] is True
-    assert options["env"]["DAEMONSTATE_OVERLAY_RUNTIME_DIR"] == str(
-        manager.state_path.parent
-    )
+    assert options["env"]["DAEMONSTATE_OVERLAY_RUNTIME_DIR"] == str(manager.state_path.parent)
 
 
 def test_show_adopts_incumbent_after_native_instance_conflict(
@@ -407,7 +638,14 @@ def test_dead_state_is_removed_without_signalling_old_pid(
 
 class _FakeOverlayManager:
     def __init__(self) -> None:
-        self.updates: list[tuple[bool, UUID | None, str]] = []
+        self.updates: list[
+            tuple[
+                bool,
+                UUID | None,
+                str,
+                tuple[DesktopOverlaySelectedSession, ...] | None,
+            ]
+        ] = []
         self.status_calls = 0
 
     def status(self) -> DesktopOverlayStatus:
@@ -428,14 +666,16 @@ class _FakeOverlayManager:
         *,
         workspace_id: UUID | None,
         api_url: str,
+        selected_sessions: tuple[DesktopOverlaySelectedSession, ...] | None,
     ) -> DesktopOverlayStatus:
-        self.updates.append((visible, workspace_id, api_url))
+        self.updates.append((visible, workspace_id, api_url, selected_sessions))
         return DesktopOverlayStatus(
             supported=True,
             available=True,
             running=True,
             visible=visible,
             workspace_id=str(workspace_id) if workspace_id else None,
+            selected_sessions=selected_sessions or (),
             code="overlay_visible" if visible else "overlay_hidden",
             message="updated",
         )
@@ -463,6 +703,7 @@ async def test_local_status_endpoint_returns_sanitized_state(
         "running": False,
         "visible": False,
         "workspace_id": None,
+        "selected_sessions": [],
         "code": "overlay_stopped",
         "message": "The floating context control is off.",
     }
@@ -524,7 +765,192 @@ async def test_local_update_passes_only_validated_workspace(
     assert response.json()["visible"] is True
     assert response.json()["workspace_id"] == str(workspace.id)
     assert manager.updates == [
-        (True, workspace.id, "http://127.0.0.1:80/api"),
+        (True, workspace.id, "http://127.0.0.1:80/api", None),
+    ]
+
+
+async def test_update_canonicalizes_and_proves_selected_workspace_sessions(
+    client,
+    db_session,
+    monkeypatch,
+) -> None:
+    workspace = Workspace(
+        id=uuid4(),
+        name="Overlay project",
+        slug=f"overlay-{uuid4().hex}",
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    manager = _FakeOverlayManager()
+    monkeypatch.setattr(
+        "app.api.desktop_overlay.desktop_overlay_manager",
+        manager,
+    )
+
+    async def library(*_args, **_kwargs):
+        return {
+            "sessions": [
+                {
+                    "connector_type": "codex",
+                    "session_id": "session-one",
+                    "title": "Canonical Codex title",
+                },
+                {
+                    "connector_type": "opencode",
+                    "session_id": "session-two",
+                    "title": "Canonical OpenCode title",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(
+        "app.api.desktop_overlay.build_session_library",
+        library,
+    )
+
+    response = await client.put(
+        "/api/desktop/overlay",
+        json={
+            "visible": True,
+            "workspace_id": str(workspace.id),
+            "selected_sessions": [
+                _selected_session(
+                    provider=" OPENCODE ",
+                    session_id=" session-two ",
+                    title="Forged display title",
+                    ordinal=2,
+                ),
+                _selected_session(
+                    provider=" CODEX ",
+                    session_id=" session-one ",
+                    title="Another forged title",
+                    ordinal=1,
+                ),
+            ],
+        },
+    )
+
+    expected = (
+        DesktopOverlaySelectedSession(
+            provider="codex",
+            session_id="session-one",
+            title="Canonical Codex title",
+            ordinal=1,
+        ),
+        DesktopOverlaySelectedSession(
+            provider="opencode",
+            session_id="session-two",
+            title="Canonical OpenCode title",
+            ordinal=2,
+        ),
+    )
+    assert response.status_code == 200
+    assert response.json()["selected_sessions"] == [selected.to_dict() for selected in expected]
+    assert manager.updates == [
+        (
+            True,
+            workspace.id,
+            "http://127.0.0.1:80/api",
+            expected,
+        )
+    ]
+
+
+async def test_update_rejects_selected_session_absent_from_workspace_library(
+    client,
+    db_session,
+    monkeypatch,
+) -> None:
+    workspace = Workspace(
+        id=uuid4(),
+        name="Overlay project",
+        slug=f"overlay-{uuid4().hex}",
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    manager = _FakeOverlayManager()
+    monkeypatch.setattr(
+        "app.api.desktop_overlay.desktop_overlay_manager",
+        manager,
+    )
+
+    async def empty_library(*_args, **_kwargs):
+        return {"sessions": []}
+
+    monkeypatch.setattr(
+        "app.api.desktop_overlay.build_session_library",
+        empty_library,
+    )
+
+    response = await client.put(
+        "/api/desktop/overlay",
+        json={
+            "visible": True,
+            "workspace_id": str(workspace.id),
+            "selected_sessions": [_selected_session()],
+        },
+    )
+
+    assert response.status_code == 422
+    assert manager.updates == []
+
+
+@pytest.mark.parametrize(
+    "selected_sessions",
+    [
+        None,
+        [_selected_session(session_id=f"session-{index}", ordinal=index) for index in range(1, 5)],
+        [_selected_session(provider="unsupported")],
+        [_selected_session(session_id="   ")],
+        [_selected_session(title="x" * 241)],
+        [_selected_session(), _selected_session(ordinal=2)],
+        [
+            _selected_session(),
+            _selected_session(
+                provider="claude",
+                session_id="session-two",
+                title="Session two",
+                ordinal=1,
+            ),
+        ],
+        [_selected_session(ordinal=True)],
+        [_selected_session(ordinal=4)],
+    ],
+)
+async def test_update_rejects_invalid_selected_session_contract(
+    client,
+    selected_sessions,
+) -> None:
+    response = await client.put(
+        "/api/desktop/overlay",
+        json={
+            "visible": False,
+            "workspace_id": str(uuid4()),
+            "selected_sessions": selected_sessions,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+async def test_explicit_empty_update_clears_without_workspace_lookup(
+    client,
+    monkeypatch,
+) -> None:
+    manager = _FakeOverlayManager()
+    monkeypatch.setattr(
+        "app.api.desktop_overlay.desktop_overlay_manager",
+        manager,
+    )
+
+    response = await client.put(
+        "/api/desktop/overlay",
+        json={"visible": False, "selected_sessions": []},
+    )
+
+    assert response.status_code == 200
+    assert manager.updates == [
+        (False, None, "http://127.0.0.1:80/api", ()),
     ]
 
 
@@ -545,7 +971,7 @@ async def test_hiding_ignores_workspace_input_and_does_not_require_lookup(
 
     assert response.status_code == 200
     assert manager.updates == [
-        (False, None, "http://127.0.0.1:80/api"),
+        (False, None, "http://127.0.0.1:80/api", None),
     ]
 
 

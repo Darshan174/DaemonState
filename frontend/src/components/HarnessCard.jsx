@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import {
   ArrowRight,
   ChevronRight,
@@ -182,6 +181,8 @@ export function HarnessContinuationCard({
   contextReady = true,
   compactionCount = 0,
   minimumCompactions = 2,
+  sessionOrdinal = null,
+  sessionTitle = "",
   onHover,
   onContinue,
 }) {
@@ -194,39 +195,6 @@ export function HarnessContinuationCard({
   const taskBlocked = ready && !taskReady && !taskPending;
   const contextBlocked = !contextReady;
   const disabled = !ready || !taskReady || contextBlocked || workflowPending;
-  const controlsDisabled = disabled || pending;
-  const modelOptions = continuationModelOptions(provider);
-  const defaultModel = (
-    modelOptions.find((model) => model.default)
-    || modelOptions[0]
-    || null
-  );
-  const [selectedModelId, setSelectedModelId] = useState(defaultModel?.id || "");
-  const modelCapabilityKey = modelOptions
-    .map((model) => `${model.id}:${model.reasoning_efforts.join(",")}:${model.default_reasoning_effort}`)
-    .join("|");
-  useEffect(() => {
-    setSelectedModelId((current) => (
-      modelOptions.some((model) => model.id === current)
-        ? current
-        : defaultModel?.id || ""
-    ));
-  }, [modelCapabilityKey, defaultModel?.id]);
-  const selectedModel = (
-    modelOptions.find((model) => model.id === selectedModelId)
-    || defaultModel
-  );
-  const effortOptions = selectedModel?.reasoning_efforts || [];
-  const fallbackEffort = (
-    selectedModel?.default_reasoning_effort
-    || (effortOptions.includes("medium") ? "medium" : effortOptions[0])
-    || ""
-  );
-  const [selectedEffort, setSelectedEffort] = useState(fallbackEffort);
-  const normalizedEffort = effortOptions.includes(selectedEffort)
-    ? selectedEffort
-    : fallbackEffort;
-  const controlsVisible = type === "codex" && modelOptions.length > 0;
   const statusLabel = continuationProviderStatusLabel({
     pending,
     ready,
@@ -273,22 +241,8 @@ export function HarnessContinuationCard({
   const baseRotation = HARNESS_FAN_ROTATIONS[index] || 0;
   const cardNumber = String(index + 1).padStart(2, "0");
   const accent = ready ? meta.accent : "#a0a098";
-  const handleModelChange = (event) => {
-    const nextModel = modelOptions.find((model) => model.id === event.target.value);
-    setSelectedModelId(event.target.value);
-    const nextEfforts = nextModel?.reasoning_efforts || [];
-    setSelectedEffort(
-      nextModel?.default_reasoning_effort
-      || (nextEfforts.includes("medium") ? "medium" : nextEfforts[0])
-      || "",
-    );
-  };
   const handleContinue = () => {
-    const request = {
-      ...(selectedModel?.id ? { provider_model: selectedModel.id } : {}),
-      ...(normalizedEffort ? { provider_effort: normalizedEffort } : {}),
-    };
-    onContinue(type, request);
+    onContinue(type);
   };
 
   return (
@@ -300,6 +254,7 @@ export function HarnessContinuationCard({
       data-task-ready={taskReady ? "true" : "false"}
       data-context-ready={contextReady ? "true" : "false"}
       data-compaction-count={normalizedCompactionCount}
+      data-selected-session-ordinal={sessionOrdinal || undefined}
       data-provider-pending={pending ? "true" : "false"}
       data-desktop-open-requested={handoffRequested ? "true" : "false"}
       aria-disabled={disabled ? "true" : undefined}
@@ -351,6 +306,17 @@ export function HarnessContinuationCard({
             </span>
           </span>
           <span className="flex flex-col items-end gap-1.5">
+            {sessionOrdinal ? (
+              <span
+                title={sessionTitle ? `Selected session ${sessionOrdinal}: ${sessionTitle}` : `Selected session ${sessionOrdinal}`}
+                className="inline-flex min-h-7 items-center gap-1.5 rounded-full border border-[#171713]/15 bg-white/80 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.08em] text-[#171713] shadow-[0_5px_16px_rgba(23,23,19,0.10)] backdrop-blur-md dark:border-white/15 dark:bg-black/35 dark:text-white"
+              >
+                <span className="grid h-4 min-w-4 place-items-center rounded-full bg-[#171713] px-0.5 font-mono text-[8px] text-white dark:bg-[#d9ff68] dark:text-[#171713]">
+                  {sessionOrdinal}
+                </span>
+                Session
+              </span>
+            ) : null}
             {contextBlocked ? (
               <span
                 title={`${normalizedCompactionCount} of ${normalizedMinimumCompactions} provider compactions detected`}
@@ -391,12 +357,6 @@ export function HarnessContinuationCard({
               Next: {provider.action}
             </span>
           ) : null}
-          {controlsVisible ? (
-            <span
-              aria-hidden="true"
-              className="h-[6.4rem]"
-            />
-          ) : null}
           <span
             className={`mt-3 flex min-h-11 items-center justify-between border-t pt-2.5 text-xs font-black uppercase tracking-[0.12em] ${
               taskBlocked
@@ -434,46 +394,6 @@ export function HarnessContinuationCard({
           {cardNumber}
         </span>
       </button>
-
-      {controlsVisible ? (
-        <div className="absolute inset-x-4 bottom-[3.9rem] z-20 grid grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)] gap-x-2 gap-y-1 sm:inset-x-5">
-          <label className="min-w-0">
-            <span className={`mb-1 block text-xs font-black uppercase tracking-[0.12em] ${ready ? "text-[#68685f] dark:text-[#b8b8af]" : "text-[#68685f] dark:text-white/65"}`}>
-              Model
-            </span>
-            <select
-              aria-label="Codex model"
-              value={selectedModel?.id || ""}
-              disabled={controlsDisabled}
-              onChange={handleModelChange}
-              className="h-11 w-full min-w-0 rounded-xl border border-[#cacac0] bg-white/90 px-2 text-xs font-bold text-[#292922] outline-none transition-colors focus:border-[#10a37f] focus:ring-2 focus:ring-[#10a37f]/20 disabled:cursor-not-allowed disabled:opacity-55 dark:border-[#41413a] dark:bg-[#20201d]/95 dark:text-white"
-            >
-              {modelOptions.map((model) => (
-                <option key={model.id} value={model.id}>{model.label}</option>
-              ))}
-            </select>
-          </label>
-          <label className="min-w-0">
-            <span className={`mb-1 block text-xs font-black uppercase tracking-[0.12em] ${ready ? "text-[#68685f] dark:text-[#b8b8af]" : "text-[#68685f] dark:text-white/65"}`}>
-              Effort
-            </span>
-            <select
-              aria-label="Codex reasoning effort"
-              value={normalizedEffort}
-              disabled={controlsDisabled || !effortOptions.length}
-              onChange={(event) => setSelectedEffort(event.target.value)}
-              className="h-11 w-full min-w-0 rounded-xl border border-[#cacac0] bg-white/90 px-2 text-xs font-bold capitalize text-[#292922] outline-none transition-colors focus:border-[#10a37f] focus:ring-2 focus:ring-[#10a37f]/20 disabled:cursor-not-allowed disabled:opacity-55 dark:border-[#41413a] dark:bg-[#20201d]/95 dark:text-white"
-            >
-              {effortOptions.map((effort) => (
-                <option key={effort} value={effort}>{titleCase(effort)}</option>
-              ))}
-            </select>
-          </label>
-          <span className={`col-span-2 text-[10px] font-bold leading-4 ${ready ? "text-[#77776e] dark:text-[#9d9d95]" : "text-[#77776e] dark:text-white/55"}`}>
-            Requested settings — review them in Codex Desktop before sending.
-          </span>
-        </div>
-      ) : null}
     </HarnessCardFrame>
   );
 }
@@ -509,38 +429,4 @@ function continuationProviderStatusLabel({
     return "Not installed";
   }
   return "Unavailable";
-}
-
-
-function continuationModelOptions(provider) {
-  const supplied = Array.isArray(provider.models) ? provider.models : [];
-  return supplied
-    .map((model) => {
-      const id = String(model?.id || "").trim();
-      if (!id) return null;
-      const efforts = Array.isArray(model.reasoning_efforts)
-        ? model.reasoning_efforts
-          .map((effort) => String(effort || "").trim().toLowerCase())
-          .filter(Boolean)
-        : [];
-      const defaultEffort = String(
-        model.default_reasoning_effort || "",
-      ).trim().toLowerCase();
-      return {
-        id,
-        label: String(model.label || id).trim(),
-        default: model.default === true,
-        reasoning_efforts: efforts,
-        default_reasoning_effort: efforts.includes(defaultEffort)
-          ? defaultEffort
-          : (efforts.includes("medium") ? "medium" : efforts[0] || ""),
-      };
-    })
-    .filter(Boolean);
-}
-
-
-function titleCase(value) {
-  const text = String(value || "").trim();
-  return text ? `${text.charAt(0).toUpperCase()}${text.slice(1)}` : "";
 }

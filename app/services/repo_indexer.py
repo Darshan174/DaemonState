@@ -2949,7 +2949,20 @@ def _git_state(root: Path) -> dict[str, Any]:
             "untracked_files": [],
             "recent_commits": [],
         }
-    status_lines = [line for line in _git(root, "status", "--short").splitlines() if line.strip()]
+    # Git's default short status collapses an untracked directory into one
+    # trailing-slash entry. The repository model is file-based, so asking Git
+    # for every untracked path prevents a directory from being misclassified
+    # as an unreadable changed file.
+    status_lines = [
+        line
+        for line in _git(
+            root,
+            "status",
+            "--short",
+            "--untracked-files=all",
+        ).splitlines()
+        if line.strip()
+    ]
     changed_files = []
     untracked_files = []
     for line in status_lines:
@@ -3074,6 +3087,20 @@ def _semantic_change_delta(
         previous_raw=previous_raw,
         current_raw=current_raw,
     )
+    if parser_coverage == "not_observed":
+        # A path can disappear or change type between `git status` and the
+        # bounded byte read. Preserve that uncertainty as a valid, explicit
+        # non-observation rather than emitting the impossible combination
+        # `partial + not_observed`, which the foundation schema must reject.
+        return {
+            "observer": "head_vs_worktree_syntax.v1",
+            "status": "not_observed",
+            "parser_coverage": "not_observed",
+            "parser_languages": [],
+            "reason": "repository_path_unavailable_during_scan",
+            "items_truncated": False,
+            "complete": False,
+        }
     previous_symbols = _unique_semantic_symbols(previous, previous_raw)
     current_symbols = _unique_semantic_symbols(current, current_raw)
     previous_ids = set(previous_symbols)

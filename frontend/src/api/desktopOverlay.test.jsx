@@ -90,4 +90,45 @@ describe("desktop overlay hooks", () => {
       ["desktop-overlay", "workspace-2"],
     )).toEqual(serverStatus);
   });
+
+  it("sends an explicit ordered session selection when the Continue flow supplies one", async () => {
+    api.put.mockResolvedValue({
+      available: true,
+      visible: true,
+      workspace_id: "workspace-1",
+      selected_sessions: [{
+        provider: "codex",
+        session_id: "session-1",
+        title: "Release work",
+        ordinal: 1,
+      }],
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false } },
+    });
+    const { result } = renderHook(
+      () => useSetDesktopOverlayVisibility(),
+      { wrapper: queryWrapper(queryClient) },
+    );
+    const selectedSessions = [{
+      provider: "codex",
+      session_id: "session-1",
+      title: "Release work",
+      ordinal: 1,
+    }];
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        visible: true,
+        workspaceId: "workspace-1",
+        selectedSessions,
+      });
+    });
+
+    expect(api.put).toHaveBeenCalledWith("/desktop/overlay", {
+      visible: true,
+      workspace_id: "workspace-1",
+      selected_sessions: selectedSessions,
+    });
+  });
 });

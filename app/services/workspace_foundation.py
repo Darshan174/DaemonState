@@ -236,6 +236,10 @@ class _EvidenceRegistry:
         return tuple(sorted(self._items.values(), key=lambda item: item.id))
 
 
+class RepositoryObservationValidationError(RuntimeError):
+    """A repository scanner emitted data that violates the foundation schema."""
+
+
 class WorkspaceFoundationCompiler:
     """Compile a typed, objective-independent workspace foundation.
 
@@ -2592,11 +2596,16 @@ def _repository_state(
                 "the evidence digest binds the repository status snapshot."
             ),
         )
-        semantic_delta = (
-            RepositorySemanticDelta.model_validate(raw["semantic_delta"])
-            if isinstance(raw.get("semantic_delta"), dict)
-            else None
-        )
+        try:
+            semantic_delta = (
+                RepositorySemanticDelta.model_validate(raw["semantic_delta"])
+                if isinstance(raw.get("semantic_delta"), dict)
+                else None
+            )
+        except ValueError as exc:
+            raise RepositoryObservationValidationError(
+                f"repository semantic delta for {path!r} is invalid: {exc}"
+            ) from exc
         semantic_ref = (
             registry.add(
                 tier=EvidenceTier.CODE_OBSERVED,
@@ -3909,6 +3918,7 @@ def _timestamp(value: str) -> datetime:
 
 
 __all__ = [
+    "RepositoryObservationValidationError",
     "WORKSPACE_FOUNDATION_COMPILER_VERSION",
     "WorkspaceFoundationCompiler",
     "compile_workspace_foundation",

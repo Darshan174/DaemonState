@@ -2,10 +2,13 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   MAX_EXECUTE_SESSION_CONTEXTS,
+  desktopOverlaySessionSelections,
   normalizeExecuteSessionContexts,
+  readExecuteActiveSessionIdentities,
   readExecuteSessionContexts,
   resolveExecuteSessionContexts,
   writeExecuteSessionContexts,
+  writeExecuteActiveSessionIdentities,
 } from "./executeSessionSelection";
 
 
@@ -96,5 +99,64 @@ describe("Execute session-context selection", () => {
     ]);
 
     expect(selected.compactionCount).toBe(0);
+  });
+
+  it("maps the ordered selection to the bounded native overlay contract", () => {
+    const selected = desktopOverlaySessionSelections([
+      session("one", { connector_type: "claude-code", title: "Architecture" }),
+      session("two", { connector_type: "open_code", title: "Terminal work" }),
+      session("three", { title: "Implementation" }),
+      session("four"),
+    ]);
+
+    expect(selected).toEqual([
+      {
+        provider: "claude",
+        session_id: "session-one",
+        title: "Architecture",
+        ordinal: 1,
+      },
+      {
+        provider: "opencode",
+        session_id: "session-two",
+        title: "Terminal work",
+        ordinal: 2,
+      },
+      {
+        provider: "codex",
+        session_id: "session-three",
+        title: "Implementation",
+        ordinal: 3,
+      },
+    ]);
+  });
+
+  it("persists active numbered choices per workspace and provider", () => {
+    writeExecuteActiveSessionIdentities("workspace-one", {
+      codex: "codex:session-two",
+      "claude-code": "claude:session-three",
+      unknown: "unknown:session-four",
+      opencode: "codex:wrong-provider",
+    });
+
+    expect(readExecuteActiveSessionIdentities("workspace-one")).toEqual({
+      codex: "codex:session-two",
+      claude: "claude:session-three",
+    });
+    expect(readExecuteActiveSessionIdentities("workspace-two")).toEqual({});
+  });
+
+  it("drops an active choice when its selected session is removed", () => {
+    writeExecuteSessionContexts("workspace-one", [
+      session("one"),
+      session("two"),
+    ]);
+    writeExecuteActiveSessionIdentities("workspace-one", {
+      codex: "codex:session-two",
+    });
+
+    writeExecuteSessionContexts("workspace-one", [session("one")]);
+
+    expect(readExecuteActiveSessionIdentities("workspace-one")).toEqual({});
   });
 });

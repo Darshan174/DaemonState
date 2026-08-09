@@ -7,6 +7,7 @@ final class PromptDropdownController: NSObject, NSPopoverDelegate {
     var onSave: ((String) async throws -> PromptSnippet)?
     var onToggle: ((PromptSnippet) -> Void)?
     var selectedPromptIDs: (() -> Set<String>)?
+    var onError: ((String, Error) -> Void)?
 
     private let popover = NSPopover()
     private let contentController = PromptDropdownViewController()
@@ -114,6 +115,7 @@ final class PromptDropdownController: NSObject, NSPopoverDelegate {
                 )
             } catch {
                 guard !Task.isCancelled else { return }
+                self.onError?("Refresh Prompt Library", error)
                 self.contentController.showListError(
                     self.conciseMessage(error)
                 )
@@ -146,6 +148,7 @@ final class PromptDropdownController: NSObject, NSPopoverDelegate {
                 )
             } catch {
                 guard !Task.isCancelled else { return }
+                self.onError?("Save Prompt Snippet", error)
                 self.contentController.showSaveError(
                     self.conciseMessage(error)
                 )

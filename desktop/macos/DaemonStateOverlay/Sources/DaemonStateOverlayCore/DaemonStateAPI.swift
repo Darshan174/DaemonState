@@ -177,6 +177,40 @@ public final class DaemonStateAPI: @unchecked Sendable {
         }
     }
 
+    /// Fetches Session Context for an explicitly selected AI session.
+    ///
+    /// Unlike ``fetchContext(scope:workspaceID:repoPath:)`` with a session
+    /// scope, this method deliberately does not consult the workspace digest
+    /// or replace the requested identity with the currently active session.
+    public func fetchSessionContext(
+        workspaceID: String,
+        provider: String,
+        sessionID: String
+    ) async throws -> VerifiedContext {
+        let workspaceID = try normalizedWorkspaceID(workspaceID)
+        let provider = ContextValidator.normalizeProvider(provider)
+        let sessionID = sessionID.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !provider.isEmpty else {
+            throw DaemonStateError.invalidPayload("provider is empty")
+        }
+        guard ["codex", "claude", "opencode"].contains(provider) else {
+            throw DaemonStateError.invalidPayload("provider is unsupported")
+        }
+        guard !sessionID.isEmpty else {
+            throw DaemonStateError.invalidPayload("session_id is empty")
+        }
+        let selectedSession = ActiveSessionIdentity(
+            provider: provider,
+            sessionID: sessionID
+        )
+        return try await fetchVerifiedSessionContext(
+            workspaceID: workspaceID,
+            activeSession: selectedSession
+        )
+    }
+
     private func fetchSessionContext(
         workspaceID: String
     ) async throws -> VerifiedContext {
@@ -217,6 +251,39 @@ public final class DaemonStateAPI: @unchecked Sendable {
             workspaceID: workspaceID,
             activeSession: activeSession
         )
+        return try await fetchVerifiedSessionContextOnce(
+            workspaceID: workspaceID,
+            activeSession: activeSession
+        )
+    }
+
+    private func fetchVerifiedSessionContext(
+        workspaceID: String,
+        activeSession: ActiveSessionIdentity
+    ) async throws -> VerifiedContext {
+        for retryDelay in sessionContextRetryDelays {
+            do {
+                return try await fetchVerifiedSessionContextOnce(
+                    workspaceID: workspaceID,
+                    activeSession: activeSession
+                )
+            } catch {
+                guard Self.isTransientSessionContextError(error) else {
+                    throw error
+                }
+                try await Task.sleep(for: retryDelay)
+            }
+        }
+        return try await fetchVerifiedSessionContextOnce(
+            workspaceID: workspaceID,
+            activeSession: activeSession
+        )
+    }
+
+    private func fetchVerifiedSessionContextOnce(
+        workspaceID: String,
+        activeSession: ActiveSessionIdentity
+    ) async throws -> VerifiedContext {
         try await requireSessionContextEligibility(
             workspaceID: workspaceID,
             activeSession: activeSession
@@ -498,10 +565,15 @@ public final class DaemonStateAPI: @unchecked Sendable {
         }
         guard (200..<300).contains(http.statusCode) else {
             let serviceError = Self.serviceError(from: data)
+            let requestID = serviceError.requestID
+                ?? http.value(forHTTPHeaderField: "X-Request-ID")
             throw DaemonStateError.httpError(
                 statusCode: http.statusCode,
                 code: serviceError.code,
-                message: serviceError.message
+                message: Self.correlatedMessage(
+                    serviceError.message,
+                    requestID: requestID
+                )
             )
         }
         do {
@@ -540,36 +612,81 @@ public final class DaemonStateAPI: @unchecked Sendable {
         return result
     }
 
-    private static func serviceError(from data: Data) -> (code: String?, message: String) {
+    private static func serviceError(
+        from data: Data
+    ) -> (code: String?, message: String, requestID: String?) {
         guard !data.isEmpty,
               let object = try? JSONSerialization.jsonObject(with: data),
               let payload = object as? [String: Any] else {
-            return (nil, "The service returned an unspecified error.")
+            return (nil, "The service returned an unspecified error.", nil)
         }
         if let detail = payload["detail"] as? String, !detail.isEmpty {
-            return (payload["code"] as? String, detail)
+            return (
+                payload["code"] as? String,
+                detail,
+                payload["request_id"] as? String
+            )
         }
         if let detail = payload["detail"] as? [String: Any] {
             let code = detail["code"] as? String
             let message = detail["message"] as? String
                 ?? detail["detail"] as? String
                 ?? "The service rejected the request."
-            return (code, message)
+            return (code, message, detail["request_id"] as? String)
+        }
+        if let details = payload["detail"] as? [[String: Any]], !details.isEmpty {
+            let messages = details.prefix(3).compactMap { detail -> String? in
+                guard let message = detail["msg"] as? String, !message.isEmpty else {
+                    return nil
+                }
+                let location = (detail["loc"] as? [Any])?
+                    .map { String(describing: $0) }
+                    .joined(separator: ".") ?? ""
+                return location.isEmpty ? message : "\(location): \(message)"
+            }
+            return (
+                payload["code"] as? String ?? "validation_error",
+                messages.isEmpty
+                    ? "The service rejected the request."
+                    : messages.joined(separator: " "),
+                payload["request_id"] as? String
+            )
         }
         if let serviceError = payload["error"] as? [String: Any] {
             let code = serviceError["code"] as? String
             let message = serviceError["message"] as? String
                 ?? "The service rejected the request."
-            if let requestID = serviceError["request_id"] as? String,
-               !requestID.isEmpty
-            {
-                return (code, "\(message) Request \(requestID).")
-            }
-            return (code, message)
+            return (code, message, serviceError["request_id"] as? String)
         }
         return (
             payload["code"] as? String,
-            payload["message"] as? String ?? "The service rejected the request."
+            payload["message"] as? String ?? "The service rejected the request.",
+            payload["request_id"] as? String
         )
+    }
+
+    private static func correlatedMessage(
+        _ message: String,
+        requestID rawRequestID: String?
+    ) -> String {
+        guard let requestID = normalizedRequestID(rawRequestID),
+              !message.contains(requestID) else {
+            return message
+        }
+        return "\(message) Request \(requestID)."
+    }
+
+    private static func normalizedRequestID(_ value: String?) -> String? {
+        let requestID = value?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ) ?? ""
+        guard !requestID.isEmpty, requestID.count <= 128 else { return nil }
+        let permitted = CharacterSet(
+            charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+        )
+        guard requestID.unicodeScalars.allSatisfy(permitted.contains) else {
+            return nil
+        }
+        return requestID
     }
 }

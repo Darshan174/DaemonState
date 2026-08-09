@@ -1,6 +1,7 @@
 import pytest
 
 from app.services.session_summary import (
+    build_session_library_summary,
     clean_session_message_text,
     derive_latest_session_topic,
     derive_session_attention_items,
@@ -13,6 +14,7 @@ from app.services.session_summary import (
     is_session_instruction_noise,
     is_substantive_user_request,
     normalize_substantive_user_request,
+    sanitize_session_topics,
 )
 
 
@@ -135,7 +137,7 @@ def test_derive_session_topic_preserves_a_meaningful_provider_title() -> None:
     ) == "Auth setup and callback repair"
 
 
-def test_derive_session_topics_keeps_multiple_user_subjects_and_project_anchor() -> None:
+def test_derive_session_topics_keeps_multiple_user_subjects_without_folder_anchor() -> None:
     content = """
 [USER]
 Plan billing for the Alpha product.
@@ -157,7 +159,6 @@ Now review onboarding for the Beta product.
 
     assert topics == [
         "Product planning",
-        "DaemonState",
         "Plan billing for the Alpha product",
         "Review onboarding for the Beta product",
     ]
@@ -167,6 +168,207 @@ Now review onboarding for the Beta product.
         tool="codex",
         session_id="session-1",
     ) == "Review onboarding for the Beta product"
+
+
+def test_opencode_setup_turns_keep_tasks_without_becoming_topics() -> None:
+    content = """
+[USER]
+You are GLM 5.1 working in /Users/darshann/Desktop/context-engine.
+
+Read AGENTS.md and .agent-runs/glm-task.md. Execute the task exactly as written.
+
+You are the primary implementation engineer. Implement the 20x knowledge-graph layer.
+Do not create fake graph edges. Verify before editing. Run npm test.
+
+[USER]
+Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.
+
+[USER]
+Follow the instructions from this file: /Users/darshann/Desktop/context-engine/.agent-runs/glm-task.md
+
+[USER]
+You are in /Users/darshann/Desktop/context-engine.
+
+Act as checker/challenger. Review Kimi's connector fixes for OAuth and Slack.
+"""
+
+    assert derive_session_topics(
+        content,
+        explicit_title="20x knowledge-graph layer implementation",
+        cwd="/Users/darshann/Desktop/context-engine",
+        tool="opencode",
+        session_id="session-1",
+    ) == [
+        "20x knowledge-graph layer implementation",
+        "Implement the 20x knowledge-graph layer",
+        "Review Kimi's connector fixes for OAuth and Slack",
+    ]
+
+
+def test_model_persona_path_does_not_leak_its_final_directory_segment() -> None:
+    content = """
+[USER]
+You are Qwen 3.6 working in /Users/darshann/Desktop/context-engine.
+
+Read AGENTS.md.
+
+Engineer the knowledge display layer.
+"""
+
+    assert derive_session_topic(
+        content,
+        explicit_title="Greeting",
+        tool="opencode",
+    ) == "Engineer the knowledge display layer"
+    topics = derive_session_topics(
+        content,
+        explicit_title="Greeting",
+        cwd="/Users/darshann/Desktop/context-engine",
+        tool="opencode",
+    )
+    assert topics == ["Engineer the knowledge display layer"]
+    assert "Engine" not in topics
+
+
+def test_setup_heavy_subjects_beat_acceptance_test_instructions() -> None:
+    content = """
+[USER]
+You are GLM 5.1 working in /workspace/context-engine.
+
+Your job is connector + AI-context implementation.
+
+Add/update focused tests for any behavior change.
+"""
+
+    summary = build_session_library_summary(
+        content,
+        explicit_title="Greeting",
+        cwd="/workspace/context-engine",
+        tool="opencode",
+    )
+
+    assert summary["topics"] == ["Connector + AI-context implementation"]
+    assert summary["latest_topic"] == "Connector + AI-context implementation"
+
+
+def test_assignment_noun_list_preserves_commas_as_one_topic() -> None:
+    content = """
+[USER]
+You are Qwen.
+
+Your job is docs, UX, and OSS readiness review.
+"""
+
+    assert derive_session_topic(
+        content,
+        explicit_title="Greeting",
+    ) == "Docs, UX, and OSS readiness review"
+    summary = build_session_library_summary(
+        content,
+        explicit_title="Greeting",
+        cwd="/workspace/context-engine",
+        tool="opencode",
+    )
+    assert summary["topics"] == ["Docs, UX, and OSS readiness review"]
+    assert summary["latest_topic"] == "Docs, UX, and OSS readiness review"
+
+
+def test_focus_only_clause_can_be_the_real_task() -> None:
+    assert derive_session_topic(
+        "[USER]\nYou are Kimi K2.6.\n\n"
+        "Focus only on the 10x knowledge graph contract.",
+        explicit_title="Greeting",
+    ) == "Focus only on the 10x knowledge graph..."
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "Improve technical communication in the CLI",
+        "Document destructive actions in the audit log",
+        "Fix the working with the user guide",
+        "Review autonomy and persistence behavior",
+    ),
+)
+def test_ordinary_policy_shaped_phrases_remain_user_tasks(value: str) -> None:
+    assert derive_session_topic(f"[USER]\n{value}") == value
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    (
+        ("Read AGENTS.md and fix the checkout bug", "Fix the checkout bug"),
+        ("Act as checker and review the payment diff", "Review the payment diff"),
+        ("Work in this repo: /tmp/repo and fix billing", "Fix billing"),
+    ),
+)
+def test_task_tail_survives_a_mixed_setup_clause(
+    value: str,
+    expected: str,
+) -> None:
+    assert derive_session_topic(f"[USER]\n{value}") == expected
+
+
+def test_summary_does_not_reintroduce_a_trailing_procedural_topic() -> None:
+    content = """
+[USER]
+Implement the 10x knowledge graph contract.
+
+[USER]
+Every current-state claim must cite files.
+"""
+
+    summary = build_session_library_summary(
+        content,
+        explicit_title="10x knowledge graph contract",
+        cwd="/Users/darshann/Desktop/context-engine",
+        tool="opencode",
+        session_id="session-1",
+    )
+
+    assert summary["topics"] == [
+        "10x knowledge graph contract",
+        "Implement the 10x knowledge graph contract",
+    ]
+    assert "Every current-state claim" not in " ".join(summary["topics"])
+    assert summary["latest_topic"] == "Implement the 10x knowledge graph contract"
+
+
+def test_negative_user_task_is_not_mistaken_for_assignment_setup() -> None:
+    assert derive_latest_session_topic(
+        "[USER]\nDo not expose private session data in the Library."
+    ) == "Do not expose private session data in the Library"
+
+
+def test_legacy_topics_drop_persona_setup_continuations_and_folder_labels() -> None:
+    assert sanitize_session_topics(
+        [
+            "GLM connector AI-context ingestion slice",
+            "Darshann",
+            "Read AGENTS",
+            "Work in this repo: Read AGENTS",
+            "Continue",
+            "You are GLM 5",
+            "Fix connector catalog alignment",
+        ],
+        cwd="/Users/darshann",
+    ) == [
+        "GLM connector AI-context ingestion slice",
+        "Fix connector catalog alignment",
+    ]
+
+
+def test_topic_cleaning_preserves_semantic_leading_digits() -> None:
+    assert derive_session_topic(
+        "[USER]\nImplement the graph layer.",
+        explicit_title="20x knowledge-graph layer implementation",
+    ) == "20x knowledge-graph layer implementation"
+    assert derive_session_topic("[USER]\n10x knowledge graph contract") == (
+        "10x knowledge graph contract"
+    )
+    assert derive_session_topic("[USER]\n1. Fix the compaction counter") == (
+        "Fix the compaction counter"
+    )
 
 
 def test_attachment_metadata_never_becomes_the_latest_topic() -> None:

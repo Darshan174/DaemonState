@@ -29,6 +29,10 @@ STATE_FILENAME = "daemonstate-overlay-state.json"
 CONTROL_FILENAME = "daemonstate-overlay-control.json"
 TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 MAX_STATE_BYTES = 8_192
+MAX_SELECTED_SESSIONS = 3
+MAX_SELECTED_SESSION_ID_LENGTH = 255
+MAX_SELECTED_SESSION_TITLE_LENGTH = 240
+SELECTED_SESSION_PROVIDERS = frozenset({"codex", "claude", "opencode"})
 LAUNCH_TIMEOUT_SECONDS = 45.0
 INSTANCE_RECOVERY_TIMEOUT_SECONDS = 3.0
 CONTROL_TIMEOUT_SECONDS = 3.0
@@ -47,6 +51,22 @@ class DesktopOverlayError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class DesktopOverlaySelectedSession:
+    provider: str
+    session_id: str
+    title: str
+    ordinal: int
+
+    def to_dict(self) -> dict[str, str | int]:
+        return {
+            "provider": self.provider,
+            "session_id": self.session_id,
+            "title": self.title,
+            "ordinal": self.ordinal,
+        }
+
+
+@dataclass(frozen=True)
 class DesktopOverlayStatus:
     supported: bool
     available: bool
@@ -55,10 +75,13 @@ class DesktopOverlayStatus:
     workspace_id: str | None
     code: str
     message: str
+    selected_sessions: tuple[DesktopOverlaySelectedSession, ...] = ()
     schema_version: str = STATUS_SCHEMA
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["selected_sessions"] = [selected.to_dict() for selected in self.selected_sessions]
+        return payload
 
 
 @dataclass(frozen=True)
@@ -67,6 +90,7 @@ class _NativeOverlayState:
     control_token: str
     visible: bool
     workspace_id: str | None
+    selected_sessions: tuple[DesktopOverlaySelectedSession, ...] = ()
 
 
 class DesktopOverlayManager:
@@ -84,9 +108,7 @@ class DesktopOverlayManager:
         repository_root: Path | None = None,
         runtime_dir: Path | None = None,
     ) -> None:
-        self._repository_root = (
-            repository_root or Path(__file__).resolve().parents[2]
-        ).resolve()
+        self._repository_root = (repository_root or Path(__file__).resolve().parents[2]).resolve()
         configured_runtime_dir = os.environ.get(
             "DAEMONSTATE_OVERLAY_RUNTIME_DIR",
             "",
@@ -121,7 +143,15 @@ class DesktopOverlayManager:
         *,
         workspace_id: UUID | None,
         api_url: str = DEFAULT_API_URL,
+        selected_sessions: (
+            list[DesktopOverlaySelectedSession | dict[str, Any]]
+            | tuple[DesktopOverlaySelectedSession | dict[str, Any], ...]
+            | None
+        ) = None,
     ) -> DesktopOverlayStatus:
+        requested_selected_sessions = self._validated_selected_sessions(
+            selected_sessions,
+        )
         with self._lock:
             capability = self._capability_status()
             if not capability.supported or not capability.available:
@@ -147,23 +177,37 @@ class DesktopOverlayManager:
                 )
 
             requested_workspace = str(workspace_id) if workspace_id is not None else None
-            workspace_matches = (
-                requested_workspace is None
-                or state.workspace_id == requested_workspace
+            workspace_retargeted = bool(
+                requested_workspace is not None and state.workspace_id != requested_workspace
             )
-            if state.visible == visible and workspace_matches:
+            effective_selected_sessions = requested_selected_sessions
+            if workspace_retargeted and effective_selected_sessions is None:
+                # Session identities are workspace-scoped. Preserving an
+                # omitted selection is safe only while the workspace stays
+                # unchanged.
+                effective_selected_sessions = ()
+            workspace_matches = (
+                requested_workspace is None or state.workspace_id == requested_workspace
+            )
+            selected_sessions_match = (
+                effective_selected_sessions is None
+                or state.selected_sessions == effective_selected_sessions
+            )
+            if state.visible == visible and workspace_matches and selected_sessions_match:
                 return self._running_status(state)
 
             self._write_control(
                 state,
                 visible=visible,
                 workspace_id=requested_workspace,
+                selected_sessions=effective_selected_sessions,
             )
             self._signal_verified_process(state)
             updated = self._wait_for_control(
                 state,
                 visible=visible,
                 workspace_id=requested_workspace,
+                selected_sessions=effective_selected_sessions,
             )
             return self._running_status(updated)
 
@@ -256,6 +300,7 @@ class DesktopOverlayManager:
             running=True,
             visible=state.visible,
             workspace_id=state.workspace_id,
+            selected_sessions=state.selected_sessions,
             code="overlay_visible" if state.visible else "overlay_hidden",
             message=(
                 "The floating context control is on."
@@ -284,10 +329,7 @@ class DesktopOverlayManager:
             self._remove_stale_state()
             return None
         command_parts = command.split()
-        if (
-            "DaemonStateOverlay" not in command
-            or state.control_token not in command_parts
-        ):
+        if "DaemonStateOverlay" not in command or state.control_token not in command_parts:
             raise DesktopOverlayError(
                 "The native overlay state could not be matched to its process.",
                 code="overlay_process_unverified",
@@ -367,11 +409,21 @@ class DesktopOverlayManager:
                     "The native overlay state has an invalid workspace.",
                     code="overlay_state_invalid",
                 ) from exc
+        try:
+            selected_sessions = _normalize_selected_sessions(
+                payload.get("selected_sessions", []),
+            )
+        except ValueError as exc:
+            raise DesktopOverlayError(
+                "The native overlay state has invalid selected sessions.",
+                code="overlay_state_invalid",
+            ) from exc
         return _NativeOverlayState(
             pid=pid,
             control_token=token,
             visible=visible,
             workspace_id=workspace_id,
+            selected_sessions=selected_sessions,
         )
 
     def _pid_command(self, pid: int) -> str | None:
@@ -533,6 +585,7 @@ class DesktopOverlayManager:
         *,
         visible: bool,
         workspace_id: str | None,
+        selected_sessions: tuple[DesktopOverlaySelectedSession, ...] | None,
     ) -> None:
         self._ensure_runtime_dir()
         payload: dict[str, Any] = {
@@ -541,6 +594,8 @@ class DesktopOverlayManager:
             "visible": visible,
             "workspace_id": workspace_id,
         }
+        if selected_sessions is not None:
+            payload["selected_sessions"] = [selected.to_dict() for selected in selected_sessions]
         encoded = json.dumps(
             payload,
             sort_keys=True,
@@ -592,6 +647,7 @@ class DesktopOverlayManager:
         *,
         visible: bool,
         workspace_id: str | None,
+        selected_sessions: tuple[DesktopOverlaySelectedSession, ...] | None,
     ) -> _NativeOverlayState:
         deadline = time.monotonic() + CONTROL_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
@@ -602,13 +658,34 @@ class DesktopOverlayManager:
                     code="overlay_process_exited",
                 )
             workspace_matches = workspace_id is None or state.workspace_id == workspace_id
-            if state.visible == visible and workspace_matches:
+            selected_sessions_match = (
+                selected_sessions is None or state.selected_sessions == selected_sessions
+            )
+            if state.visible == visible and workspace_matches and selected_sessions_match:
                 return state
             time.sleep(POLL_INTERVAL_SECONDS)
         raise DesktopOverlayError(
-            "The native overlay did not confirm the visibility update.",
+            "The native overlay did not confirm the requested update.",
             code="overlay_control_timeout",
         )
+
+    def _validated_selected_sessions(
+        self,
+        selected_sessions: (
+            list[DesktopOverlaySelectedSession | dict[str, Any]]
+            | tuple[DesktopOverlaySelectedSession | dict[str, Any], ...]
+            | None
+        ),
+    ) -> tuple[DesktopOverlaySelectedSession, ...] | None:
+        if selected_sessions is None:
+            return None
+        try:
+            return _normalize_selected_sessions(selected_sessions)
+        except ValueError as exc:
+            raise DesktopOverlayError(
+                "The selected sessions for the floating control are invalid.",
+                code="overlay_selection_invalid",
+            ) from exc
 
     def _ensure_runtime_dir(self) -> None:
         try:
@@ -690,6 +767,73 @@ class DesktopOverlayManager:
                 pass
         if self._owned_process is process:
             self._owned_process = None
+
+
+def _normalize_selected_sessions(
+    value: Any,
+) -> tuple[DesktopOverlaySelectedSession, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("selected_sessions must be a list")
+    if len(value) > MAX_SELECTED_SESSIONS:
+        raise ValueError("too many selected sessions")
+
+    normalized: list[DesktopOverlaySelectedSession] = []
+    seen_identities: set[tuple[str, str]] = set()
+    seen_ordinals: set[int] = set()
+    for raw_item in value:
+        if isinstance(raw_item, DesktopOverlaySelectedSession):
+            provider_value = raw_item.provider
+            session_id_value = raw_item.session_id
+            title_value = raw_item.title
+            ordinal = raw_item.ordinal
+        elif isinstance(raw_item, dict):
+            provider_value = raw_item.get("provider")
+            session_id_value = raw_item.get("session_id")
+            title_value = raw_item.get("title")
+            ordinal = raw_item.get("ordinal")
+        else:
+            raise ValueError("selected session entries must be objects")
+
+        if not isinstance(provider_value, str):
+            raise ValueError("selected session provider must be text")
+        provider = provider_value.strip().lower()
+        if provider not in SELECTED_SESSION_PROVIDERS:
+            raise ValueError("selected session provider is unsupported")
+
+        if not isinstance(session_id_value, str):
+            raise ValueError("selected session id must be text")
+        session_id = session_id_value.strip()
+        if not session_id or len(session_id) > MAX_SELECTED_SESSION_ID_LENGTH:
+            raise ValueError("selected session id is invalid")
+
+        if not isinstance(title_value, str):
+            raise ValueError("selected session title must be text")
+        title = title_value.strip()
+        if not title or len(title) > MAX_SELECTED_SESSION_TITLE_LENGTH:
+            raise ValueError("selected session title is invalid")
+
+        if isinstance(ordinal, bool) or not isinstance(ordinal, int):
+            raise ValueError("selected session ordinal must be an integer")
+        if ordinal < 1 or ordinal > MAX_SELECTED_SESSIONS:
+            raise ValueError("selected session ordinal is out of range")
+
+        identity = (provider, session_id)
+        if identity in seen_identities:
+            raise ValueError("selected sessions must be unique")
+        if ordinal in seen_ordinals:
+            raise ValueError("selected session ordinals must be unique")
+        seen_identities.add(identity)
+        seen_ordinals.add(ordinal)
+        normalized.append(
+            DesktopOverlaySelectedSession(
+                provider=provider,
+                session_id=session_id,
+                title=title,
+                ordinal=ordinal,
+            )
+        )
+
+    return tuple(sorted(normalized, key=lambda item: item.ordinal))
 
 
 desktop_overlay_manager = DesktopOverlayManager()

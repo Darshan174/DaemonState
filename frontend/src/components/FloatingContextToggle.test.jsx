@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import FloatingContextToggle from "./FloatingContextToggle";
@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   visibility: {
     isPending: false,
     error: null,
+    variables: undefined,
     mutate: vi.fn(),
   },
 }));
@@ -29,6 +30,7 @@ beforeEach(() => {
   mocks.status.error = null;
   mocks.visibility.isPending = false;
   mocks.visibility.error = null;
+  mocks.visibility.variables = undefined;
   mocks.visibility.mutate.mockReset();
 });
 
@@ -155,5 +157,127 @@ describe("FloatingContextToggle", () => {
       visible: true,
       workspaceId: "workspace-2",
     });
+  });
+
+  it("shows provider logos and sends numbered sessions when custom Continue turns the control on", () => {
+    const selectedSessions = [
+      {
+        provider: "codex",
+        session_id: "session-one",
+        title: "Release task",
+        ordinal: 1,
+      },
+      {
+        provider: "claude",
+        session_id: "session-two",
+        title: "Architecture task",
+        ordinal: 2,
+      },
+    ];
+    render(
+      <FloatingContextToggle
+        workspaceId="workspace-1"
+        selectedSessions={selectedSessions}
+      />,
+    );
+
+    expect(screen.getByLabelText("2 custom sessions synced")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("switch", {
+      name: "Floating context control",
+    }));
+
+    expect(mocks.visibility.mutate).toHaveBeenCalledWith({
+      visible: true,
+      workspaceId: "workspace-1",
+      selectedSessions,
+    });
+  });
+
+  it("updates an already-visible native control when the confirmed sessions differ", async () => {
+    mocks.status.data = {
+      available: true,
+      visible: true,
+      workspace_id: "workspace-1",
+      selected_sessions: [],
+    };
+    const selectedSessions = [{
+      provider: "opencode",
+      session_id: "session-three",
+      title: "Terminal task",
+      ordinal: 1,
+    }];
+
+    render(
+      <FloatingContextToggle
+        workspaceId="workspace-1"
+        selectedSessions={selectedSessions}
+      />,
+    );
+
+    await waitFor(() => expect(mocks.visibility.mutate).toHaveBeenCalledWith({
+      visible: true,
+      workspaceId: "workspace-1",
+      selectedSessions,
+    }));
+  });
+
+  it("does not resync when only the server-canonical title differs", () => {
+    mocks.status.data = {
+      available: true,
+      visible: true,
+      workspace_id: "workspace-1",
+      selected_sessions: [{
+        provider: "codex",
+        session_id: "session-one",
+        title: "Canonical Library title",
+        ordinal: 1,
+      }],
+    };
+
+    render(
+      <FloatingContextToggle
+        workspaceId="workspace-1"
+        selectedSessions={[{
+          provider: "codex",
+          session_id: "session-one",
+          title: "Stale local title",
+          ordinal: 1,
+        }]}
+      />,
+    );
+
+    expect(mocks.visibility.mutate).not.toHaveBeenCalled();
+  });
+
+  it("attempts a failed automatic session sync only once per state pair", async () => {
+    mocks.status.data = {
+      available: true,
+      visible: true,
+      workspace_id: "workspace-1",
+      selected_sessions: [],
+    };
+    const selectedSessions = [{
+      provider: "opencode",
+      session_id: "session-three",
+      title: "Terminal task",
+      ordinal: 1,
+    }];
+    const view = render(
+      <FloatingContextToggle
+        workspaceId="workspace-1"
+        selectedSessions={selectedSessions}
+      />,
+    );
+    await waitFor(() => expect(mocks.visibility.mutate).toHaveBeenCalledTimes(1));
+
+    mocks.visibility.error = new Error("Sync failed");
+    view.rerender(
+      <FloatingContextToggle
+        workspaceId="workspace-1"
+        selectedSessions={selectedSessions}
+      />,
+    );
+
+    expect(mocks.visibility.mutate).toHaveBeenCalledTimes(1);
   });
 });

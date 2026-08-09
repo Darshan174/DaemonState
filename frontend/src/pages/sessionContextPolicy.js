@@ -2,10 +2,19 @@ export const MINIMUM_SESSION_CONTEXT_COMPACTIONS = 2;
 
 
 export function sessionContextCompactionCount(session) {
-  const explicitCount = normalizedCount(
-    session?.compactionCount
-    ?? session?.compaction_count,
+  const hasExplicitCount = Boolean(
+    session
+    && (
+      Object.prototype.hasOwnProperty.call(session, "compactionCount")
+      || Object.prototype.hasOwnProperty.call(session, "compaction_count")
+    ),
   );
+  if (hasExplicitCount) {
+    return normalizedCount(
+      session?.compactionCount
+      ?? session?.compaction_count,
+    );
+  }
   const descriptors = [
     ...(Array.isArray(session?.compactionCheckpoints)
       ? session.compactionCheckpoints
@@ -23,7 +32,7 @@ export function sessionContextCompactionCount(session) {
       || `compaction-${index}`,
     )),
   ).size;
-  return Math.max(explicitCount, descriptorCount);
+  return descriptorCount;
 }
 
 

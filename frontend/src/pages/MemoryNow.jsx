@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
   ArrowRight,
@@ -21,8 +21,9 @@ import {
   useLatestCheckpoint,
   useSessionLibrary,
 } from "../api/hooks";
+import { useDesktopOverlaySessionSync } from "../components/FloatingContextToggle";
 import HarnessDeckBackdrop from "../components/HarnessDeckBackdrop";
-import { HarnessArtwork } from "../components/HarnessBrand";
+import { HarnessArtwork, HarnessLogo } from "../components/HarnessBrand";
 import ProductLoadingState from "../components/ProductLoadingState";
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
 import {
@@ -34,7 +35,10 @@ import { cleanDisplayText, formatTimeAgo } from "../context-map/digest";
 import {
   copyReadySessionContextContent,
   requireMatchingContentSha256,
+  sessionContextAdvisories,
   sessionContextQualityMessage,
+  sessionContextReadinessLabel,
+  sessionContextSemanticCopyReady,
 } from "./sessionContinuity";
 import {
   MINIMUM_SESSION_CONTEXT_COMPACTIONS,
@@ -42,6 +46,7 @@ import {
   sessionContextCompactionProgress,
 } from "./sessionContextPolicy";
 import {
+  desktopOverlaySessionSelections,
   executeSessionIdentity,
   MAX_EXECUTE_SESSION_CONTEXTS,
   readExecuteSessionContexts,
@@ -90,6 +95,8 @@ const SESSION_NETWORK_RETRY_DELAYS_MS = [120, 300];
 
 
 export default function ExecutePage() {
+  const [searchParams] = useSearchParams();
+  const continueOrigin = searchParams.get("from") === "continue";
   const workspace = useProductWorkspace();
   const digestQuery = useContextDigest(workspace.activeWorkspaceId, { poll: true });
   const memoryQuery = useProjectMemory(workspace.activeWorkspaceId, {
@@ -102,8 +109,11 @@ export default function ExecutePage() {
     readExecuteSessionContexts(workspace.activeWorkspaceId)
   ));
   const storedExecuteWorkspaceRef = useRef(workspace.activeWorkspaceId);
-  const activeStoredExecuteSessions = (
+  const executeSelectionWorkspaceReady = (
     storedExecuteWorkspaceRef.current === workspace.activeWorkspaceId
+  );
+  const activeStoredExecuteSessions = (
+    executeSelectionWorkspaceReady
       ? storedExecuteSessions
       : []
   );
@@ -129,6 +139,18 @@ export default function ExecutePage() {
     sessionLibraryQuery.data,
     workspace.activeWorkspaceId,
   ]);
+  const selectedOverlaySessions = useMemo(
+    () => desktopOverlaySessionSelections(selectedExecuteSessions),
+    [selectedExecuteSessions],
+  );
+  useDesktopOverlaySessionSync({
+    workspaceId: workspace.activeWorkspaceId,
+    selectedSessions: selectedOverlaySessions,
+    enabled: Boolean(
+      workspace.activeWorkspaceId
+      && executeSelectionWorkspaceReady
+    ),
+  });
   const removeExecuteSession = useCallback((session) => {
     const sourceDocumentId = rawText(
       session?.sourceDocumentId
@@ -198,6 +220,15 @@ export default function ExecutePage() {
     workspace.activeWorkspace?.repo_path
     || digestQuery.data?.scope?.project_paths?.[0],
   );
+  const configuredWorkspaceRepoPaths = workspace.activeWorkspace?.repo_paths || [];
+  const workspaceRepoPathCandidates = configuredWorkspaceRepoPaths.length
+    ? configuredWorkspaceRepoPaths
+    : workspace.activeWorkspace?.repo_path
+      ? [workspace.activeWorkspace.repo_path]
+      : digestQuery.data?.scope?.project_paths || [];
+  const workspaceRepoPaths = Array.from(new Set(
+    workspaceRepoPathCandidates.map(rawText).filter(Boolean),
+  ));
   const workspaceContextKey = JSON.stringify([
     workspace.activeWorkspaceId || "",
     normalizeComparableRepoPath(workspaceRepoPath),
@@ -381,6 +412,7 @@ export default function ExecutePage() {
           status="Preparing"
           busy
           selectedSessions={selectedExecuteSessions}
+          continueOrigin={continueOrigin}
         >
           <div className="p-5 sm:p-7 lg:p-10">
             <ProductLoadingState
@@ -401,6 +433,7 @@ export default function ExecutePage() {
         status={partialData ? "Partial context" : "Workspace ready"}
         attention={partialData}
         selectedSessions={selectedExecuteSessions}
+        continueOrigin={continueOrigin}
       >
         {partialData ? (
           <div role="status" className="mx-5 mt-5 rounded-control border border-attention/30 bg-attention/10 px-4 py-3 text-xs font-medium leading-5 text-ink sm:mx-7 lg:mx-10">
@@ -418,8 +451,10 @@ export default function ExecutePage() {
           onPreviewWorkspace={generatePreview}
           onCopyWorkspace={copyWorkspaceContext}
           workspaceId={workspace.activeWorkspaceId}
+          workspaceRepoPaths={workspaceRepoPaths}
           selectedSessions={selectedExecuteSessions}
           onRemoveSelectedSession={removeExecuteSession}
+          continueOrigin={continueOrigin}
         />
       </ExecuteWorkspaceFrame>
 
@@ -449,6 +484,7 @@ function ExecuteWorkspaceFrame({
   busy = false,
   attention = false,
   selectedSessions = [],
+  continueOrigin = false,
   children,
 }) {
   const navigate = useNavigate();
@@ -458,7 +494,9 @@ function ExecuteWorkspaceFrame({
     MAX_EXECUTE_SESSION_CONTEXTS,
   );
   const openSessionPicker = () => {
-    navigate("/app/library?mode=execute-context");
+    navigate(
+      `/app/library?mode=execute-context${continueOrigin ? "&return_to=continue" : ""}`,
+    );
   };
 
   return (
@@ -479,40 +517,12 @@ function ExecuteWorkspaceFrame({
             </p>
           </div>
 
-          <button
-            type="button"
-            aria-pressed={selectedCount > 0}
-            aria-label={
-              selectedCount
-                ? `Edit selected session contexts, ${selectedCount} of ${MAX_EXECUTE_SESSION_CONTEXTS} selected`
-                : "Select session contexts"
-            }
-            onClick={openSessionPicker}
-            className="group inline-flex min-h-11 shrink-0 items-center gap-3 rounded-xl border border-white/50 bg-white/35 px-3.5 text-left text-[#3f3f38] shadow-[0_10px_28px_rgba(23,23,19,0.10)] backdrop-blur-xl backdrop-saturate-150 transition hover:-translate-y-0.5 hover:border-[#b7d957]/70 hover:bg-white/45 dark:border-white/15 dark:bg-black/30 dark:text-[#ecece4] dark:shadow-[0_10px_30px_rgba(0,0,0,0.22)] dark:hover:border-[#d9ff68]/45 dark:hover:bg-black/38"
-          >
-            <span className="hidden sm:block">
-              <span className="block text-[10px] font-black uppercase tracking-[0.12em]">
-                Session contexts
-              </span>
-              <span className="mt-0.5 block text-[9px] font-semibold text-[#85857c] dark:text-[#929289]">
-                {selectedCount} of {MAX_EXECUTE_SESSION_CONTEXTS} selected
-              </span>
-            </span>
-            <span
-              aria-hidden="true"
-              className={`relative h-6 w-11 rounded-full border transition ${
-                selectedCount
-                  ? "border-[#95b52f] bg-[#d9ff68]"
-                  : "border-[#c9c9bf] bg-[#e8e8e0] dark:border-[#44443e] dark:bg-[#292925]"
-              }`}
-            >
-              <span
-                className={`absolute top-0.5 h-[18px] w-[18px] rounded-full bg-[#171713] shadow-sm transition-transform ${
-                  selectedCount ? "translate-x-[1.15rem]" : "translate-x-0.5"
-                }`}
-              />
-            </span>
-          </button>
+          <ExecuteSessionPickerControl
+            selectedSessions={selectedSessions}
+            selectedCount={selectedCount}
+            continueOrigin={continueOrigin}
+            onOpenPicker={openSessionPicker}
+          />
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -542,6 +552,179 @@ function ExecuteWorkspaceFrame({
 }
 
 
+function ExecuteSessionPickerControl({
+  selectedSessions,
+  selectedCount,
+  continueOrigin,
+  onOpenPicker,
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const label = selectedCount
+    ? `Edit selected session contexts, ${selectedCount} of ${MAX_EXECUTE_SESSION_CONTEXTS} selected`
+    : "Select session contexts";
+  if (!continueOrigin) {
+    return (
+      <button
+        type="button"
+        aria-pressed={selectedCount > 0}
+        aria-label={label}
+        onClick={onOpenPicker}
+        className="group inline-flex min-h-11 shrink-0 items-center gap-3 rounded-xl border border-white/50 bg-white/35 px-3.5 text-left text-[#3f3f38] shadow-[0_10px_28px_rgba(23,23,19,0.10)] backdrop-blur-xl backdrop-saturate-150 transition hover:-translate-y-0.5 hover:border-[#b7d957]/70 hover:bg-white/45 dark:border-white/15 dark:bg-black/30 dark:text-[#ecece4] dark:shadow-[0_10px_30px_rgba(0,0,0,0.22)] dark:hover:border-[#d9ff68]/45 dark:hover:bg-black/38"
+      >
+        <span className="hidden sm:block">
+          <span className="block text-[10px] font-black uppercase tracking-[0.12em]">
+            Session contexts
+          </span>
+          <span className="mt-0.5 block text-[9px] font-semibold text-[#85857c] dark:text-[#929289]">
+            {selectedCount} of {MAX_EXECUTE_SESSION_CONTEXTS} selected
+          </span>
+        </span>
+        <span
+          aria-hidden="true"
+          className={`relative h-6 w-11 rounded-full border transition ${
+            selectedCount
+              ? "border-[#95b52f] bg-[#d9ff68]"
+              : "border-[#c9c9bf] bg-[#e8e8e0] dark:border-[#44443e] dark:bg-[#292925]"
+          }`}
+        >
+          <span
+            className={`absolute top-0.5 h-[18px] w-[18px] rounded-full bg-[#171713] shadow-sm transition-transform ${
+              selectedCount ? "translate-x-[1.15rem]" : "translate-x-0.5"
+            }`}
+          />
+        </span>
+      </button>
+    );
+  }
+  const focusSessionCard = (slot) => {
+    const card = document.querySelector(
+      `[data-session-context-slot="selected-${slot}"]`,
+    );
+    card?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+    card?.focus?.({ preventScroll: true });
+  };
+
+  return (
+    <div
+      className="relative z-40 shrink-0"
+      onMouseEnter={() => {
+        if (selectedCount) setMenuOpen(true);
+      }}
+      onMouseLeave={() => setMenuOpen(false)}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          setMenuOpen(false);
+        }
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          setMenuOpen(false);
+          event.currentTarget.querySelector("button")?.focus();
+        }
+      }}
+    >
+      <button
+        type="button"
+        aria-pressed={selectedCount > 0}
+        aria-label={label}
+        aria-haspopup={continueOrigin && selectedCount ? "menu" : undefined}
+        aria-expanded={continueOrigin && selectedCount ? menuOpen : undefined}
+        onClick={() => {
+          if (selectedCount) {
+            setMenuOpen((current) => !current);
+          } else {
+            onOpenPicker();
+          }
+        }}
+        className="inline-flex min-h-11 items-center gap-3 rounded-xl border border-white/50 bg-white/35 px-3.5 text-left text-[#3f3f38] shadow-[0_10px_28px_rgba(23,23,19,0.10)] backdrop-blur-xl backdrop-saturate-150 transition hover:-translate-y-0.5 hover:border-[#b7d957]/70 hover:bg-white/45 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#9dbc47]/65 dark:border-white/15 dark:bg-black/30 dark:text-[#ecece4] dark:shadow-[0_10px_30px_rgba(0,0,0,0.22)] dark:hover:border-[#d9ff68]/45 dark:hover:bg-black/38"
+      >
+        <span className="hidden sm:block">
+          <span className="block text-[10px] font-black uppercase tracking-[0.12em]">
+            {continueOrigin ? "Continue sessions" : "Session contexts"}
+          </span>
+          <span className="mt-0.5 block text-[9px] font-semibold text-[#85857c] dark:text-[#929289]">
+            {selectedCount} of {MAX_EXECUTE_SESSION_CONTEXTS} selected
+          </span>
+        </span>
+        {continueOrigin && selectedCount ? (
+          <span className="flex -space-x-2" aria-hidden="true">
+            {selectedSessions.map((session, index) => (
+              <span key={executeSessionIdentity(session)} className="relative">
+                <HarnessLogo
+                  type={session.provider}
+                  size="small"
+                  decorative
+                  className="!h-7 !w-7 !rounded-lg"
+                />
+                <span className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-[#171713] px-0.5 font-mono text-[8px] font-black text-white ring-1 ring-white dark:bg-[#d9ff68] dark:text-[#171713] dark:ring-[#171713]">
+                  {index + 1}
+                </span>
+              </span>
+            ))}
+          </span>
+        ) : (
+          <span
+            aria-hidden="true"
+            className={`relative h-6 w-11 rounded-full border transition ${
+              selectedCount
+                ? "border-[#95b52f] bg-[#d9ff68]"
+                : "border-[#c9c9bf] bg-[#e8e8e0] dark:border-[#44443e] dark:bg-[#292925]"
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 h-[18px] w-[18px] rounded-full bg-[#171713] shadow-sm transition-transform ${
+                selectedCount ? "translate-x-[1.15rem]" : "translate-x-0.5"
+              }`}
+            />
+          </span>
+        )}
+      </button>
+
+      {continueOrigin && selectedCount && menuOpen ? (
+        <div
+          className="absolute right-0 top-full min-w-64 pt-2"
+        >
+          <div
+            role="menu"
+            aria-label="Selected Continue sessions"
+            className="flex origin-top-right flex-col gap-1.5 rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6]/95 p-2 shadow-[0_18px_46px_rgba(23,23,19,0.16)] backdrop-blur-xl dark:border-[#363630] dark:bg-[#141411]/95"
+          >
+            {selectedSessions.map((session, index) => (
+              <button
+                key={executeSessionIdentity(session)}
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  focusSessionCard(index + 1);
+                  setMenuOpen(false);
+                }}
+                className="flex min-h-11 items-center gap-3 rounded-xl px-2.5 text-left transition hover:bg-[#ecece4] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#9dbc47] dark:hover:bg-white/[0.07]"
+              >
+                <HarnessLogo type={session.provider} size="small" decorative />
+                <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[#171713] px-1 font-mono text-[9px] font-black text-white dark:bg-[#d9ff68] dark:text-[#171713]">
+                  {index + 1}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-xs font-bold">
+                  {session.title}
+                </span>
+              </button>
+            ))}
+            <button
+              type="button"
+              role="menuitem"
+              onClick={onOpenPicker}
+              className="min-h-10 rounded-xl border border-dashed border-[#c9c9bf] px-3 text-xs font-bold text-[#68685f] transition hover:border-[#9dbc47] hover:text-[#171713] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#9dbc47] dark:border-[#3a3a34] dark:text-[#aaa9a0] dark:hover:text-white"
+            >
+              Edit selected sessions
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+
 function ContextProductsPanel({
   preparedContext,
   workspacePreparing,
@@ -552,8 +735,10 @@ function ContextProductsPanel({
   onPreviewWorkspace,
   onCopyWorkspace,
   workspaceId,
+  workspaceRepoPaths = [],
   selectedSessions = [],
   onRemoveSelectedSession,
+  continueOrigin = false,
 }) {
   const workspaceContent = preparedContext?.workspace_context?.content || "";
   const workspaceAvailable = Boolean(workspaceId);
@@ -571,6 +756,7 @@ function ContextProductsPanel({
           <SelectedSessionContextCard
             key={executeSessionIdentity(session)}
             workspaceId={workspaceId}
+            workspaceRepoPaths={workspaceRepoPaths}
             session={session}
             slot={index + 1}
             total={selectedSessions.length}
@@ -587,7 +773,7 @@ function ContextProductsPanel({
               from Library to compare or copy here.
             </p>
             <Link
-              to="/app/library?mode=execute-context"
+              to={`/app/library?mode=execute-context${continueOrigin ? "&return_to=continue" : ""}`}
               className="btn-secondary mt-5 min-h-11 px-4 text-xs"
             >
               Choose sessions
@@ -665,6 +851,7 @@ function ContextProductsPanel({
 
 function SelectedSessionContextCard({
   workspaceId,
+  workspaceRepoPaths = [],
   session,
   slot,
   total,
@@ -690,6 +877,14 @@ function SelectedSessionContextCard({
   });
   const captureCheckpoint = useCaptureCheckpoint();
   const checkpointHandoff = useCheckpointHandoff();
+  const verifiedRepoPaths = Array.from(new Set(
+    workspaceRepoPaths.map(rawText).filter(Boolean),
+  ));
+  const verifiedRepoPathsKey = JSON.stringify(verifiedRepoPaths);
+  const repositorySelectionRequired = verifiedRepoPaths.length > 1;
+  const [selectedRepoPath, setSelectedRepoPath] = useState(
+    verifiedRepoPaths.length === 1 ? verifiedRepoPaths[0] : "",
+  );
   const [context, setContext] = useState(null);
   const [contextCheckpoint, setContextCheckpoint] = useState(null);
   const [error, setError] = useState(null);
@@ -708,6 +903,7 @@ function SelectedSessionContextCard({
     checkpointQuery.data?.boundary?.sequence_number ?? null,
     checkpointQuery.data?.boundary?.session_tip_sequence ?? null,
     checkpointQuery.data?.boundary?.has_newer_events ?? null,
+    selectedRepoPath,
   ]);
   const activeIdentityKeyRef = useRef(identityKey);
   const autoPreviewKeyRef = useRef(null);
@@ -725,6 +921,16 @@ function SelectedSessionContextCard({
     autoPreviewKeyRef.current = null;
   }, [requestKey]);
 
+  useEffect(() => {
+    setSelectedRepoPath((current) => (
+      verifiedRepoPaths.includes(current)
+        ? current
+        : verifiedRepoPaths.length === 1
+          ? verifiedRepoPaths[0]
+          : ""
+    ));
+  }, [verifiedRepoPathsKey]);
+
   const recordFailure = useCallback((reason, fallback) => {
     const failure = sessionContextFailure(reason, fallback);
     setError(failure.message);
@@ -740,6 +946,11 @@ function SelectedSessionContextCard({
     }
     if (!contextEligible) {
       throw sessionContextCompactionsRequiredError(compactionCount);
+    }
+    if (repositorySelectionRequired && !selectedRepoPath) {
+      throw new Error(
+        "Choose which verified workspace repository belongs to this session.",
+      );
     }
     if (loadPromiseRef.current?.key === requestKey) {
       try {
@@ -774,7 +985,7 @@ function SelectedSessionContextCard({
       );
       if (
         !forceCapture
-        && !sessionCheckpointIsCurrent(checkpoint, provider, sessionId)
+        && !sessionCheckpointIsExactTip(checkpoint, provider, sessionId)
       ) {
         checkpoint = await captureSelectedTip();
       }
@@ -786,6 +997,9 @@ function SelectedSessionContextCard({
         () => checkpointHandoff.mutateAsync({
           workspaceId,
           checkpointId,
+          ...(repositorySelectionRequired && selectedRepoPath
+            ? { repoPath: selectedRepoPath }
+            : {}),
         }),
         retryTransientNetworkFailure,
       );
@@ -843,6 +1057,8 @@ function SelectedSessionContextCard({
     contextEligible,
     provider,
     requestKey,
+    repositorySelectionRequired,
+    selectedRepoPath,
     sessionId,
     workspaceId,
   ]);
@@ -853,6 +1069,7 @@ function SelectedSessionContextCard({
       || !provider
       || !sessionId
       || !contextEligible
+      || (repositorySelectionRequired && !selectedRepoPath)
       || (checkpointQuery.isLoading && !checkpointQuery.data)
       || checkpointQuery.isFetching
       || context
@@ -887,6 +1104,8 @@ function SelectedSessionContextCard({
     provider,
     recordFailure,
     requestKey,
+    repositorySelectionRequired,
+    selectedRepoPath,
     sessionId,
     title,
     workspaceId,
@@ -960,6 +1179,7 @@ function SelectedSessionContextCard({
 
   const preparing = Boolean(
     contextEligible
+    && (!repositorySelectionRequired || selectedRepoPath)
     && (
       captureCheckpoint.isPending
       || checkpointHandoff.isPending
@@ -973,8 +1193,10 @@ function SelectedSessionContextCard({
     )
   );
   const copyReady = contextEligible && (
-    !context || context?.quality_report?.copy_ready === true
+    !context || sessionContextSemanticCopyReady(context)
   );
+  const readinessLabel = context ? sessionContextReadinessLabel(context) : undefined;
+  const contextAdvisories = context ? sessionContextAdvisories(context) : [];
   const columnClass = total === 1
     ? "xl:col-start-2"
     : total === 2
@@ -989,6 +1211,7 @@ function SelectedSessionContextCard({
     <>
       <article
         aria-labelledby={headingId}
+        tabIndex={-1}
         data-session-context-card
         data-session-context-slot={`selected-${slot}`}
         className={`relative isolate flex min-w-0 flex-col overflow-hidden rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6] p-5 text-[#171713] shadow-[0_18px_40px_rgba(23,23,19,0.07)] dark:border-[#292925] dark:bg-[#141411] dark:text-white ${columnClass} xl:row-start-1`}
@@ -1022,9 +1245,17 @@ function SelectedSessionContextCard({
         </span>
 
         <header className={`relative z-20 pr-9 ${contextEligible ? "" : "pt-10"}`}>
-          <p className="text-[9px] font-black uppercase tracking-[0.14em] text-[#77776e] dark:text-[#aaa9a0]">
-            Selected Session Context
-          </p>
+          <div className="flex items-center gap-2">
+            <span
+              aria-label={`Session ${slot}`}
+              className="grid h-5 min-w-5 place-items-center rounded-full bg-[#171713] px-1 font-mono text-[9px] font-black leading-none text-white dark:bg-[#d9ff68] dark:text-[#171713]"
+            >
+              {slot}
+            </span>
+            <p className="text-[9px] font-black uppercase tracking-[0.14em] text-[#77776e] dark:text-[#aaa9a0]">
+              Selected Session Context
+            </p>
+          </div>
           <h2 id={headingId} className="mt-1 line-clamp-2 text-xl font-black leading-tight tracking-[-0.04em]">
             {title}
           </h2>
@@ -1034,6 +1265,25 @@ function SelectedSessionContextCard({
           </p>
         </header>
 
+        {repositorySelectionRequired ? (
+          <label className="relative z-20 mt-4 block">
+            <span className="mb-1.5 block text-[9px] font-black uppercase tracking-[0.12em] text-[#77776e] dark:text-[#aaa9a0]">
+              Repository
+            </span>
+            <select
+              aria-label={`Repository for ${title}`}
+              value={selectedRepoPath}
+              onChange={(event) => setSelectedRepoPath(event.target.value)}
+              className="h-10 w-full rounded-xl border border-[#d3d3cb] bg-white px-3 text-xs font-semibold text-[#292922] outline-none focus:border-[#9dbc47] focus:ring-2 focus:ring-[#9dbc47]/25 dark:border-[#41413a] dark:bg-[#20201d] dark:text-white"
+            >
+              <option value="">Choose repository…</option>
+              {verifiedRepoPaths.map((path) => (
+                <option key={path} value={path}>{path}</option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+
         <PromptPreview
           label={`${title} Session Context prompt preview`}
           content={sessionContextCardPreviewContent(context?.content)}
@@ -1041,11 +1291,15 @@ function SelectedSessionContextCard({
           available={Boolean(context)}
           error={error}
           unavailableMessage={compactionRequirement
+            || (repositorySelectionRequired && !selectedRepoPath
+              ? "Choose the repository that belongs to this session."
+              : "")
             || "Open the preview to prepare this selected session’s exact context."}
           compact
           allowAncestorWatermark
           identityLabel={`${sessionProviderLabel(provider)} · ${title}`}
-          copyReady={context?.quality_report?.copy_ready}
+          copyReady={context ? sessionContextSemanticCopyReady(context) : undefined}
+          statusLabel={readinessLabel}
           className="mt-5 min-h-[210px]"
         />
 
@@ -1054,7 +1308,10 @@ function SelectedSessionContextCard({
             type="button"
             aria-label={`Preview ${contextName}`}
             onClick={(event) => previewContext(event.currentTarget)}
-            disabled={!contextEligible}
+            disabled={
+              !contextEligible
+              || (repositorySelectionRequired && !selectedRepoPath)
+            }
             className="btn-secondary min-h-11 px-4 text-xs"
           >
             {preparing
@@ -1076,6 +1333,7 @@ function SelectedSessionContextCard({
             onClick={copyContext}
             disabled={
               !contextEligible
+              || (repositorySelectionRequired && !selectedRepoPath)
               || preparing
               || !copyReady
               || (!context && error && !retryable)
@@ -1090,6 +1348,10 @@ function SelectedSessionContextCard({
         ) : context && !copyReady ? (
           <p className="relative z-20 mt-3 text-xs leading-5 text-attention">
             {sessionContextQualityMessage(context, contextName)}
+          </p>
+        ) : contextAdvisories.length ? (
+          <p className="relative z-20 mt-3 text-xs leading-5 text-[#77776e] dark:text-[#aaa9a0]">
+            {contextAdvisories[0]}
           </p>
         ) : null}
       </article>
@@ -1145,6 +1407,7 @@ function PromptPreview({
   allowAncestorWatermark = false,
   identityLabel = "",
   copyReady,
+  statusLabel,
   className = "",
 }) {
   const blocked = Boolean(content && copyReady === false);
@@ -1175,13 +1438,13 @@ function PromptPreview({
                   ? "animate-pulse bg-white/60"
                   : "bg-white/25"
           }`} />
-          {blocked
-            ? "Not copy-ready"
+          {statusLabel || (blocked
+            ? "Needs clarification"
             : content
               ? "Prepared"
               : loading
                 ? "Preparing"
-                : "Unavailable"}
+                : "Unavailable")}
         </span>
       </header>
       {identityLabel ? (
@@ -1491,7 +1754,8 @@ function SessionContextPreviewDialog({
 }) {
   const closeRef = useRef(null);
   const dialogRef = useRef(null);
-  const copyReady = result?.quality_report?.copy_ready === true;
+  const copyReady = sessionContextSemanticCopyReady(result);
+  const advisories = sessionContextAdvisories(result);
 
   useEffect(() => {
     closeRef.current?.focus();
@@ -1595,6 +1859,10 @@ function SessionContextPreviewDialog({
             {!copyReady ? (
               <div role="status" className="border-b border-attention/30 bg-attention/10 px-5 py-3 text-xs font-medium leading-5 text-ink sm:px-6">
                 {sessionContextQualityMessage(result, contextName)}
+              </div>
+            ) : advisories.length ? (
+              <div role="status" className="border-b border-line bg-canvas px-5 py-3 text-xs font-medium leading-5 text-muted sm:px-6">
+                {advisories.join(" ")}
               </div>
             ) : null}
             <div className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
@@ -2542,6 +2810,7 @@ function workspaceContextErrorIsRetryable(error) {
   return ![
     "compiled context belongs to a different workspace",
     "compiled context belongs to a different repository",
+    "compiler returned an incomplete workspace context",
   ].some((terminalMessage) => message.includes(terminalMessage));
 }
 
@@ -2750,7 +3019,8 @@ async function retryTransientNetworkRequest(request, retryEnabled) {
 }
 
 
-function sessionCheckpointIsCurrent(checkpoint, provider, sessionId) {
+function sessionCheckpointIsExactTip(checkpoint, provider, sessionId) {
+  const currentness = rawText(checkpoint?.currentness?.state).toLowerCase();
   if (
     !checkpoint
     || checkpoint.schema_version !== CURRENT_CHECKPOINT_SCHEMA
@@ -2758,7 +3028,9 @@ function sessionCheckpointIsCurrent(checkpoint, provider, sessionId) {
     || normalizeProvider(checkpoint.provider) !== normalizeProvider(provider)
     || rawText(checkpoint.session_id) !== rawText(sessionId)
     || checkpoint.capture_status !== "complete"
-    || checkpoint.currentness?.state !== "captured"
+    // Historical is strictly an age classification. An exact boundary remains
+    // the selected session tip until a newer event supersedes it.
+    || !["captured", "historical"].includes(currentness)
     || checkpoint.boundary?.has_newer_events !== false
     || !Number.isInteger(checkpoint.boundary?.sequence_number)
     || checkpoint.boundary.sequence_number !== checkpoint.boundary.session_tip_sequence

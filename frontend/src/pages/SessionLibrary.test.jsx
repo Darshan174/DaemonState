@@ -11,6 +11,8 @@ import {
 
 
 const mocks = vi.hoisted(() => ({
+  checkpointRestorable: true,
+  compactionCounts: {},
   extraSessions: [],
   getSource: vi.fn(),
   libraryLoading: false,
@@ -54,8 +56,8 @@ vi.mock("../api/hooks", () => ({
         { id: "topic-2", name: "Beta onboarding", session_count: 1, harnesses: ["codex"], last_discussed_at: "2026-07-18T08:00:00Z" },
       ],
       sessions: [
-        { id: "codex:one", session_id: "session-one", source_document_id: "doc-1", connector_type: "codex", harness: "Codex", title: "Alpha launch", topics: ["Alpha billing", "Beta pricing"], latest_topic: "Beta pricing", preview: "Plan Alpha billing", live: true, revision_number: 2, updated_at: "2026-07-18T09:00:00Z", compaction_count: 2, compaction_checkpoints: [{ id: "checkpoint-1", label: "Before context compact", provider: "codex", occurred_at: "2026-07-18T08:30:00Z", turn_count: 3, objective_preview: "Review Beta pricing before launch", restorable: true }] },
-        { id: "codex:two", session_id: "session-two", source_document_id: "doc-2", connector_type: "codex", harness: "Codex", title: "Beta onboarding", topics: ["Beta onboarding"], latest_topic: "Beta onboarding", preview: "Review Beta onboarding", live: true, revision_number: 1, updated_at: "2026-07-18T08:00:00Z", compaction_count: 2, forked_from: { session_id: "session-one", title: "Alpha launch", source_document_id: "doc-1" } },
+        { id: "codex:one", session_id: "session-one", source_document_id: "doc-1", connector_type: "codex", harness: "Codex", title: "Alpha launch", topics: ["Alpha billing", "Beta pricing"], latest_topic: "Beta pricing", preview: "Plan Alpha billing", live: true, revision_number: 2, updated_at: "2026-07-18T09:00:00Z", compaction_count: mocks.compactionCounts["doc-1"] ?? 2, compaction_checkpoints: [{ id: "checkpoint-1", label: "Before context compact", provider: "codex", occurred_at: "2026-07-18T08:30:00Z", turn_count: 3, objective_preview: "Review Beta pricing before launch", restorable: mocks.checkpointRestorable }] },
+        { id: "codex:two", session_id: "session-two", source_document_id: "doc-2", connector_type: "codex", harness: "Codex", title: "Beta onboarding", topics: ["Beta onboarding"], latest_topic: "Beta onboarding", preview: "Review Beta onboarding", live: true, revision_number: 1, updated_at: "2026-07-18T08:00:00Z", compaction_count: mocks.compactionCounts["doc-2"] ?? 2, forked_from: { session_id: "session-one", title: "Alpha launch", source_document_id: "doc-1" } },
         ...mocks.extraSessions,
       ],
     },
@@ -87,6 +89,8 @@ beforeEach(() => {
     },
   });
   mocks.extraSessions = [];
+  mocks.checkpointRestorable = true;
+  mocks.compactionCounts = {};
   mocks.libraryLoading = false;
   mocks.workspaceId = "workspace-1";
   mocks.sync.mockReset();
@@ -144,7 +148,7 @@ function ContinueDestination() {
     <div>
       Canonical Continue destination · {params.get("checkpoint")} · {params.get("objective")}
       {" · "}{params.get("source_provider")} · {params.get("source_session")}
-      {" · "}{params.get("objective_source")}
+      {" · "}{params.get("objective_source")} · {params.get("session_flow")}
     </div>
   );
 }
@@ -400,21 +404,26 @@ it("shows session checkboxes only after a harness is opened and enforces the thr
   fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
 
   const alpha = screen.getByRole("checkbox", {
-    name: "Select Alpha launch for Execute",
+    name: /^Select Alpha launch from Codex for Execute/,
   });
   const beta = screen.getByRole("checkbox", {
-    name: "Select Beta onboarding for Execute",
+    name: /^Select Beta onboarding from Codex for Execute/,
   });
   const gamma = screen.getByRole("checkbox", {
-    name: "Select Gamma reliability for Execute",
+    name: /^Select Gamma reliability from Codex for Execute/,
   });
   const delta = screen.getByRole("checkbox", {
-    name: "Select Delta observability for Execute",
+    name: /^Select Delta observability from Codex for Execute/,
   });
   expect(alpha).toBeEnabled();
   expect(beta).toBeEnabled();
   expect(gamma).toBeEnabled();
   expect(delta).toBeEnabled();
+  expect(alpha.closest("article")).toHaveAttribute("data-context-state", "available");
+  expect(within(alpha.closest("article")).getByText("Available")).toBeVisible();
+  expect(within(alpha.closest("article")).getByText(
+    "Ready to add to Execute",
+  )).toBeVisible();
 
   fireEvent.click(alpha);
   fireEvent.click(beta);
@@ -423,6 +432,9 @@ it("shows session checkboxes only after a harness is opened and enforces the thr
   expect(beta).toBeChecked();
   expect(gamma).toBeChecked();
   expect(delta).toBeDisabled();
+  expect(alpha.closest("article")).toHaveAttribute("data-context-state", "selected");
+  expect(delta.closest("article")).toHaveAttribute("data-context-state", "limit");
+  expect(within(delta.closest("article")).getByText("Limit reached")).toBeVisible();
   expect(screen.getByText("3 of 3 selected")).toBeInTheDocument();
   expect(within(gamma.closest("article")).getByText(
     "Will appear in Execute",
@@ -431,6 +443,7 @@ it("shows session checkboxes only after a harness is opened and enforces the thr
   fireEvent.click(alpha);
   expect(alpha).not.toBeChecked();
   expect(delta).toBeEnabled();
+  expect(delta.closest("article")).toHaveAttribute("data-context-state", "available");
   fireEvent.click(delta);
 
   fireEvent.click(screen.getByRole("button", { name: "Use 3 sessions" }));
@@ -440,6 +453,202 @@ it("shows session checkboxes only after a harness is opened and enforces the thr
     "session-three",
     "session-four",
   ]);
+});
+
+
+it("removes individual sessions through the selected-session checklist", async () => {
+  mocks.extraSessions = [
+    {
+      id: "codex:three",
+      session_id: "session-three",
+      source_document_id: "doc-3",
+      connector_type: "codex",
+      harness: "Codex",
+      title: "Gamma reliability",
+      topics: ["Gamma reliability"],
+      latest_topic: "Gamma reliability",
+      preview: "Review Gamma reliability",
+      live: true,
+      revision_number: 1,
+      updated_at: "2026-07-18T07:00:00Z",
+      compaction_count: 2,
+    },
+    {
+      id: "codex:four",
+      session_id: "session-four",
+      source_document_id: "doc-4",
+      connector_type: "codex",
+      harness: "Codex",
+      title: "Delta observability",
+      topics: ["Delta observability"],
+      latest_topic: "Delta observability",
+      preview: "Review Delta observability",
+      live: true,
+      revision_number: 1,
+      updated_at: "2026-07-18T06:00:00Z",
+      compaction_count: 2,
+    },
+  ];
+  renderLibrary("/app/library?mode=execute-context");
+  fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
+  ["Alpha launch", "Beta onboarding", "Gamma reliability"].forEach((title) => {
+    fireEvent.click(screen.getByRole("checkbox", {
+      name: new RegExp(`^Select ${title} from Codex for Execute`),
+    }));
+  });
+
+  const trigger = screen.getByRole("button", {
+    name: "Review / remove 3 sessions",
+  });
+  expect(trigger).toHaveClass("col-span-2", "w-full", "bg-[#d92d20]");
+  fireEvent.click(trigger);
+  expect(trigger).toHaveAttribute("aria-expanded", "true");
+
+  const manager = screen.getByRole("dialog", {
+    name: "3 selected sessions",
+  });
+  const managerCheckboxes = within(manager).getAllByRole("checkbox");
+  expect(managerCheckboxes).toHaveLength(3);
+  managerCheckboxes.forEach((checkbox) => expect(checkbox).toBeChecked());
+  expect(managerCheckboxes[0]).toHaveFocus();
+  expect(within(manager).getByText("Alpha launch")).toBeVisible();
+  expect(within(manager).getByText("Beta onboarding")).toBeVisible();
+  expect(within(manager).getByText("Gamma reliability")).toBeVisible();
+
+  const betaManagerCheckbox = within(manager).getByRole("checkbox", {
+    name: "Selected session 2: keep Beta onboarding from Codex selected for Execute",
+  });
+  betaManagerCheckbox.focus();
+  fireEvent.click(betaManagerCheckbox);
+
+  expect(screen.getByText("2 of 3 selected")).toBeVisible();
+  expect(screen.getByRole("checkbox", {
+    name: /^Select Beta onboarding from Codex for Execute/,
+  })).not.toBeChecked();
+  expect(screen.getByRole("checkbox", {
+    name: /^Select Delta observability from Codex for Execute/,
+  })).toBeEnabled();
+  expect(screen.getByRole("dialog", {
+    name: "2 selected sessions",
+  })).toBeVisible();
+  expect(screen.getByRole("checkbox", {
+    name: "Selected session 2: keep Gamma reliability from Codex selected for Execute",
+  })).toHaveFocus();
+  expect(readExecuteSessionContexts("workspace-1")).toEqual([]);
+
+  fireEvent.click(screen.getByRole("button", { name: "Use 2 sessions" }));
+  expect(await screen.findByText("Execute destination")).toBeVisible();
+  expect(readExecuteSessionContexts("workspace-1").map((item) => item.sessionId)).toEqual([
+    "session-one",
+    "session-three",
+  ]);
+});
+
+
+it("closes or clears the selected-session checklist without making Cancel destructive", () => {
+  mocks.extraSessions = [{
+    id: "opencode:three",
+    session_id: "opencode-three",
+    source_document_id: "opencode-doc-3",
+    connector_type: "opencode",
+    harness: "OpenCode",
+    title: "Alpha launch",
+    topics: ["OpenCode handoff"],
+    latest_topic: "OpenCode handoff",
+    preview: "Continue the OpenCode handoff",
+    live: true,
+    revision_number: 1,
+    updated_at: "2026-07-18T07:00:00Z",
+    compaction_count: 2,
+  }];
+  writeExecuteSessionContexts("workspace-1", [
+    {
+      source_document_id: "doc-1",
+      connector_type: "codex",
+      session_id: "session-one",
+      title: "Alpha launch",
+      compaction_count: 2,
+    },
+    {
+      source_document_id: "opencode-doc-3",
+      connector_type: "opencode",
+      session_id: "opencode-three",
+      title: "Alpha launch",
+      compaction_count: 2,
+    },
+  ]);
+  renderLibrary("/app/library?mode=execute-context");
+
+  const trigger = screen.getByRole("button", {
+    name: "Review / remove 2 sessions",
+  });
+  fireEvent.click(trigger);
+  const manager = screen.getByRole("dialog", { name: "2 selected sessions" });
+  expect(within(manager).getByRole("checkbox", {
+    name: "Selected session 1: keep Alpha launch from Codex selected for Execute",
+  })).toBeVisible();
+  expect(within(manager).getByRole("checkbox", {
+    name: "Selected session 2: keep Alpha launch from OpenCode selected for Execute",
+  })).toBeVisible();
+
+  fireEvent.pointerDown(document.body);
+  expect(screen.queryByRole("dialog", { name: "2 selected sessions" })).not.toBeInTheDocument();
+  expect(trigger).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByText("2 of 3 selected")).toBeVisible();
+
+  fireEvent.click(trigger);
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(screen.queryByRole("dialog", { name: "2 selected sessions" })).not.toBeInTheDocument();
+  expect(trigger).toHaveFocus();
+  expect(screen.getByText("2 of 3 selected")).toBeVisible();
+
+  fireEvent.click(trigger);
+  fireEvent.click(screen.getByRole("button", { name: "Unselect everything" }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.getByText("0 of 3 selected")).toBeVisible();
+  expect(screen.queryByRole("button", {
+    name: /Review \/ remove/,
+  })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", {
+    name: "Clear selected sessions",
+  })).toHaveFocus();
+  expect(readExecuteSessionContexts("workspace-1").map((item) => item.sessionId)).toEqual([
+    "session-one",
+    "opencode-three",
+  ]);
+});
+
+
+it("does not confuse a previously prepared session with Execute selection", () => {
+  mocks.extraSessions = [{
+    id: "codex:prepared-for-now",
+    session_id: "prepared-for-now",
+    source_document_id: "doc-prepared-for-now",
+    connector_type: "codex",
+    harness: "Codex",
+    title: "Prepared elsewhere",
+    topics: ["Previously prepared topic", "Current Execute topic"],
+    selected_for_now: true,
+    selected_topic: "Previously prepared topic",
+    latest_topic: "Current Execute topic",
+    preview: "A session already prepared outside Execute",
+    live: true,
+    revision_number: 1,
+    updated_at: "2026-07-18T11:00:00Z",
+    compaction_count: 2,
+  }];
+  renderLibrary("/app/library?mode=execute-context");
+  fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
+
+  const checkbox = screen.getByRole("checkbox", {
+    name: /^Select Prepared elsewhere from Codex for Execute/,
+  });
+  const card = checkbox.closest("article");
+  expect(card).toHaveAttribute("data-context-state", "available");
+  expect(within(card).getByText("Available")).toBeVisible();
+  expect(within(card).queryByText(/^Selected$/)).not.toBeInTheDocument();
+  expect(within(card).getByText("Latest · Current Execute topic")).toBeVisible();
+  expect(within(card).queryByText(/Previously prepared topic/)).not.toBeInTheDocument();
 });
 
 
@@ -463,14 +672,112 @@ it("does not let an under-compacted Library session enter Execute", () => {
   fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
 
   const checkbox = screen.getByRole("checkbox", {
-    name: "Select Fresh session for Execute",
+    name: /^Select Fresh session from Codex for Execute/,
   });
   const card = checkbox.closest("article");
   expect(checkbox).toBeDisabled();
+  expect(card).toHaveAttribute("data-context-state", "locked");
+  expect(card).toHaveAttribute("data-context-eligibility", "locked");
+  expect(card).toHaveClass("shadow-none");
+  expect(within(card).getByText("Locked")).toBeVisible();
   expect(within(card).getByText("0/2 compactions")).toBeVisible();
   expect(within(card).getByText("2 compactions required")).toBeVisible();
+  expect(document.getElementById(
+    checkbox.getAttribute("aria-describedby"),
+  )).toHaveTextContent("2 compactions required");
   fireEvent.click(checkbox);
   expect(checkbox).not.toBeChecked();
+});
+
+
+it("uses API compaction counts when OpenCode has no checkpoint descriptors", () => {
+  mocks.extraSessions = [
+    {
+      id: "opencode:one-compaction",
+      session_id: "opencode-one-compaction",
+      source_document_id: "opencode-doc-one",
+      connector_type: "opencode",
+      harness: "OpenCode",
+      title: "OpenCode one compaction",
+      topics: ["Repair OpenCode compaction projection"],
+      latest_topic: "Repair OpenCode compaction projection",
+      preview: "One persisted boundary",
+      live: true,
+      revision_number: 1,
+      updated_at: "2026-07-18T10:00:00Z",
+      compaction_count: 1,
+      compaction_checkpoints: [],
+    },
+    {
+      id: "opencode:two-compactions",
+      session_id: "opencode-two-compactions",
+      source_document_id: "opencode-doc-two",
+      connector_type: "opencode",
+      harness: "OpenCode",
+      title: "OpenCode two compactions",
+      topics: ["Repair OpenCode compaction projection"],
+      latest_topic: "Repair OpenCode compaction projection",
+      preview: "Two persisted boundaries",
+      live: true,
+      revision_number: 1,
+      updated_at: "2026-07-18T09:00:00Z",
+      compaction_count: 2,
+      compaction_checkpoints: [],
+    },
+  ];
+  renderLibrary("/app/library?mode=execute-context");
+  fireEvent.click(screen.getByRole("button", { name: "Open OpenCode sessions" }));
+
+  const one = screen.getByRole("checkbox", {
+    name: /^Select OpenCode one compaction from OpenCode for Execute/,
+  });
+  const two = screen.getByRole("checkbox", {
+    name: /^Select OpenCode two compactions from OpenCode for Execute/,
+  });
+  expect(one).toBeDisabled();
+  expect(one.closest("article")).toHaveAttribute("data-context-state", "locked");
+  expect(within(one.closest("article")).getByText("1/2 compactions")).toBeVisible();
+  expect(two).toBeEnabled();
+  expect(two.closest("article")).toHaveAttribute("data-context-state", "available");
+  expect(two.closest("article")).toHaveAttribute("data-context-eligibility", "available");
+  expect(two.closest("article")).toHaveClass("ring-1", "border-[#9dbc47]");
+  expect(within(two.closest("article")).getByText("Available")).toBeVisible();
+  expect(within(two.closest("article")).getByText("2/2 compactions")).toBeVisible();
+
+  fireEvent.click(two);
+  expect(two).toBeChecked();
+});
+
+
+it("removes a stored selection when a same-revision ledger refresh drops below two", async () => {
+  writeExecuteSessionContexts("workspace-1", [{
+    source_document_id: "doc-2",
+    connector_type: "codex",
+    session_id: "session-two",
+    title: "Beta onboarding",
+    compaction_count: 2,
+  }]);
+  const view = renderLibrary("/app/library?mode=execute-context");
+  fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
+
+  expect(screen.getByRole("checkbox", {
+    name: /^Select Beta onboarding from Codex for Execute/,
+  })).toBeChecked();
+
+  mocks.compactionCounts = { "doc-2": 1 };
+  view.rerender(
+    <LibraryTestApp initialEntry="/app/library?mode=execute-context" />,
+  );
+
+  await waitFor(() => expect(screen.getByRole("checkbox", {
+    name: /^Select Beta onboarding from Codex for Execute/,
+  })).not.toBeChecked());
+  const checkbox = screen.getByRole("checkbox", {
+    name: /^Select Beta onboarding from Codex for Execute/,
+  });
+  expect(checkbox).toBeDisabled();
+  expect(within(checkbox.closest("article")).getByText("1/2 compactions")).toBeVisible();
+  expect(screen.getByText("0 of 3 selected")).toBeVisible();
 });
 
 
@@ -485,16 +792,16 @@ it("rehydrates a removed Execute card as an unselected Library session", () => {
   fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
 
   expect(screen.getByRole("checkbox", {
-    name: "Select Alpha launch for Execute",
+    name: /^Select Alpha launch from Codex for Execute/,
   })).not.toBeChecked();
   expect(screen.getByRole("checkbox", {
-    name: "Select Beta onboarding for Execute",
+    name: /^Select Beta onboarding from Codex for Execute/,
   })).toBeChecked();
   expect(screen.getByText("1 of 3 selected")).toBeInTheDocument();
 });
 
 
-it("cannot apply the previous workspace's session draft during a workspace switch", async () => {
+it("blocks applying the previous workspace's session draft during a workspace switch", () => {
   writeExecuteSessionContexts("workspace-1", [{
     source_document_id: "doc-1",
     connector_type: "codex",
@@ -511,8 +818,14 @@ it("cannot apply the previous workspace's session draft during a workspace switc
   const view = renderLibrary("/app/library?mode=execute-context");
   fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
   expect(screen.getByRole("checkbox", {
-    name: "Select Alpha launch for Execute",
+    name: /^Select Alpha launch from Codex for Execute/,
   })).toBeChecked();
+  fireEvent.click(screen.getByRole("button", {
+    name: "Review / remove 1 session",
+  }));
+  expect(screen.getByRole("dialog", {
+    name: "1 selected session",
+  })).toBeVisible();
 
   mocks.workspaceId = "workspace-2";
   mocks.libraryLoading = true;
@@ -523,7 +836,13 @@ it("cannot apply the previous workspace's session draft during a workspace switc
     />,
   );
 
-  expect(await screen.findByText("Execute destination")).toBeInTheDocument();
+  expect(screen.queryByText("Execute destination")).not.toBeInTheDocument();
+  expect(screen.queryByRole("dialog", {
+    name: "1 selected session",
+  })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", {
+    name: "Use 1 session",
+  })).toBeDisabled();
   expect(readExecuteSessionContexts("workspace-1").map((item) => item.sessionId)).toEqual([
     "session-one",
   ]);
@@ -540,7 +859,7 @@ it("lets the latest Continue session be selected like any other Execute session"
   fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
 
   const latest = screen.getByRole("checkbox", {
-    name: "Select Alpha launch for Execute",
+    name: /^Select Alpha launch from Codex for Execute/,
   });
   expect(latest).toBeEnabled();
 
@@ -551,6 +870,51 @@ it("lets the latest Continue session be selected like any other Execute session"
   expect(within(latest.closest("article")).getByText(
     "Will appear in Execute",
   )).toBeInTheDocument();
+});
+
+
+it("returns Continue-origin Execute selection to Continue with the explicit custom-session marker", async () => {
+  renderLibrary("/app/library?mode=execute-context&return_to=continue");
+  fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
+  fireEvent.click(screen.getByRole("checkbox", {
+    name: /^Select Alpha launch from Codex for Execute/,
+  }));
+
+  fireEvent.click(screen.getByRole("button", { name: "Use 1 session" }));
+
+  expect(await screen.findByText(/Canonical Continue destination/)).toHaveTextContent(
+    "custom",
+  );
+  expect(readExecuteSessionContexts("workspace-1")).toEqual([
+    expect.objectContaining({
+      provider: "codex",
+      sessionId: "session-one",
+      title: "Alpha launch",
+    }),
+  ]);
+});
+
+
+it("returns an empty Continue-origin selection to normal Continue", async () => {
+  writeExecuteSessionContexts("workspace-1", [{
+    source_document_id: "doc-1",
+    connector_type: "codex",
+    session_id: "session-one",
+    title: "Alpha launch",
+    compaction_count: 2,
+  }]);
+  renderLibrary("/app/library?mode=execute-context&return_to=continue");
+  fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
+  fireEvent.click(screen.getByRole("checkbox", {
+    name: /^Select Alpha launch from Codex for Execute/,
+  }));
+
+  fireEvent.click(screen.getByRole("button", { name: "Clear selected sessions" }));
+
+  expect(await screen.findByText(/Canonical Continue destination/)).not.toHaveTextContent(
+    "custom",
+  );
+  expect(readExecuteSessionContexts("workspace-1")).toEqual([]);
 });
 
 
@@ -622,6 +986,28 @@ it("prepares an automatic compaction checkpoint and routes it to Prepare", async
   expect(destination).toHaveTextContent("Review Beta pricing before launch");
   expect(screen.queryByRole("button", { name: "Copy restored context" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Use in agent handoff" })).not.toBeInTheDocument();
+});
+
+
+it.each([
+  ["false", false],
+  ["missing", undefined],
+  ["malformed", "yes"],
+])("does not prepare a checkpoint when restorable is %s", async (_label, restorable) => {
+  mocks.checkpointRestorable = restorable;
+  renderLibrary();
+
+  fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
+  fireEvent.click(screen.getByRole("button", { name: "Open checkpoints for Alpha launch" }));
+
+  const drawer = await screen.findByRole("dialog");
+  const disabled = within(drawer).getByRole("button", { name: "No active task" });
+  expect(disabled).toBeDisabled();
+  fireEvent.click(disabled);
+  expect(mocks.openHarness).not.toHaveBeenCalledWith(
+    "/session-library/checkpoints/restore",
+    expect.anything(),
+  );
 });
 
 

@@ -176,10 +176,10 @@ struct DaemonStateAPITests {
             "snapshot_fingerprint": "\(String(repeating: "f", count: 64))",
             "captured_at": "2026-08-05T12:00:00Z"
           },
-          "quality_report": {"copy_ready": true, "score": 95.0, "issues": []},
+          "quality_report": {"copy_ready": true, "score": 68.92, "issues": []},
           "product_profile": {"name": "Café/工具"},
-          "semantic_sha256": "dfe6d4365fc4e5c2818f0289835dc37f13f6746ed263c03d5706e4438c3b60cf",
-          "artifact_sha256": "972306bb79e175f08302dc3641408fbd852d111077298cbe67465e7d1848a15b"
+          "semantic_sha256": "fb53eb156b01af930671647371a5048ad902df5d6fa253e933d223ae4262fe06",
+          "artifact_sha256": "108c8ef1067ce7319211ab03ecc3c2bee61917b255da256ed84fb9ebfb3266ee"
         }
         """
         let foundation = try JSONDecoder().decode(
@@ -205,7 +205,7 @@ struct DaemonStateAPITests {
         ] {
             let foundation = try JSONDecoder().decode(
                 WorkspaceFoundationEnvelope.self,
-                from: Data("{\"schema_version\":\"(schemaVersion)\"}".utf8)
+                from: Data("{\"schema_version\":\"\(schemaVersion)\"}".utf8)
             )
             #expect(foundation.hasSupportedSchemaVersion)
         }
@@ -246,7 +246,7 @@ struct DaemonStateAPITests {
                 )
             )
         } catch {
-            Issue.record("Unexpected error: (error)")
+            Issue.record("Unexpected error: \(error)")
         }
     }
 
@@ -439,6 +439,204 @@ struct DaemonStateAPITests {
     }
 
     @Test
+    func explicitHistoricalSessionContextUsesExactIdentityWithoutRecapture() async throws {
+        defer { URLProtocolStub.reset() }
+        let content = "# Current Session Context\n\nContinue Claude session nine."
+        var paths: [String] = []
+        let api = makeAPI { request in
+            let path = request.url!.path
+            paths.append(path)
+            switch path {
+            case "/api/checkpoints/session-context-eligibility",
+                 "/api/checkpoints/latest":
+                let query = Dictionary(
+                    uniqueKeysWithValues: URLComponents(
+                        url: request.url!,
+                        resolvingAgainstBaseURL: false
+                    )!.queryItems!.map { ($0.name, $0.value ?? "") }
+                )
+                #expect(query["workspace_id"] == "workspace-1")
+                #expect(query["provider"] == "claude")
+                #expect(query["session_id"] == "claude-session-9")
+                if path.hasSuffix("session-context-eligibility") {
+                    return URLProtocolStub.response(
+                        for: request,
+                        json: self.eligibilityJSON(
+                            provider: "claude",
+                            sessionID: "claude-session-9"
+                        )
+                    )
+                }
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.checkpointJSON(
+                        provider: "claude",
+                        sessionID: "claude-session-9",
+                        checkpointID: "claude-checkpoint-9",
+                        currentnessState: "historical"
+                    )
+                )
+            case "/api/checkpoints/claude-checkpoint-9/handoff":
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.handoffJSON(
+                        content: content,
+                        sha256: self.sha256(content),
+                        provider: "claude",
+                        sessionID: "claude-session-9",
+                        checkpointID: "claude-checkpoint-9"
+                    )
+                )
+            default:
+                throw URLError(.badURL)
+            }
+        }
+
+        let result = try await api.fetchSessionContext(
+            workspaceID: " workspace-1 ",
+            provider: "daemonstate:claude-code",
+            sessionID: " claude-session-9 "
+        )
+
+        #expect(
+            paths == [
+                "/api/checkpoints/session-context-eligibility",
+                "/api/checkpoints/latest",
+                "/api/checkpoints/claude-checkpoint-9/handoff",
+            ]
+        )
+        #expect(result.content == content)
+        #expect(result.provider == "claude")
+        #expect(result.sessionID == "claude-session-9")
+        #expect(result.checkpointID == "claude-checkpoint-9")
+    }
+
+    @Test
+    func explicitSessionContextCapturesTheExactSessionWhenLatestIsMissing() async throws {
+        defer { URLProtocolStub.reset() }
+        let content = "# Current Session Context"
+        var paths: [String] = []
+        var captureBody: [String: Any]?
+        let api = makeAPI { request in
+            let path = request.url!.path
+            paths.append(path)
+            switch path {
+            case "/api/checkpoints/session-context-eligibility":
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.eligibilityJSON(
+                        provider: "opencode",
+                        sessionID: "open-session-3"
+                    )
+                )
+            case "/api/checkpoints/latest":
+                return URLProtocolStub.response(
+                    for: request,
+                    statusCode: 404,
+                    json: #"{"detail":"Checkpoint not found"}"#
+                )
+            case "/api/checkpoints/capture":
+                captureBody = try self.jsonBody(request)
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.checkpointJSON(
+                        provider: "opencode",
+                        sessionID: "open-session-3",
+                        checkpointID: "open-checkpoint-3"
+                    )
+                )
+            case "/api/checkpoints/open-checkpoint-3/handoff":
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.handoffJSON(
+                        content: content,
+                        sha256: self.sha256(content),
+                        provider: "opencode",
+                        sessionID: "open-session-3",
+                        checkpointID: "open-checkpoint-3"
+                    )
+                )
+            default:
+                throw URLError(.badURL)
+            }
+        }
+
+        _ = try await api.fetchSessionContext(
+            workspaceID: "workspace-1",
+            provider: "opencode",
+            sessionID: "open-session-3"
+        )
+
+        #expect(
+            paths == [
+                "/api/checkpoints/session-context-eligibility",
+                "/api/checkpoints/latest",
+                "/api/checkpoints/capture",
+                "/api/checkpoints/open-checkpoint-3/handoff",
+            ]
+        )
+        #expect(captureBody?["workspace_id"] as? String == "workspace-1")
+        #expect(captureBody?["provider"] as? String == "opencode")
+        #expect(captureBody?["session_id"] as? String == "open-session-3")
+    }
+
+    @Test
+    func explicitSessionContextRejectsMismatchedCheckpointIdentity() async {
+        defer { URLProtocolStub.reset() }
+        var paths: [String] = []
+        let api = makeAPI { request in
+            let path = request.url!.path
+            paths.append(path)
+            switch path {
+            case "/api/checkpoints/session-context-eligibility":
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.eligibilityJSON(
+                        provider: "claude",
+                        sessionID: "claude-session-9"
+                    )
+                )
+            case "/api/checkpoints/latest":
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.checkpointJSON(
+                        provider: "claude",
+                        sessionID: "another-session",
+                        checkpointID: "wrong-checkpoint"
+                    )
+                )
+            default:
+                throw URLError(.badURL)
+            }
+        }
+
+        do {
+            _ = try await api.fetchSessionContext(
+                workspaceID: "workspace-1",
+                provider: "claude",
+                sessionID: "claude-session-9"
+            )
+            Issue.record("Expected the mismatched checkpoint to fail")
+        } catch let error as DaemonStateError {
+            #expect(
+                error == .identityMismatch(
+                    field: "checkpoint session",
+                    expected: "claude-session-9",
+                    actual: "another-session"
+                )
+            )
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        #expect(
+            paths == [
+                "/api/checkpoints/session-context-eligibility",
+                "/api/checkpoints/latest",
+            ]
+        )
+    }
+
+    @Test
     func sessionContextRetriesTheWholeFlowAfterATransientServerError() async throws {
         defer { URLProtocolStub.reset() }
         let content = "# Current Session Context\n\nRetry the transient failure."
@@ -548,6 +746,80 @@ struct DaemonStateAPITests {
                     statusCode: 500,
                     code: "internal_error",
                     message: "An internal error occurred. Request request-123."
+                )
+            )
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test
+    func detailErrorsPreserveTheResponseRequestID() async {
+        defer { URLProtocolStub.reset() }
+        let api = makeAPI { request in
+            URLProtocolStub.response(
+                for: request,
+                statusCode: 500,
+                headerFields: ["X-Request-ID": "request-from-header-456"],
+                json: """
+                {
+                  "detail": {
+                    "code": "context_prepare_failed",
+                    "message": "The repository observation could not be compiled."
+                  }
+                }
+                """
+            )
+        }
+
+        do {
+            _ = try await api.workspaces()
+            Issue.record("Expected the context preparation response to fail")
+        } catch let error as DaemonStateError {
+            #expect(
+                error == .httpError(
+                    statusCode: 500,
+                    code: "context_prepare_failed",
+                    message: "The repository observation could not be compiled. "
+                        + "Request request-from-header-456."
+                )
+            )
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test
+    func validationErrorListsRemainActionable() async {
+        defer { URLProtocolStub.reset() }
+        let api = makeAPI { request in
+            URLProtocolStub.response(
+                for: request,
+                statusCode: 422,
+                headerFields: ["X-Request-ID": "validation-request-789"],
+                json: """
+                {
+                  "detail": [
+                    {
+                      "loc": ["body", "objective"],
+                      "msg": "String should have at least 1 character"
+                    }
+                  ]
+                }
+                """
+            )
+        }
+
+        do {
+            _ = try await api.workspaces()
+            Issue.record("Expected request validation to fail")
+        } catch let error as DaemonStateError {
+            #expect(
+                error == .httpError(
+                    statusCode: 422,
+                    code: "validation_error",
+                    message: "body.objective: String should have at least 1 character "
+                        + "Request validation-request-789."
                 )
             )
         } catch {
@@ -983,17 +1255,23 @@ struct DaemonStateAPITests {
         """
     }
 
-    private func checkpointJSON() -> String {
+    private func checkpointJSON(
+        workspaceID: String = "workspace-1",
+        provider: String = "codex",
+        sessionID: String = "session-1",
+        checkpointID: String = "checkpoint-1",
+        currentnessState: String = "captured"
+    ) -> String {
         """
         {
-          "id": "checkpoint-1",
-          "workspace_id": "workspace-1",
-          "provider": "codex",
-          "session_id": "session-1",
+          "id": "\(checkpointID)",
+          "workspace_id": "\(workspaceID)",
+          "provider": "\(provider)",
+          "session_id": "\(sessionID)",
           "schema_version": "work_checkpoint.v10",
           "capture_status": "complete",
           "projection": {"valid": true},
-          "currentness": {"state": "captured"},
+          "currentness": {"state": "\(currentnessState)"},
           "boundary": {
             "event_id": "event-20",
             "sequence_number": 20,
@@ -1008,12 +1286,16 @@ struct DaemonStateAPITests {
         """
     }
 
-    private func eligibilityJSON(compactionCount: Int = 2) -> String {
+    private func eligibilityJSON(
+        provider: String = "codex",
+        sessionID: String = "session-1",
+        compactionCount: Int = 2
+    ) -> String {
         """
         {
           "workspace_id": "workspace-1",
-          "provider": "codex",
-          "session_id": "session-1",
+          "provider": "\(provider)",
+          "session_id": "\(sessionID)",
           "eligible": \(compactionCount >= 2 ? "true" : "false"),
           "compaction_count": \(compactionCount),
           "minimum_compactions": 2,
@@ -1022,14 +1304,20 @@ struct DaemonStateAPITests {
         """
     }
 
-    private func handoffJSON(content: String, sha256: String) -> String {
+    private func handoffJSON(
+        content: String,
+        sha256: String,
+        provider: String = "codex",
+        sessionID: String = "session-1",
+        checkpointID: String = "checkpoint-1"
+    ) -> String {
         """
         {
           "schema_version": "session_handoff.v1",
           "scope": "session",
-          "provider": "codex",
-          "session_id": "session-1",
-          "checkpoint_id": "checkpoint-1",
+          "provider": "\(provider)",
+          "session_id": "\(sessionID)",
+          "checkpoint_id": "\(checkpointID)",
           "boundary": {
             "event_id": "event-20",
             "sequence_number": 20,
@@ -1041,6 +1329,14 @@ struct DaemonStateAPITests {
           "quality_report": {
             "copy_ready": true,
             "blocking_issues": []
+          },
+          "readiness_dimensions": {
+            "semantic_readiness": {
+              "copy_ready": true
+            },
+            "evidence_access": {
+              "blocks_copy": false
+            }
           }
         }
         """

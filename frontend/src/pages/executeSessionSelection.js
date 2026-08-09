@@ -8,6 +8,8 @@ export const MAX_EXECUTE_SESSION_CONTEXTS = 3;
 
 const EXECUTE_PREFERENCES_SURFACE = "execute";
 const SESSION_CONTEXTS_KEY = "sessionContexts";
+const ACTIVE_SESSION_IDENTITIES_KEY = "activeSessionIdentities";
+const SUPPORTED_PROVIDERS = new Set(["codex", "claude", "opencode"]);
 
 
 export function executeSessionIdentity(session) {
@@ -44,6 +46,7 @@ export function normalizeExecuteSessionContext(session) {
     sessionId,
     title: cleanText(session?.title) || "Untitled session",
     harness: cleanText(session?.harness),
+    cwd: cleanText(session?.cwd),
     topic: cleanText(
       session?.topic
       || session?.selected_topic
@@ -56,6 +59,16 @@ export function normalizeExecuteSessionContext(session) {
     ),
     compactionCount: sessionContextCompactionCount(session),
   };
+}
+
+
+export function desktopOverlaySessionSelections(sessions) {
+  return normalizeExecuteSessionContexts(sessions).map((session, index) => ({
+    provider: session.provider,
+    session_id: session.sessionId,
+    title: session.title,
+    ordinal: index + 1,
+  }));
 }
 
 
@@ -97,9 +110,48 @@ export function writeExecuteSessionContexts(workspaceId, sessions) {
     {},
   );
   const normalized = normalizeExecuteSessionContexts(sessions);
+  const selectedIdentities = new Set(
+    normalized.map(executeSessionIdentity).filter(Boolean),
+  );
+  const activeIdentities = normalizeActiveSessionIdentities(
+    preferences[ACTIVE_SESSION_IDENTITIES_KEY],
+  );
+  const retainedActiveIdentities = Object.fromEntries(
+    Object.entries(activeIdentities).filter(([, identity]) => (
+      selectedIdentities.has(identity)
+    )),
+  );
   writeWorkspacePreferences(workspaceId, EXECUTE_PREFERENCES_SURFACE, {
     ...preferences,
     [SESSION_CONTEXTS_KEY]: normalized,
+    [ACTIVE_SESSION_IDENTITIES_KEY]: retainedActiveIdentities,
+  });
+  return normalized;
+}
+
+
+export function readExecuteActiveSessionIdentities(workspaceId) {
+  const preferences = readWorkspacePreferences(
+    workspaceId,
+    EXECUTE_PREFERENCES_SURFACE,
+    { [ACTIVE_SESSION_IDENTITIES_KEY]: {} },
+  );
+  return normalizeActiveSessionIdentities(
+    preferences[ACTIVE_SESSION_IDENTITIES_KEY],
+  );
+}
+
+
+export function writeExecuteActiveSessionIdentities(workspaceId, identities) {
+  const preferences = readWorkspacePreferences(
+    workspaceId,
+    EXECUTE_PREFERENCES_SURFACE,
+    {},
+  );
+  const normalized = normalizeActiveSessionIdentities(identities);
+  writeWorkspacePreferences(workspaceId, EXECUTE_PREFERENCES_SURFACE, {
+    ...preferences,
+    [ACTIVE_SESSION_IDENTITIES_KEY]: normalized,
   });
   return normalized;
 }
@@ -132,6 +184,23 @@ export function resolveExecuteSessionContexts(storedSessions, librarySessions) {
 
 function cleanText(value) {
   return value === null || value === undefined ? "" : String(value).trim();
+}
+
+
+function normalizeActiveSessionIdentities(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result = {};
+  for (const [rawProvider, rawIdentity] of Object.entries(value)) {
+    const provider = normalizeProvider(rawProvider);
+    const identity = cleanText(rawIdentity);
+    if (
+      SUPPORTED_PROVIDERS.has(provider)
+      && identity.startsWith(`${provider}:`)
+    ) {
+      result[provider] = identity;
+    }
+  }
+  return result;
 }
 
 

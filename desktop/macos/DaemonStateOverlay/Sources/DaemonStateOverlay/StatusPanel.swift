@@ -12,6 +12,41 @@ final class StatusPanelController: NSWindowController {
         case failure
     }
 
+    static func textColor(for tone: Tone, darkMode: Bool) -> NSColor {
+        switch tone {
+        case .neutral:
+            return .labelColor
+        case .success:
+            return darkMode
+                ? NSColor(
+                    calibratedRed: 0.77,
+                    green: 0.96,
+                    blue: 0.42,
+                    alpha: 1
+                )
+                : NSColor(
+                    calibratedRed: 0.20,
+                    green: 0.34,
+                    blue: 0.02,
+                    alpha: 1
+                )
+        case .failure:
+            return darkMode
+                ? NSColor(
+                    calibratedRed: 1,
+                    green: 0.48,
+                    blue: 0.46,
+                    alpha: 1
+                )
+                : NSColor(
+                    calibratedRed: 0.62,
+                    green: 0.08,
+                    blue: 0.07,
+                    alpha: 1
+                )
+        }
+    }
+
     private let label = NSTextField(labelWithString: "")
     private let effectView = NSVisualEffectView()
     private var dismissWorkItem: DispatchWorkItem?
@@ -52,7 +87,7 @@ final class StatusPanelController: NSWindowController {
         label.alignment = .center
         label.font = .systemFont(ofSize: 12.5, weight: .semibold)
         label.lineBreakMode = .byWordWrapping
-        label.maximumNumberOfLines = 2
+        label.maximumNumberOfLines = 4
         label.frame = NSRect(x: 14, y: 10, width: 232, height: 20)
         label.autoresizingMask = [.width]
         effectView.addSubview(label)
@@ -73,24 +108,10 @@ final class StatusPanelController: NSWindowController {
     ) {
         dismissWorkItem?.cancel()
         label.stringValue = message
-        switch tone {
-        case .neutral:
-            label.textColor = .labelColor
-        case .success:
-            label.textColor = NSColor(
-                calibratedRed: 0.77,
-                green: 0.96,
-                blue: 0.42,
-                alpha: 1
-            )
-        case .failure:
-            label.textColor = NSColor(
-                calibratedRed: 1,
-                green: 0.48,
-                blue: 0.46,
-                alpha: 1
-            )
-        }
+        let darkMode = effectView.effectiveAppearance.bestMatch(
+            from: [.darkAqua, .aqua]
+        ) == .darkAqua
+        label.textColor = Self.textColor(for: tone, darkMode: darkMode)
 
         resize(toFit: message)
         position(relativeTo: anchor)
@@ -135,7 +156,7 @@ final class StatusPanelController: NSWindowController {
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             attributes: attributes
         )
-        let textHeight = min(max(ceil(bounds.height), 20), 36)
+        let textHeight = min(max(ceil(bounds.height), 20), 72)
         let height = max(textHeight + 20, 42)
         window?.setContentSize(NSSize(width: width, height: height))
         label.frame = NSRect(

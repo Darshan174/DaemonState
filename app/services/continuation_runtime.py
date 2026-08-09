@@ -573,17 +573,28 @@ class ContinuationStageService:
                     task_mode=task_mode,
                     artifacts=artifacts,
                 )
-        effective_repo_path, current_repository = _repository_coordinates(preparation)
-        expected_fingerprint = _repository_fingerprint(current_repository)
+        effective_repo_path, current_repository = _desktop_project_coordinates(
+            preparation
+        )
+        expected_fingerprint = (
+            _repository_fingerprint(current_repository)
+            if current_repository is not None
+            else None
+        )
 
-        try:
-            launch_snapshot = await capture_repository_snapshot(effective_repo_path)
-        except (OSError, ValueError) as exc:
-            raise ContinuationRunError(
-                "continuation_repository_unavailable",
-                "A readable local Git repository is required to continue this task.",
-            ) from exc
-        if launch_snapshot.status_fingerprint != expected_fingerprint:
+        launch_snapshot = None
+        if expected_fingerprint is not None:
+            try:
+                launch_snapshot = await capture_repository_snapshot(effective_repo_path)
+            except (OSError, ValueError) as exc:
+                raise ContinuationRunError(
+                    "continuation_repository_unavailable",
+                    "The verified workspace repository became unreadable.",
+                ) from exc
+        if (
+            launch_snapshot is not None
+            and launch_snapshot.status_fingerprint != expected_fingerprint
+        ):
             preparation = await ContinuationService(self.session).prepare(
                 workspace_id=workspace_id,
                 access_scope=access_scope,
@@ -601,8 +612,14 @@ class ContinuationStageService:
                 task_mode=task_mode,
                 artifacts=artifacts,
             )
-            effective_repo_path, current_repository = _repository_coordinates(preparation)
-            expected_fingerprint = _repository_fingerprint(current_repository)
+            effective_repo_path, current_repository = _desktop_project_coordinates(
+                preparation
+            )
+            expected_fingerprint = (
+                _repository_fingerprint(current_repository)
+                if current_repository is not None
+                else None
+            )
 
         _execution, contract = await _prepared_execution(
             self.session,
@@ -615,6 +632,8 @@ class ContinuationStageService:
             workspace_id=workspace_id,
             access_scope=access_scope,
             continuation_lead=continuation_lead,
+            target_model=target_model,
+            token_budget=token_budget,
         )
         context_message = _staging_context_for_preparation(
             preparation,
@@ -624,22 +643,23 @@ class ContinuationStageService:
             session_context=session_context,
         )
 
-        try:
-            repository_after = await capture_repository_snapshot(effective_repo_path)
-            if repository_after.status_fingerprint != expected_fingerprint:
-                raise RepositoryStateChangedError(
-                    expected_fingerprint,
-                    repository_after.status_fingerprint,
-                )
-        except RepositoryStateChangedError as exc:
-            raise ContinuationRunError(
-                "continuation_repository_changed",
-                (
-                    "Repository state changed while the desktop handoff was "
-                    "being prepared. No provider task was started."
-                ),
-                status_code=409,
-            ) from exc
+        if expected_fingerprint is not None:
+            try:
+                repository_after = await capture_repository_snapshot(effective_repo_path)
+                if repository_after.status_fingerprint != expected_fingerprint:
+                    raise RepositoryStateChangedError(
+                        expected_fingerprint,
+                        repository_after.status_fingerprint,
+                    )
+            except RepositoryStateChangedError as exc:
+                raise ContinuationRunError(
+                    "continuation_repository_changed",
+                    (
+                        "Repository state changed while the desktop handoff was "
+                        "being prepared. No provider task was started."
+                    ),
+                    status_code=409,
+                ) from exc
 
         # Persist only the prepared context and a launch reservation.
         # A provider run/session does not exist until the user submits the
@@ -1476,6 +1496,39 @@ def _repository_coordinates(
     return repo_path, current
 
 
+def _desktop_project_coordinates(
+    preparation: ContinuationResult,
+) -> tuple[str, dict[str, Any] | None]:
+    """Return a readable project directory with optional Git evidence.
+
+    Desktop handoff only opens a visible draft and copies context; it does not
+    execute. A normal non-Git project directory is therefore sufficient. The
+    automatic execution path continues to use `_repository_coordinates` and
+    retains its stronger Git fingerprint requirement.
+    """
+
+    project_path = str(preparation.repository.get("path") or "").strip()
+    if not project_path:
+        raise ContinuationRunError(
+            "continuation_project_unavailable",
+            "A readable local project directory is required for the desktop handoff.",
+        )
+    try:
+        resolved = Path(project_path).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ContinuationRunError(
+            "continuation_project_unavailable",
+            "The recorded project directory is no longer readable.",
+        ) from exc
+    if not resolved.is_dir():
+        raise ContinuationRunError(
+            "continuation_project_unavailable",
+            "The recorded project path is not a directory.",
+        )
+    current = preparation.repository.get("current")
+    return str(resolved), current if isinstance(current, dict) else None
+
+
 def _repository_baseline_needs_refresh(
     preparation: ContinuationResult,
 ) -> bool:
@@ -1588,6 +1641,22 @@ def _desktop_stage_baseline_identity(
     repository = repository if isinstance(repository, Mapping) else {}
     manifest = repository.get("protected_baseline_manifest")
     manifest = manifest if isinstance(manifest, Mapping) else {}
+    files = session_context.get("files")
+    # Git baseline delivery protects changes that existed before the handoff.
+    # A normal change task in a non-Git project has no baseline to materialize
+    # and must remain stageable.
+    change_task_with_git_snapshot = bool(
+        str(session_context.get("task_mode") or "").strip().casefold() == "change"
+        and (str(repository.get("root") or "").strip() or manifest)
+    )
+    baseline_required = (
+        change_task_with_git_snapshot
+        or bool(
+            files.get("pre_existing_at_handoff")
+            if isinstance(files, Mapping)
+            else False
+        )
+    )
     exact_payload = {
         "schema_version": manifest.get("schema_version"),
         "complete": manifest.get("complete"),
@@ -1604,7 +1673,7 @@ def _desktop_stage_baseline_identity(
             ensure_ascii=False,
         ).encode("utf-8", errors="surrogateescape")
     except (TypeError, ValueError, UnicodeError) as exc:
-        if session_context.get("task_mode") == "change":
+        if baseline_required:
             raise ValueError("exact protected baseline cannot be serialized") from exc
         return None
     digest = hashlib.sha256(payload_bytes).hexdigest()
@@ -1621,7 +1690,7 @@ def _desktop_stage_baseline_identity(
         and portable_reference == f"handoff://repository-snapshots/{manifest_id}"
     )
     if not valid:
-        if session_context.get("task_mode") == "change":
+        if baseline_required:
             raise ValueError("exact protected baseline is unavailable")
         return None
     filename = "protected-baseline.json"
@@ -1917,6 +1986,8 @@ async def _canonical_session_context_for_preparation(
     workspace_id: UUID,
     access_scope: AccessScope,
     continuation_lead: str | None = None,
+    target_model: str | None = None,
+    token_budget: int | None = None,
 ) -> dict[str, Any]:
     """Compile the canonical latest-checkpoint Session Context for Continue."""
 
@@ -2029,7 +2100,21 @@ async def _canonical_session_context_for_preparation(
             "occurred_at": current_boundary.get("session_tip_at"),
         },
     )
-    repository_comparison = await compare_checkpoint_repository(checkpoint)
+    prepared_repository = (
+        preparation.repository if isinstance(preparation.repository, Mapping) else {}
+    )
+    prepared_current_repository = prepared_repository.get("current")
+    prepared_repository_path = str(prepared_repository.get("path") or "").strip()
+    repository_comparison = await compare_checkpoint_repository(
+        checkpoint,
+        fallback_repo_paths=(
+            (prepared_repository_path,)
+            if prepared_repository_path
+            and isinstance(prepared_current_repository, Mapping)
+            else ()
+        ),
+        recorded_session_path=prepared_repository_path or None,
+    )
     try:
         artifact = build_session_handoff_artifact(
             checkpoint,
@@ -2040,6 +2125,9 @@ async def _canonical_session_context_for_preparation(
             checkpoint_data=checkpoint_data,
             repository_comparison=repository_comparison,
             continuation_lead=continuation_lead,
+            delivery_mode="desktop_stage",
+            target_model=target_model,
+            token_budget=token_budget,
         )
         attachment_bundle = _materialize_desktop_stage_attachments(
             checkpoint,
@@ -2060,6 +2148,9 @@ async def _canonical_session_context_for_preparation(
                 continuation_lead=continuation_lead,
                 receiver_attachment_deliveries=attachment_bundle.deliveries,
                 receiver_baseline_delivery=attachment_bundle.baseline_delivery,
+                delivery_mode="desktop_stage",
+                target_model=target_model,
+                token_budget=token_budget,
             )
             artifact["receiver_attachment_bundle"] = {
                 "schema_version": "desktop_stage_attachments.v1",
@@ -2164,6 +2255,35 @@ def _staging_context_for_preparation(
     session_issues = [
         issue for issue in session_quality.get("blocking_issues", []) if isinstance(issue, Mapping)
     ]
+    session_dimensions = (
+        session_context.get("readiness_dimensions")
+        if isinstance(session_context.get("readiness_dimensions"), Mapping)
+        else {}
+    )
+    session_semantic = (
+        session_dimensions.get("semantic_readiness")
+        if isinstance(session_dimensions.get("semantic_readiness"), Mapping)
+        else {}
+    )
+    session_evidence = (
+        session_dimensions.get("evidence_access")
+        if isinstance(session_dimensions.get("evidence_access"), Mapping)
+        else {}
+    )
+    token_accounting = (
+        session_context.get("token_accounting")
+        if isinstance(session_context.get("token_accounting"), Mapping)
+        else {}
+    )
+    session_delivery = (
+        session_context.get("delivery")
+        if isinstance(session_context.get("delivery"), Mapping)
+        else {}
+    )
+    delivery_policy_safe = (
+        token_accounting.get("blocks_automatic_delivery") is False
+        and session_delivery.get("ready_for_target") is True
+    )
     source_session = (
         preparation.source_session if isinstance(preparation.source_session, dict) else {}
     )
@@ -2177,6 +2297,9 @@ def _staging_context_for_preparation(
         session_context.get("schema_version") == SESSION_HANDOFF_SCHEMA_VERSION
         and session_context.get("scope") == "session"
         and session_quality.get("copy_ready") is True
+        and session_semantic.get("copy_ready") is True
+        and session_evidence.get("blocks_copy") is False
+        and delivery_policy_safe
         and not session_issues
         and bool(session_content.strip())
         and session_sha256 == hashlib.sha256(session_content.encode("utf-8")).hexdigest()
@@ -2195,12 +2318,18 @@ def _staging_context_for_preparation(
         ),
         "",
     )
+    destination_overflow = token_accounting.get("blocks_automatic_delivery") is True
     message = issue_message or (
         "The compiled Session Context does not match the supplied immediate lead."
         if not lead_matches or not continuation_lead_matches
         else (
-            "The canonical latest-session Session Context failed its "
-            "copy-safety, identity, or integrity checks."
+            (
+                "The Session Context exceeds the explicit destination token limit, "
+                "so it was not opened or copied into the selected desktop harness."
+                if destination_overflow
+                else "The canonical latest-session Session Context failed its "
+                "copy-safety, delivery-policy, identity, or integrity checks."
+            )
             if not session_is_safe
             else (
                 "Session Context could not safely inherit the compiled "
@@ -3239,7 +3368,9 @@ def _composer_provider_readiness(
             code=readiness.code,
             message=readiness.message,
             action=readiness.action,
-            models=readiness.models,
+            # Continue follows the provider desktop's own defaults. Model and
+            # reasoning-effort choices are intentionally not a product option.
+            models=(),
             desktop_available=True,
             exact_session_supported=False,
             context_staging_supported=False,
@@ -3247,7 +3378,7 @@ def _composer_provider_readiness(
             readiness_scope="desktop_dispatch_with_account_evidence",
             account_access_state=readiness.account_access_state,
             account_access_verified=readiness.account_access_verified,
-            model_catalog_source=readiness.model_catalog_source,
+            model_catalog_source=None,
             capabilities={
                 "desktop_dispatch_available": True,
                 "account_access_probe_supported": provider == "codex",
@@ -3260,7 +3391,7 @@ def _composer_provider_readiness(
         code=readiness.code,
         message=readiness.message,
         action=readiness.action,
-        models=readiness.models,
+        models=(),
         desktop_available=readiness.desktop_available,
         exact_session_supported=False,
         context_staging_supported=False,
@@ -3268,7 +3399,7 @@ def _composer_provider_readiness(
         readiness_scope="desktop_dispatch_with_account_evidence",
         account_access_state=readiness.account_access_state,
         account_access_verified=readiness.account_access_verified,
-        model_catalog_source=readiness.model_catalog_source,
+        model_catalog_source=None,
         capabilities={
             "desktop_dispatch_available": (
                 readiness.desktop_available and readiness.url_scheme_registered

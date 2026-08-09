@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import shlex
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -57,8 +58,22 @@ def _checkpoint_verification_trace_result(
     }
 
 
-async def compare_checkpoint_repository(checkpoint: WorkCheckpoint) -> dict[str, Any]:
-    """Compare one saved checkpoint with the current repository without mutating state."""
+async def compare_checkpoint_repository(
+    checkpoint: WorkCheckpoint,
+    *,
+    fallback_repo_paths: Iterable[str] = (),
+    selected_repo_path: str | None = None,
+    recorded_session_path: str | None = None,
+) -> dict[str, Any]:
+    """Resolve and compare repository evidence without making Git mandatory.
+
+    The checkpoint-bound repository remains authoritative when it is readable.
+    If its recorded directory is not a Git repository, a single currently
+    readable workspace repository is a deterministic fallback. Multiple
+    readable workspace repositories require an explicit selection; no Git
+    repository is reported as unavailable evidence rather than fabricated
+    state.
+    """
 
     base = {
         "checkpoint_id": str(checkpoint.id),
@@ -69,35 +84,153 @@ async def compare_checkpoint_repository(checkpoint: WorkCheckpoint) -> dict[str,
             "status_fingerprint": checkpoint.worktree_fingerprint,
         },
     }
-    if not checkpoint.repo_root or not checkpoint.worktree_fingerprint:
+    recorded_root = _normalized_repository_path(
+        checkpoint.repo_root or recorded_session_path
+    )
+    selected_root = _normalized_repository_path(selected_repo_path)
+    workspace_candidates = tuple(dict.fromkeys(
+        normalized
+        for raw in fallback_repo_paths
+        if (normalized := _normalized_repository_path(raw)) is not None
+    ))
+    if selected_root is not None:
+        candidate_paths = (selected_root,)
+        resolution_source = "explicit_workspace_selection"
+    else:
+        candidate_paths = tuple(
+            path for path in workspace_candidates if path != recorded_root
+        )
+        resolution_source = "workspace_fallback"
+
+    recorded_error: str | None = None
+    if selected_root is None and recorded_root is not None:
+        try:
+            current = await capture_repository_snapshot(recorded_root)
+        except (OSError, ValueError) as exc:
+            recorded_error = str(exc)
+        else:
+            return _repository_comparison_result(
+                base,
+                checkpoint=checkpoint,
+                current=current,
+                resolution_source="checkpoint",
+                recorded_root=recorded_root,
+                candidates=workspace_candidates,
+            )
+
+    readable: list[tuple[str, Any]] = []
+    errors: list[str] = []
+    for path in candidate_paths:
+        try:
+            readable.append((path, await capture_repository_snapshot(path)))
+        except (OSError, ValueError) as exc:
+            errors.append(str(exc))
+
+    if len(readable) > 1:
+        candidates = [path for path, _snapshot in readable]
         return {
             **base,
-            "status": "unavailable",
-            "reason": "This saved version is not linked to a repository snapshot.",
+            "status": "ambiguous",
+            "reason": (
+                "Multiple verified workspace repositories are available. "
+                "Choose the repository for this session before continuing."
+            ),
             "current": None,
+            "resolution": {
+                "status": "selection_required",
+                "source": "workspace",
+                "recorded_session_directory": recorded_root,
+                "selected_repository": None,
+                "candidate_repositories": candidates,
+            },
         }
+    if len(readable) == 1:
+        resolved_path, current = readable[0]
+        return _repository_comparison_result(
+            base,
+            checkpoint=checkpoint,
+            current=current,
+            resolution_source=resolution_source,
+            recorded_root=recorded_root,
+            candidates=workspace_candidates,
+            resolved_path=resolved_path,
+        )
 
-    try:
-        current = await capture_repository_snapshot(checkpoint.repo_root)
-    except (OSError, ValueError) as exc:
-        return {
-            **base,
-            "status": "unavailable",
-            "reason": str(exc),
-            "current": None,
-        }
-
-    matches = current.status_fingerprint == checkpoint.worktree_fingerprint
+    reason = (
+        "Repository snapshot unavailable: recorded session directory is not a Git repository."
+        if recorded_root or candidate_paths
+        else "Repository snapshot unavailable: this workspace has no verified Git repository."
+    )
     return {
         **base,
-        "status": "matched" if matches else "changed",
+        "status": "unavailable",
+        "reason": reason,
+        "current": None,
+        "resolution": {
+            "status": "unavailable",
+            "source": "none",
+            "recorded_session_directory": recorded_root,
+            "selected_repository": selected_root,
+            "candidate_repositories": list(workspace_candidates),
+            "diagnostic": recorded_error or (errors[0] if errors else None),
+        },
+    }
+
+
+def _repository_comparison_result(
+    base: dict[str, Any],
+    *,
+    checkpoint: WorkCheckpoint,
+    current: Any,
+    resolution_source: str,
+    recorded_root: str | None,
+    candidates: Iterable[str],
+    resolved_path: str | None = None,
+) -> dict[str, Any]:
+    current_root = _normalized_repository_path(
+        resolved_path or getattr(current, "root", None)
+    )
+    comparable_to_checkpoint = bool(
+        checkpoint.worktree_fingerprint
+        and recorded_root
+        and current_root == recorded_root
+    )
+    matches = bool(
+        comparable_to_checkpoint
+        and current.status_fingerprint == checkpoint.worktree_fingerprint
+    )
+    status = (
+        "matched" if matches else "changed" if comparable_to_checkpoint else "resolved"
+    )
+    return {
+        **base,
+        "status": status,
         "reason": (
             "The current repository matches this saved version."
             if matches
             else "The current repository differs from this saved version."
+            if comparable_to_checkpoint
+            else "Using the workspace's verified repository because the recorded session directory has no usable Git snapshot."
         ),
         "current": current.to_dict(),
+        "resolution": {
+            "status": "resolved",
+            "source": resolution_source,
+            "recorded_session_directory": recorded_root,
+            "selected_repository": current_root,
+            "candidate_repositories": list(candidates),
+        },
     }
+
+
+def _normalized_repository_path(value: object) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return str(Path(raw).expanduser().resolve(strict=False))
+    except (OSError, RuntimeError):
+        return str(Path(raw).expanduser())
 
 
 @traced(

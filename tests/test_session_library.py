@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import sqlite3
 import struct
 import threading
 import zlib
@@ -50,6 +51,47 @@ def test_provider_compaction_restores_long_multiline_request_losslessly() -> Non
 
     assert restored["objective"] == request
     assert restored["objective"].endswith("FINAL-SENTINEL")
+
+
+def test_provider_compaction_cleans_attachment_transport_before_goal_replay() -> None:
+    restored = build_restored_context(
+        (
+            "[USER]\n"
+            '<image name="Screenshot" path="/private/var/folders/secret.png"></image>\n'
+            "Fix the checkout flow."
+        ),
+        {
+            "id": "compaction-clean-transport",
+            "turn_count": 1,
+            "provider": "codex",
+        },
+    )
+
+    assert restored["objective"] == "Fix the checkout flow."
+    assert "/private/var/folders" not in restored["markdown"]
+    assert restored["earlier_requirements"] == []
+
+
+def test_provider_compaction_does_not_resurrect_a_cancelled_task() -> None:
+    restored = build_restored_context(
+        (
+            "[USER]\nFix the checkout flow.\n\n"
+            "[ASSISTANT]\nI found the affected route.\n\n"
+            "[USER]\ncancel"
+        ),
+        {
+            "id": "compaction-cancelled-task",
+            "turn_count": 3,
+            "provider": "codex",
+        },
+        session_title="Checkout work",
+    )
+
+    assert restored["objective"] == ""
+    assert restored["restorable"] is False
+    assert restored["readiness_status"] == "no_active_objective"
+    assert restored["earlier_requirements"] == []
+    assert "do not resume it" in restored["markdown"]
 
 
 async def test_library_and_resume_share_the_indexed_project_boundary(
@@ -191,6 +233,278 @@ async def test_library_and_resume_share_the_indexed_project_boundary(
     ):
         response = await method(endpoint, json=body)
         assert response.status_code == 404
+
+
+async def test_library_compaction_count_matches_event_eligibility_across_revisions(
+    client,
+    db_session,
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "context-engine"
+    repo.mkdir()
+    workspace = Workspace(
+        id=uuid4(),
+        name="Compaction projection",
+        slug=f"compaction-projection-{uuid4().hex}",
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    db_session.add(CodeFile(
+        workspace_id=workspace.id,
+        repo_root=str(repo),
+        path="app.py",
+        identity_key=uuid4().hex * 2,
+        language="python",
+        sha256="a" * 64,
+        size=10,
+    ))
+
+    metadata = {
+        "connector_type": "opencode",
+        "tool": "opencode",
+        "session_id": "opencode-two-compactions",
+        "cwd": str(repo),
+        "source_path": str(tmp_path / "opencode.db"),
+        "title": "20x knowledge-graph layer implementation",
+        "topics": [
+            "20x knowledge-graph layer implementation",
+            "Context engine",
+            "Read AGENTS",
+            "You are GLM 5",
+            "Fix the compaction display",
+        ],
+        # Deliberately wrong legacy metadata: the event ledger must win.
+        "compaction_count": 99,
+    }
+    first = await ingest_source_document_revision(
+        db_session,
+        workspace_id=workspace.id,
+        source_type="agent_session",
+        external_id="opencode:session:opencode-two-compactions",
+        content="[USER]\nFix the compaction display.",
+        metadata_json=metadata,
+    )
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=first.document,
+        provider="opencode",
+        session_id="opencode-two-compactions",
+        events=[NormalizedSessionEvent(
+            provider_event_id="compact-1",
+            sequence_number=1,
+            event_type="compaction_boundary",
+        )],
+    )
+    second = await ingest_source_document_revision(
+        db_session,
+        workspace_id=workspace.id,
+        source_type="agent_session",
+        external_id="opencode:session:opencode-two-compactions",
+        content=(
+            "[USER]\nFix the compaction display.\n\n"
+            "[ASSISTANT]\nThe first window is complete."
+        ),
+        metadata_json=metadata,
+    )
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=second.document,
+        provider="opencode",
+        session_id="opencode-two-compactions",
+        events=[NormalizedSessionEvent(
+            provider_event_id="compact-2",
+            sequence_number=2,
+            event_type="compaction_boundary",
+        )],
+    )
+
+    stale = await ingest_source_document_revision(
+        db_session,
+        workspace_id=workspace.id,
+        source_type="agent_session",
+        external_id="opencode:session:stale-descriptor-only",
+        content="[USER]\nAudit a session with no provider compaction.",
+        metadata_json={
+            **metadata,
+            "session_id": "stale-descriptor-only",
+            "title": "Descriptor-only session",
+            "topics": ["Descriptor-only session"],
+            "compaction_count": 7,
+            "compaction_checkpoints": [{
+                "id": "stale-checkpoint",
+                "provider": "opencode",
+                "turn_count": 1,
+            }],
+        },
+    )
+    assert stale.document is not None
+    stale_summary = await ingest_source_document_revision(
+        db_session,
+        workspace_id=workspace.id,
+        source_type="agent_session",
+        external_id="opencode:session:stale-topic-summary",
+        content=(
+            "[USER]\nHi\n\n"
+            "[USER]\nRead AGENTS.md and follow the instructions.\n\n"
+            "[USER]\nReview the OSS launch readiness."
+        ),
+        metadata_json={
+            **metadata,
+            "session_id": "stale-topic-summary",
+            "title": "Greeting",
+            "topics": [
+                "Greeting",
+                "Context engine",
+                "Read AGENTS",
+                "Continue",
+                "You are GLM 5",
+            ],
+            "session_library_summary": {
+                "schema_version": 1,
+                "content_sha256": "stale",
+                "internal": False,
+                "title": "Greeting",
+                "topics": ["Greeting", "Read AGENTS", "Continue"],
+                "latest_topic": "Continue",
+                "preview": "Greeting",
+                "compaction_checkpoints": [],
+            },
+        },
+    )
+    assert stale_summary.document is not None
+
+    legacy_external = SourceDocument(
+        workspace_id=None,
+        source_type="agent_session",
+        external_id="opencode:session:legacy-external-identity",
+        content="[USER]\nValidate a legacy external session identity.",
+        metadata_json=json.dumps({
+            "workspace_id": str(workspace.id),
+            "cwd": str(repo),
+            "source_path": str(tmp_path / "legacy-opencode.db"),
+            "title": "Legacy external identity",
+            "topics": ["Legacy external identity"],
+        }),
+    )
+    db_session.add(legacy_external)
+    await db_session.flush()
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=legacy_external,
+        provider="opencode",
+        session_id="legacy-external-identity",
+        events=[NormalizedSessionEvent(
+            provider_event_id="legacy-external-compact",
+            sequence_number=1,
+            event_type="compaction_boundary",
+        )],
+    )
+
+    alias_metadata = {
+        "connector_type": "claude",
+        "session_id": "alias-deduplication",
+        "cwd": str(repo),
+        "source_path": str(tmp_path / "claude-alias.jsonl"),
+        "title": "Claude alias deduplication",
+        "topics": ["Claude alias deduplication"],
+    }
+    alias_first = await ingest_source_document_revision(
+        db_session,
+        workspace_id=workspace.id,
+        source_type="agent_session",
+        external_id="claude:session:alias-deduplication",
+        content="[USER]\nValidate Claude aliases.",
+        metadata_json=alias_metadata,
+    )
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=alias_first.document,
+        provider="claude",
+        session_id="alias-deduplication",
+        events=[NormalizedSessionEvent(
+            provider_event_id="shared-alias-boundary",
+            sequence_number=1,
+            event_type="compaction_boundary",
+        )],
+    )
+    alias_second = await ingest_source_document_revision(
+        db_session,
+        workspace_id=workspace.id,
+        source_type="agent_session",
+        external_id="claude:session:alias-deduplication",
+        content=(
+            "[USER]\nValidate Claude aliases.\n\n"
+            "[ASSISTANT]\nThe aliases share one provider boundary."
+        ),
+        metadata_json={**alias_metadata, "connector_type": "claude_code"},
+    )
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=alias_second.document,
+        provider="claude_code",
+        session_id="alias-deduplication",
+        events=[NormalizedSessionEvent(
+            provider_event_id="shared-alias-boundary",
+            sequence_number=2,
+            event_type="compaction_boundary",
+        )],
+    )
+    await db_session.commit()
+
+    response = await client.get(
+        "/api/session-library",
+        params={"workspace_id": str(workspace.id)},
+    )
+    assert response.status_code == 200
+    sessions = {
+        item["session_id"]: item
+        for item in response.json()["sessions"]
+    }
+    projected = sessions["opencode-two-compactions"]
+    assert projected["compaction_count"] == 2
+    assert projected["topics"] == [
+        "20x knowledge-graph layer implementation",
+        "Fix the compaction display",
+    ]
+    assert sessions["stale-descriptor-only"]["compaction_count"] == 0
+    assert len(sessions["stale-descriptor-only"]["compaction_checkpoints"]) == 1
+    assert sessions["stale-topic-summary"]["title"] == (
+        "Review the OSS launch readiness"
+    )
+    assert sessions["stale-topic-summary"]["topics"] == [
+        "Review the OSS launch readiness",
+    ]
+    assert sessions["legacy-external-identity"]["connector_type"] == "opencode"
+    assert sessions["legacy-external-identity"]["compaction_count"] == 1
+    assert sessions["alias-deduplication"]["connector_type"] == "claude"
+    assert sessions["alias-deduplication"]["compaction_count"] == 1
+
+    eligibility = await client.get(
+        "/api/checkpoints/session-context-eligibility",
+        params={
+            "workspace_id": str(workspace.id),
+            "provider": "opencode",
+            "session_id": "opencode-two-compactions",
+        },
+    )
+    assert eligibility.status_code == 200
+    assert eligibility.json()["compaction_count"] == projected["compaction_count"]
+
+    alias_eligibility = await client.get(
+        "/api/checkpoints/session-context-eligibility",
+        params={
+            "workspace_id": str(workspace.id),
+            "provider": "claude_code",
+            "session_id": "alias-deduplication",
+        },
+    )
+    assert alias_eligibility.status_code == 200
+    assert alias_eligibility.json()["compaction_count"] == 1
 
 
 async def test_sync_excludes_sessions_outside_the_selected_project(
@@ -354,6 +668,16 @@ async def test_latest_session_endpoint_indexes_only_newest_scoped_root_off_loop(
                     role="assistant",
                     content="I am implementing the fast path.",
                 ),
+                NormalizedSessionEvent(
+                    provider_event_id="latest-root-compact-1",
+                    sequence_number=3,
+                    event_type="compaction_boundary",
+                ),
+                NormalizedSessionEvent(
+                    provider_event_id="latest-root-compact-2",
+                    sequence_number=4,
+                    event_type="compaction_boundary",
+                ),
             ],
         ),
     ]
@@ -406,6 +730,7 @@ async def test_latest_session_endpoint_indexes_only_newest_scoped_root_off_loop(
         "Make the Continue page load immediately."
     )
     assert payload["session"]["updated_at"] == "2026-07-28T00:01:00+00:00"
+    assert payload["session"]["compaction_count"] == 2
     assert discovery_threads
     assert discovery_threads[0] != request_thread
 
@@ -495,11 +820,13 @@ async def test_library_and_resume_enforce_session_source_read_grants(
             db_session,
             workspace_id=workspace.id,
             source_type="agent_session",
-            external_id=f"codex:session:{principal}-session",
+            external_id=f"codex:session:{principal}-source",
             content=f"[USER]\nWork on the {principal} session.",
             metadata_json={
                 "connector_type": "codex",
-                "session_id": f"{principal}-session",
+                # Both restricted sources refer to the same provider session.
+                # Alice's count must not include Bob's hidden event.
+                "session_id": "shared-session",
                 "cwd": str(repo),
                 "source_path": str(tmp_path / f"{principal}.jsonl"),
             },
@@ -513,13 +840,17 @@ async def test_library_and_resume_enforce_session_source_read_grants(
             workspace_id=workspace.id,
             source_document=result.document,
             provider="codex",
-            session_id=f"{principal}-session",
+            session_id="shared-session",
             events=[NormalizedSessionEvent(
                 provider_event_id=f"{principal}:base",
                 sequence_number=1,
                 event_type="user_request",
                 role="user",
                 content=f"Work on the {principal} session.",
+            ), NormalizedSessionEvent(
+                provider_event_id=f"{principal}:compact",
+                sequence_number=2,
+                event_type="compaction_boundary",
             )],
         )
     await db_session.commit()
@@ -545,7 +876,8 @@ async def test_library_and_resume_enforce_session_source_read_grants(
     assert library.status_code == 200
     assert {
         item["session_id"] for item in library.json()["sessions"]
-    } == {"alice-session"}
+    } == {"shared-session"}
+    assert library.json()["sessions"][0]["compaction_count"] == 1
 
     continuity = await client.get(
         "/api/session-continuity",
@@ -555,7 +887,7 @@ async def test_library_and_resume_enforce_session_source_read_grants(
     assert continuity.status_code == 200
     assert {
         item["session_id"] for item in continuity.json()["sessions"]
-    } == {"alice-session"}
+    } == {"shared-session"}
 
     denied_selection = await client.put(
         "/api/session-library/selection",
@@ -1009,6 +1341,153 @@ def test_codex_parser_preserves_commands_results_and_compaction_boundaries(
     assert by_type["compaction_boundary"].payload["window_id"] == "window-2"
 
 
+def test_opencode_parser_preserves_compactions_and_excludes_synthetic_continue(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    opencode_home = tmp_path / "opencode-home"
+    opencode_home.mkdir()
+    database_path = opencode_home / "opencode.db"
+    connection = sqlite3.connect(database_path)
+    try:
+        connection.executescript(
+            """
+            create table session (
+                id text primary key,
+                title text,
+                directory text,
+                model text,
+                time_created integer,
+                time_updated integer,
+                parent_id text
+            );
+            create table message (id text primary key, data text);
+            create table part (
+                id text primary key,
+                message_id text,
+                session_id text,
+                data text,
+                time_created integer
+            );
+            """
+        )
+        connection.execute(
+            "insert into session values (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "opencode-compactions",
+                "20x knowledge-graph layer implementation",
+                "/workspace/context-engine",
+                "glm-test",
+                1_700_000_000_000,
+                1_700_000_006_000,
+                None,
+            ),
+        )
+        for message_id, role in (
+            ("message-user-1", "user"),
+            ("message-assistant", "assistant"),
+            ("message-synthetic", "user"),
+            ("message-user-2", "user"),
+        ):
+            connection.execute(
+                "insert into message values (?, ?)",
+                (message_id, json.dumps({"role": role})),
+            )
+        parts = (
+            (
+                "part-user-1",
+                "message-user-1",
+                {"type": "text", "text": "Implement the 20x graph layer."},
+                1_700_000_001_000,
+            ),
+            (
+                "part-assistant",
+                "message-assistant",
+                {"type": "text", "text": "I am implementing it."},
+                1_700_000_002_000,
+            ),
+            (
+                "part-compaction-1",
+                "message-assistant",
+                {
+                    "type": "compaction",
+                    "auto": True,
+                    "overflow": False,
+                    "tail_start_id": "message-tail-1",
+                },
+                1_700_000_003_000,
+            ),
+            (
+                "part-synthetic-continue",
+                "message-synthetic",
+                {
+                    "type": "text",
+                    "text": "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+                    "synthetic": True,
+                    "metadata": {"compaction_continue": True},
+                },
+                1_700_000_004_000,
+            ),
+            (
+                "part-user-2",
+                "message-user-2",
+                {"type": "text", "text": "Review the OAuth repair."},
+                1_700_000_005_000,
+            ),
+            (
+                "part-compaction-2",
+                "message-user-2",
+                {"type": "summary", "summary": "Second window"},
+                1_700_000_006_000,
+            ),
+        )
+        connection.executemany(
+            "insert into part values (?, ?, ?, ?, ?)",
+            [
+                (
+                    part_id,
+                    message_id,
+                    "opencode-compactions",
+                    json.dumps(data),
+                    created_at,
+                )
+                for part_id, message_id, data, created_at in parts
+            ],
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    monkeypatch.setattr(settings, "opencode_home", str(opencode_home))
+    resolved = resolve_local_ai_session("opencode", "opencode-compactions")
+
+    assert resolved.metadata["title"] == (
+        "20x knowledge-graph layer implementation"
+    )
+    assert resolved.metadata["compaction_count"] == 2
+    assert [
+        checkpoint["turn_count"]
+        for checkpoint in resolved.metadata["compaction_checkpoints"]
+    ] == [2, 3]
+    assert {
+        checkpoint["provider"]
+        for checkpoint in resolved.metadata["compaction_checkpoints"]
+    } == {"opencode"}
+    assert [
+        event.event_type for event in resolved.events
+    ].count("compaction_boundary") == 2
+    assert any(
+        event.event_type == "runtime_instruction"
+        and event.payload.get("compaction_continue") is True
+        for event in resolved.events
+    )
+    assert all(
+        "Continue if you have next steps" not in event.content
+        for event in resolved.events
+        if event.event_type == "user_request" and event.content
+    )
+
+
 async def test_library_uses_metadata_summaries_without_loading_transcripts(
     client,
     db_session,
@@ -1306,6 +1785,18 @@ async def test_library_sync_discovers_ingests_and_groups_sessions(
     assert restored_payload["restore_context"]["agent_reported_state"] == "I mapped the flow."
     assert "reported state, not verified project truth" in restored_payload["restore_context"]["markdown"]
 
+    stale_document = await db_session.scalar(
+        select(SourceDocument).where(
+            SourceDocument.workspace_id == workspace.id,
+            SourceDocument.external_id == "codex:session:codex-alpha-beta",
+        )
+    )
+    assert stale_document is not None
+    stale_metadata = json.loads(stale_document.metadata_json)
+    stale_metadata["session_library_summary"]["schema_version"] = 1
+    stale_document.metadata_json = json.dumps(stale_metadata)
+    await db_session.commit()
+
     second = await client.post(
         "/api/session-library/sync",
         json={"workspace_id": str(workspace.id)},
@@ -1320,6 +1811,11 @@ async def test_library_sync_discovers_ingests_and_groups_sessions(
         )
     ))
     assert len(documents) == 2
+    assert all(
+        json.loads(document.metadata_json)["session_library_summary"]["schema_version"]
+        == 2
+        for document in documents
+    )
     chosen_library_session = next(
         item for item in second.json()["library"]["sessions"]
         if item["source_document_id"] == str(documents[0].id)

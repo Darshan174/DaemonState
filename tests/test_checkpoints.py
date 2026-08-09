@@ -7,7 +7,7 @@ import struct
 import zlib
 from dataclasses import replace
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import func, select, update
@@ -16,6 +16,7 @@ from app.models import (
     CheckpointEvidence,
     CheckpointItem,
     CheckpointVerification,
+    CodeFile,
     SessionEvent,
     SourceDocument,
     WorkCheckpoint,
@@ -24,8 +25,6 @@ from app.models import (
 from app.services.checkpoints import (
     CHECKPOINT_CATEGORIES,
     COMPACT_SESSION_CONTEXT_REQUIRED_HEADINGS,
-    COMPACT_SESSION_HANDOFF_MAX_OVERHEAD_CHARS,
-    SESSION_HANDOFF_MAX_OVERHEAD_CHARS,
     SESSION_CONTEXT_REQUIRED_HEADINGS,
     _derive_session_requirements,
     _handoff_presentation_sections,
@@ -37,6 +36,7 @@ from app.services.checkpoints import (
     _request_extends_active_session_task,
     _session_attachment_dependencies,
     _session_attachment_dependency_role,
+    _session_handoff_evidence_access,
     _sentences,
     build_session_handoff_artifact,
     build_session_handoff_contract,
@@ -56,7 +56,6 @@ from app.services.checkpoint_verifier import (
 )
 from app.services.local_harness import RepositorySnapshot
 from app.services.session_events import NormalizedSessionEvent, persist_session_events
-from app.services.session_summary import normalize_substantive_user_request
 from app.time import utc_now
 
 
@@ -4338,6 +4337,65 @@ async def test_later_progress_supersedes_reported_intermediate_blocker(
     )
 
 
+async def test_unrelated_progress_does_not_supersede_a_live_blocker(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="unrelated-progress-blocker",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="unrelated-blocker:user",
+                sequence_number=1,
+                event_type="user_request",
+                role="user",
+                content="Finish the production release workflow.",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="unrelated-blocker:blocked",
+                sequence_number=2,
+                event_type="assistant_update",
+                role="assistant",
+                content="Blocker: production credentials are still revoked.",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="unrelated-blocker:readme",
+                sequence_number=3,
+                event_type="assistant_update",
+                role="assistant",
+                content="Fixed the README layout regression.",
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.checkpoints.capture_repository_snapshot",
+        _async_value(_snapshot(tmp_path)),
+    )
+    await db_session.commit()
+
+    captured = await client.post(
+        "/api/checkpoints/capture",
+        json={
+            "workspace_id": str(workspace.id),
+            "provider": "codex",
+            "session_id": "unrelated-progress-blocker",
+        },
+    )
+
+    assert captured.status_code == 200, captured.text
+    checkpoint = captured.json()
+    assert checkpoint["continuation_status"] == "blocked"
+    assert checkpoint["sections"]["blockers"][0]["state"] == "active"
+    assert "credentials" in checkpoint["sections"]["blockers"][0]["statement"]
+
+
 def test_safe_replay_commands_splits_cr_and_rejects_unsafe_input() -> None:
     assert _safe_replay_commands("npm test -- --run\rnpm run build") == (
         ("npm test -- --run", ("npm", "test", "--", "--run")),
@@ -4430,7 +4488,7 @@ async def test_checkpoint_without_repository_snapshot_is_only_partial(
         source_type="agent_session",
         external_id="codex:session:no-repo",
         content="session",
-        metadata_json="{}",
+        metadata_json=json.dumps({"cwd": str(tmp_path)}),
     )
     db_session.add(document)
     await db_session.flush()
@@ -4457,12 +4515,197 @@ async def test_checkpoint_without_repository_snapshot_is_only_partial(
     assert compared.status_code == 200
     assert compared.json()["status"] == "unavailable"
     assert compared.json()["current"] is None
+    assert compared.json()["reason"] == (
+        "Repository snapshot unavailable: recorded session directory is not a Git repository."
+    )
     response = await client.post(
         f"/api/checkpoints/{captured.json()['id']}/verify",
         json={"workspace_id": str(workspace.id), "execute_commands": False},
     )
     assert response.status_code == 200
     assert response.json()["verification"]["status"] == "partial"
+    checkpoint = await get_checkpoint(db_session, UUID(captured.json()["id"]))
+    assert checkpoint is not None
+    await _qualify_session_context(db_session, checkpoint)
+    handoff = await client.post(
+        f"/api/checkpoints/{captured.json()['id']}/handoff",
+        json={"workspace_id": str(workspace.id)},
+    )
+    assert handoff.status_code == 200
+    artifact = handoff.json()
+    assert not artifact["quality_report"]["blocking_issues"], artifact["quality_report"][
+        "blocking_issues"
+    ]
+    assert artifact["quality_report"]["copy_ready"] is True, artifact["quality_report"]
+    assert artifact["readiness_dimensions"]["evidence_access"]["status"] == (
+        "not_required"
+    )
+    assert artifact["readiness_dimensions"]["evidence_access"]["blocks_copy"] is False
+    assert artifact["readiness_dimensions"]["evidence_access"]["ready_for_execution"] is False
+    assert artifact["execution_policy"]["required_capability"] == (
+        "workspace_write"
+    )
+    assert (
+        "Repository snapshot unavailable: recorded session directory is not a Git repository."
+        in artifact["content"]
+    )
+    assert "No Git snapshot is available." in artifact["content"]
+
+
+async def test_checkpoint_capture_falls_back_to_one_verified_workspace_repository(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    recorded_directory = tmp_path / "recorded-session-directory"
+    workspace, document = await _session_source(db_session, recorded_directory)
+    verified_repository = tmp_path / "verified-workspace-repository"
+    verified_repository.mkdir()
+    db_session.add(CodeFile(
+        workspace_id=workspace.id,
+        repo_root=str(verified_repository),
+        path="app/core.py",
+        sha256="a" * 64,
+        last_commit="abc123",
+        size=13,
+    ))
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="workspace-repository-fallback",
+        events=_events(),
+    )
+    await db_session.commit()
+    clean_snapshot = replace(
+        _snapshot(verified_repository),
+        dirty=False,
+        changed_files=(),
+        diff_summary="",
+        _entries=(),
+    )
+
+    async def capture_only_verified(path):
+        if str(path) == str(verified_repository):
+            return clean_snapshot
+        raise ValueError("not a Git repository")
+
+    monkeypatch.setattr(
+        "app.services.checkpoints.capture_repository_snapshot",
+        capture_only_verified,
+    )
+
+    captured = await client.post(
+        "/api/checkpoints/capture",
+        json={
+            "workspace_id": str(workspace.id),
+            "provider": "codex",
+            "session_id": "workspace-repository-fallback",
+        },
+    )
+
+    assert captured.status_code == 200, captured.text
+    assert captured.json()["repo"]["root"] == str(verified_repository)
+
+
+async def test_session_handoff_requires_choice_for_multiple_verified_repositories(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    recorded_directory = tmp_path / "recorded-non-git-directory"
+    workspace, document = await _session_source(db_session, recorded_directory)
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="multiple-workspace-repositories",
+        events=_events(),
+    )
+    await db_session.commit()
+    captured = await client.post(
+        "/api/checkpoints/capture",
+        json={
+            "workspace_id": str(workspace.id),
+            "provider": "codex",
+            "session_id": "multiple-workspace-repositories",
+        },
+    )
+    assert captured.status_code == 200, captured.text
+    checkpoint = await get_checkpoint(db_session, UUID(captured.json()["id"]))
+    assert checkpoint is not None
+    await _qualify_session_context(db_session, checkpoint)
+
+    repository_paths = [tmp_path / "repository-one", tmp_path / "repository-two"]
+    for index, repository_path in enumerate(repository_paths, start=1):
+        repository_path.mkdir()
+        db_session.add(CodeFile(
+            workspace_id=workspace.id,
+            repo_root=str(repository_path),
+            path=f"app/file_{index}.py",
+            sha256=str(index) * 64,
+            last_commit=f"commit-{index}",
+            size=index,
+        ))
+    await db_session.commit()
+
+    async def capture_workspace_repository(path):
+        normalized = str(path)
+        if normalized in {str(item) for item in repository_paths}:
+            return replace(
+                _snapshot(normalized),
+                dirty=False,
+                changed_files=(),
+                diff_summary="",
+                _entries=(),
+            )
+        raise ValueError("not a Git repository")
+
+    monkeypatch.setattr(
+        "app.services.checkpoint_verifier.capture_repository_snapshot",
+        capture_workspace_repository,
+    )
+
+    unresolved = await client.post(
+        f"/api/checkpoints/{checkpoint.id}/handoff",
+        json={"workspace_id": str(workspace.id)},
+    )
+    assert unresolved.status_code == 200, unresolved.text
+    unresolved_artifact = unresolved.json()
+    assert unresolved_artifact["quality_report"]["copy_ready"] is False
+    assert unresolved_artifact["readiness_dimensions"]["evidence_access"]["status"] == (
+        "selection_required"
+    )
+    assert unresolved_artifact["repository"]["resolution"] == {
+        "status": "selection_required",
+        "source": "workspace",
+        "recorded_session_directory": str(recorded_directory),
+        "selected_repository": None,
+        "candidate_repositories": sorted(str(item) for item in repository_paths),
+        "message": (
+            "Multiple verified workspace repositories are available. "
+            "Choose the repository for this session before continuing."
+        ),
+    }
+
+    selected = await client.post(
+        f"/api/checkpoints/{checkpoint.id}/handoff",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(repository_paths[1]),
+        },
+    )
+    assert selected.status_code == 200, selected.text
+    selected_artifact = selected.json()
+    assert selected_artifact["quality_report"]["copy_ready"] is True
+    assert selected_artifact["repository"]["root"] == str(repository_paths[1])
+    assert selected_artifact["repository"]["resolution"]["source"] == (
+        "explicit_workspace_selection"
+    )
 
 
 async def test_session_event_identity_is_scoped_per_workspace(db_session, tmp_path) -> None:
@@ -4669,6 +4912,55 @@ async def test_checkpoint_keeps_substantive_goal_across_continue_and_runtime_pol
     assert "collaboration tools" not in json.dumps(delegated["sections"]).lower()
 
 
+async def test_policy_vocabulary_can_be_the_subject_of_a_real_user_task(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    request = "Document filesystem sandboxing for plugin authors."
+    workspace, document = await _session_source(db_session, tmp_path)
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="policy-vocabulary-task",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="policy-vocabulary:user",
+                sequence_number=1,
+                event_type="user_request",
+                role="user",
+                content=request,
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.checkpoints.capture_repository_snapshot",
+        _async_value(_snapshot(tmp_path)),
+    )
+    checkpoint = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="policy-vocabulary-task",
+    )
+
+    projection = checkpoint_to_dict(await get_checkpoint(db_session, checkpoint.id))
+    assert projection["sections"]["goal"][0]["statement"] == request
+
+    await _qualify_session_context(db_session, checkpoint)
+    handoff = await client.post(
+        f"/api/checkpoints/{checkpoint.id}/handoff",
+        json={"workspace_id": str(workspace.id)},
+    )
+
+    assert handoff.status_code == 200, handoff.text
+    assert handoff.json()["current_goal"]["request_verbatim"] == request
+    assert request in handoff.json()["content"]
+
+
 async def test_checkpoint_and_handoff_ignore_standalone_done_as_a_new_goal(
     db_session,
     tmp_path,
@@ -4774,30 +5066,26 @@ async def test_handoff_repairs_an_existing_checkpoint_whose_goal_is_done(
         _async_value(_snapshot(tmp_path)),
     )
 
-    def legacy_request_normalizer(value: str | None) -> str | None:
-        if str(value or "").strip().casefold() == "done":
-            return "done"
-        return normalize_substantive_user_request(value)
-
-    with monkeypatch.context() as legacy_compiler:
-        legacy_compiler.setattr(
-            "app.services.checkpoints.normalize_substantive_user_request",
-            legacy_request_normalizer,
-        )
-        legacy_compiler.setattr(
-            "app.services.checkpoints.is_substantive_user_request",
-            lambda value: legacy_request_normalizer(value) is not None,
-        )
-        checkpoint = await capture_checkpoint(
-            db_session,
-            workspace_id=workspace.id,
-            provider="codex",
-            session_id="legacy-done-goal-session",
-        )
+    checkpoint = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="legacy-done-goal-session",
+    )
 
     loaded = await get_checkpoint(db_session, checkpoint.id)
     assert loaded is not None
     raw_goal = next(item for item in loaded.items if item.category == "goal")
+    # Simulate an already-stored checkpoint produced by the old unary goal
+    # selector. The current resolver itself must never create this state.
+    raw_goal.statement = "done"
+    raw_goal.payload_json = json.dumps(
+        {
+            "request_verbatim": "done",
+            "request_sha256": hashlib.sha256(b"done").hexdigest(),
+        }
+    )
+    await db_session.flush()
     assert raw_goal.statement == "done"
 
     recovered_request = await resolve_session_handoff_request_verbatim(
@@ -5104,13 +5392,15 @@ def test_session_prompt_projection_strips_attachment_transport_and_tool_envelope
     assert summary == "FAILED tests/test_context.py::test_handoff"
 
 
-def test_session_prompt_overhead_budget_fails_closed() -> None:
+def test_session_prompt_length_is_not_a_semantic_copy_failure() -> None:
     minimal = "\n".join(SESSION_CONTEXT_REQUIRED_HEADINGS)
     issues = session_handoff_render_issues(
-        minimal + ("x" * (SESSION_HANDOFF_MAX_OVERHEAD_CHARS + 1)),
+        minimal + ("x" * 20_000),
         request_verbatim="x",
     )
-    assert "session_context_overhead_budget_exceeded" in {issue["code"] for issue in issues}
+    assert "session_context_overhead_budget_exceeded" not in {
+        issue["code"] for issue in issues
+    }
 
 
 def test_compact_session_brief_is_copy_ready_specific_and_fail_closed(
@@ -5160,6 +5450,7 @@ def test_compact_session_brief_is_copy_ready_specific_and_fail_closed(
         request_verbatim=goal,
         supporting_context=supporting,
         checkpoint_data=checkpoint_data,
+        delivery_mode="desktop_stage",
     )
     content = artifact["content"]
     legacy_content = render_session_handoff(
@@ -5181,7 +5472,7 @@ def test_compact_session_brief_is_copy_ready_specific_and_fail_closed(
     assert "1. Complete and verify R1" in content
     assert (
         "Run `git status --short` as a read-only check and compare it with the "
-        "embedded protected-baseline manifest" in content
+        "captured branch, HEAD, fingerprint, and bounded status inventory" in content
     )
     expanded_start = "Complete and verify R1 (Render a five-part continuation brief.)."
     assert expanded_start in content
@@ -5189,13 +5480,16 @@ def test_compact_session_brief_is_copy_ready_specific_and_fail_closed(
     assert "> [Failed approach; historical reported] Rebuilding all context" in content
     assert "> [Active blocker; historical reported] The old prompt is too noisy" in content
     assert "attachment-A1" in content
-    assert len(content) - len(goal) - len(supporting[0]["text"]) <= (
-        COMPACT_SESSION_HANDOFF_MAX_OVERHEAD_CHARS
-    )
-    # Compact v2 still removes at least 15% of legacy prose while retaining the
-    # exact repository baseline identity and requirement-linked verification
-    # that the legacy projection omits.
-    assert len(content) <= len(legacy_content) * 0.85
+    accounting = artifact["token_accounting"]
+    assert accounting["estimated_tokens"] == artifact["estimated_tokens"]
+    assert accounting["generated_tokens"] > 0
+    assert accounting["efficiency_target"]["blocking"] is False
+    assert accounting["destination_limit"]["status"] == "unknown"
+    assert artifact["quality_report"]["copy_ready"] is True
+    # Semantic coverage is authoritative; compactness is observed separately
+    # instead of serving as a clipboard veto.
+    assert len(content) < len(legacy_content)
+    assert accounting["efficiency_target"]["within_target"] is True
     assert (
         session_handoff_render_issues(
             content,
@@ -5255,6 +5549,231 @@ def test_compact_session_brief_is_copy_ready_specific_and_fail_closed(
         if item["code"] == "compact_session_context_critical_state_missing"
     )
     assert "requirement_R1" in text_critical["missing_fragments"]
+
+
+def test_production_shaped_generated_overhead_is_advisory_not_a_copy_veto(
+    monkeypatch,
+) -> None:
+    goal = "Fix execute session controls without losing the selected task context."
+    contract = _compact_session_handoff_contract(goal)
+    contract["requirements"] = [
+        {
+            "id": f"R{index}",
+            "text": (
+                f"Preserve observable execute behavior {index} while keeping the exact "
+                "selected-session identity, safety state, and verification linkage. "
+                + ("Evidence remains requirement-linked. " * 4)
+            ),
+            "normalized_text": f"Preserve execute behavior {index} with linked evidence.",
+            "status": "remaining",
+            "authority": "user_authored",
+            "verification_ids": [],
+            "reported_scope_hints": [],
+        }
+        for index in range(1, 11)
+    ]
+    contract["exact_next_action"]["text"] = "Complete and verify R1."
+    contract["verification_plan"] = [
+        {
+            "id": f"PV{index}",
+            "text": (
+                f"Exercise verification surface {index}, record the exact observed state, "
+                "and compare it with every linked requirement before claiming completion. "
+                + ("Do not infer an uninspected result. " * 8)
+            ),
+            "requirement_ids": [f"R{index}"],
+        }
+        for index in range(1, 7)
+    ]
+    contract["files"]["pre_existing_at_handoff"] = [
+        {"path": f"frontend/src/components/Card{index}.jsx"}
+        for index in range(1, 51)
+    ]
+    checkpoint_data = {
+        "id": "checkpoint-production-overhead",
+        "provider": "codex",
+        "session_id": "session-production-overhead",
+        "source_document_id": "document-production-overhead",
+        "boundary": {
+            "snapshot_phase": "post_compaction",
+            "occurred_at": "2026-08-09T00:00:00+00:00",
+        },
+        "currentness": {"status": "current"},
+        "sections": {
+            "goal": [{"statement": goal, "payload": {"request_verbatim": goal}}],
+        },
+    }
+    monkeypatch.setattr(
+        "app.services.checkpoints.build_session_handoff_contract",
+        lambda *_args, **_kwargs: contract,
+    )
+
+    artifact = build_session_handoff_artifact(
+        SimpleNamespace(),
+        request_verbatim=goal,
+        checkpoint_data=checkpoint_data,
+        render_variant="compact_v2",
+        delivery_mode="direct_copy",
+        token_budget=300,
+    )
+
+    accounting = artifact["token_accounting"]
+    assert accounting["generated_chars"] >= 5_000
+    assert accounting["generated_tokens"] > accounting["efficiency_target"]["generated_tokens"]
+    assert accounting["efficiency_target"]["status"] == "above_target"
+    assert accounting["destination_limit"]["status"] == "too_large"
+    assert accounting["blocks_copy"] is False
+    assert accounting["blocks_automatic_delivery"] is True
+    assert artifact["quality_report"]["copy_ready"] is True
+    assert artifact["quality_report"]["automatic_execution_ready"] is False
+    assert artifact["readiness_dimensions"]["semantic_readiness"]["status"] == "ready"
+    assert artifact["delivery"]["mode"] == "direct_copy"
+    assert artifact["delivery"]["ready_for_target"] is False
+    assert artifact["readiness_dimensions"]["evidence_access"]["status"] == (
+        "materialization_required"
+    )
+    assert artifact["readiness_dimensions"]["evidence_access"]["blocks_copy"] is False
+    assert artifact["readiness_dimensions"]["evidence_access"]["ready_for_execution"] is False
+    assert "- Direct-copy delivery:" in artifact["content"]
+    assert "ask the user to attach this exact image" in artifact["content"].casefold()
+    assert {
+        item["code"] for item in artifact["quality_report"]["blocking_issues"]
+    }.isdisjoint({
+        "session_context_overhead_budget_exceeded",
+        "session_context_destination_token_limit_exceeded",
+    })
+    assert {item["code"] for item in artifact["advisories"]} == {
+        "session_context_generated_overhead_above_soft_target",
+        "session_context_destination_token_limit_exceeded",
+    }
+
+
+def test_evidence_access_requires_receiver_materialization_for_dirty_baseline() -> None:
+    contract = _compact_session_handoff_contract("Preserve the exact dirty baseline.")
+
+    pending = _session_handoff_evidence_access(contract)
+
+    assert pending["status"] == "materialization_required"
+    assert pending["blocks_copy"] is False
+    assert pending["ready_for_execution"] is False
+    assert pending["protected_baseline"] == {
+        "required": True,
+        "source_available": True,
+        "receiver_available": False,
+        "manifest_id": "WT-test-baseline",
+        "manifest_sha256": "b" * 64,
+    }
+
+    contract["attachment_dependencies"][0].update({
+        "receiver_availability": "available",
+        "receiver_local_reference": "/receiver/reference.png",
+    })
+    contract["repository"]["protected_baseline_manifest"].update({
+        "receiver_availability": "available",
+        "receiver_local_reference": "/receiver/protected-baseline.json",
+    })
+
+    ready = _session_handoff_evidence_access(contract)
+    assert ready["status"] == "available"
+    assert ready["blocks_copy"] is False
+    assert ready["ready_for_execution"] is True
+
+
+def test_receiver_materialization_blocks_automation_but_not_manual_copy(
+    monkeypatch,
+) -> None:
+    goal = "Continue safely from the exact dirty repository baseline."
+    contract = _compact_session_handoff_contract(goal)
+    contract["quality_report"]["automatic_execution_ready"] = True
+    checkpoint_data = {
+        "id": "checkpoint-receiver-evidence",
+        "provider": "codex",
+        "session_id": "session-receiver-evidence",
+        "source_document_id": "document-receiver-evidence",
+        "boundary": {
+            "snapshot_phase": "post_compaction",
+            "occurred_at": "2026-08-09T00:00:00+00:00",
+        },
+        "currentness": {"status": "current"},
+        "sections": {
+            "goal": [{"statement": goal, "payload": {"request_verbatim": goal}}],
+        },
+    }
+    monkeypatch.setattr(
+        "app.services.checkpoints.build_session_handoff_contract",
+        lambda *_args, **_kwargs: contract,
+    )
+
+    artifact = build_session_handoff_artifact(
+        SimpleNamespace(),
+        request_verbatim=goal,
+        checkpoint_data=checkpoint_data,
+        render_variant="compact_v2",
+        delivery_mode="direct_copy",
+    )
+
+    assert artifact["quality_report"]["copy_ready"] is True
+    assert artifact["quality_report"]["automatic_execution_ready"] is False
+    assert artifact["quality_report"]["evidence_access"]["status"] == (
+        "materialization_required"
+    )
+
+
+def test_evidence_failure_does_not_masquerade_as_semantic_invalidity(
+    monkeypatch,
+) -> None:
+    goal = "Use the required image to identify the exact target."
+    contract = _compact_session_handoff_contract(goal)
+    contract["attachment_dependencies"][0].update({
+        "available": False,
+        "sha256": None,
+    })
+    evidence_issue = {
+        "code": "required_attachments_resolved",
+        "status": "fail",
+        "missing_attachment_ids": ["attachment-A1"],
+    }
+    contract["quality_report"].update({
+        "status": "blocked",
+        "copy_ready": False,
+        "blocking_issues": [evidence_issue],
+        "checks": [evidence_issue],
+    })
+    checkpoint_data = {
+        "id": "checkpoint-evidence-dimension",
+        "provider": "codex",
+        "session_id": "session-evidence-dimension",
+        "source_document_id": "document-evidence-dimension",
+        "boundary": {
+            "snapshot_phase": "post_compaction",
+            "occurred_at": "2026-08-09T00:00:00+00:00",
+        },
+        "currentness": {"status": "current"},
+        "sections": {
+            "goal": [{"statement": goal, "payload": {"request_verbatim": goal}}],
+        },
+    }
+    monkeypatch.setattr(
+        "app.services.checkpoints.build_session_handoff_contract",
+        lambda *_args, **_kwargs: contract,
+    )
+
+    artifact = build_session_handoff_artifact(
+        SimpleNamespace(),
+        request_verbatim=goal,
+        checkpoint_data=checkpoint_data,
+        render_variant="compact_v2",
+        delivery_mode="direct_copy",
+    )
+
+    assert artifact["quality_report"]["copy_ready"] is False
+    assert artifact["readiness_dimensions"]["semantic_readiness"] == {
+        "status": "ready",
+        "copy_ready": True,
+        "blocking_issue_codes": [],
+    }
+    assert artifact["readiness_dimensions"]["evidence_access"]["status"] == "unavailable"
+    assert artifact["readiness_dimensions"]["evidence_access"]["blocks_copy"] is True
 
 
 def test_compact_session_brief_preserves_read_only_authority() -> None:
@@ -5450,7 +5969,16 @@ def _compact_session_handoff_contract(
             "root": "/workspace/project",
             "branch": "main",
             "head_commit": "abc123",
+            "dirty": True,
             "freshness": {"status": "unchanged"},
+            "protected_baseline_manifest": {
+                "schema_version": "protected_baseline.v1",
+                "id": "WT-test-baseline",
+                "manifest_sha256": "b" * 64,
+                "complete": True,
+                "entry_count": 1,
+                "working_tree": [{"path": "user-notes.txt", "xy": " M"}],
+            },
         },
         "exact_next_action": {
             "text": "Complete and verify R1.",

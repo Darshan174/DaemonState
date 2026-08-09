@@ -1,25 +1,30 @@
-import { useId } from "react";
+import { useEffect, useId, useRef } from "react";
 
 import {
   useDesktopOverlayStatus,
   useSetDesktopOverlayVisibility,
 } from "../api/hooks";
+import { HarnessLogo } from "./HarnessBrand";
 import DaemonStateIcon from "./DaemonStateIcon";
 
-export default function FloatingContextToggle({ workspaceId }) {
+export default function FloatingContextToggle({
+  workspaceId,
+  selectedSessions,
+}) {
   const noticeId = useId();
-  const statusQuery = useDesktopOverlayStatus(workspaceId);
-  const visibilityMutation = useSetDesktopOverlayVisibility();
-  const status = statusQuery.data || null;
-  const nativeVisible = status?.visible === true;
-  const visible = (
-    nativeVisible
-    && status?.workspace_id === workspaceId
-  );
-  const visibleForAnotherWorkspace = nativeVisible && !visible;
-  const available = status?.available === true;
-  const loading = statusQuery.isLoading && !status;
-  const pending = visibilityMutation.isPending;
+  const {
+    available,
+    loading,
+    pending,
+    requestedSessions,
+    selectedSessionCount,
+    status,
+    statusQuery,
+    syncPending,
+    visibilityMutation,
+    visible,
+    visibleForAnotherWorkspace,
+  } = useDesktopOverlaySessionSync({ workspaceId, selectedSessions });
   const requestError = visibilityMutation.error
     || (statusQuery.isError ? statusQuery.error : null);
   const unavailableMessage = (
@@ -34,7 +39,9 @@ export default function FloatingContextToggle({ workspaceId }) {
     available,
     loading,
     pending,
+    pendingTargetVisible: visibilityMutation.variables?.visible,
     requestFailed: Boolean(requestError && !status),
+    syncPending,
     visible,
     visibleForAnotherWorkspace,
   });
@@ -44,6 +51,9 @@ export default function FloatingContextToggle({ workspaceId }) {
     visibilityMutation.mutate({
       visible: !visible,
       workspaceId,
+      ...(!visible && requestedSessions !== undefined
+        ? { selectedSessions: requestedSessions }
+        : {}),
     });
   };
 
@@ -69,6 +79,29 @@ export default function FloatingContextToggle({ workspaceId }) {
       >
         <DaemonStateIcon size={24} className="shrink-0 transition-transform group-hover:scale-105" />
         <span className="hidden whitespace-nowrap sm:inline">Floating button</span>
+        {selectedSessionCount ? (
+          <span
+            aria-label={`${selectedSessionCount} custom session${selectedSessionCount === 1 ? "" : "s"} synced`}
+            className="flex -space-x-1.5"
+          >
+            {requestedSessions.map((session) => (
+              <span key={`${session.provider}:${session.session_id}`} className="relative">
+                <HarnessLogo
+                  type={session.provider}
+                  size="small"
+                  decorative
+                  className="!h-6 !w-6 !rounded-lg"
+                />
+                <span
+                  aria-hidden="true"
+                  className="absolute -right-1 -top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-[#171713] px-0.5 font-mono text-[8px] font-black leading-none text-white ring-1 ring-white dark:bg-[#d9ff68] dark:text-[#171713] dark:ring-[#171713]"
+                >
+                  {session.ordinal}
+                </span>
+              </span>
+            ))}
+          </span>
+        ) : null}
         <span className="whitespace-nowrap text-[11px] text-[#77776e] dark:text-white/65">{stateLabel}</span>
         <span
           aria-hidden="true"
@@ -100,15 +133,127 @@ export default function FloatingContextToggle({ workspaceId }) {
   );
 }
 
+
+export function useDesktopOverlaySessionSync({
+  workspaceId,
+  selectedSessions,
+  enabled = true,
+}) {
+  const statusQuery = useDesktopOverlayStatus(workspaceId, { enabled });
+  const visibilityMutation = useSetDesktopOverlayVisibility();
+  const status = statusQuery.data || null;
+  const nativeVisible = status?.visible === true;
+  const visible = (
+    nativeVisible
+    && status?.workspace_id === workspaceId
+  );
+  const visibleForAnotherWorkspace = nativeVisible && !visible;
+  const available = status?.available === true;
+  const loading = statusQuery.isLoading && !status;
+  const pending = visibilityMutation.isPending;
+  const requestedSessions = normalizeOverlaySessions(selectedSessions);
+  const selectedSessionCount = requestedSessions?.length || 0;
+  const serverSessions = normalizeOverlaySessions(status?.selected_sessions) || [];
+  const requestedSessionsKey = requestedSessions === undefined
+    ? "preserve"
+    : overlaySessionIdentityKey(requestedSessions);
+  const serverSessionsKey = overlaySessionIdentityKey(serverSessions);
+  const syncAttemptKey = JSON.stringify([
+    workspaceId || "",
+    requestedSessionsKey,
+    serverSessionsKey,
+  ]);
+  const lastSyncAttemptRef = useRef("");
+  const syncPending = Boolean(
+    pending
+    && visible
+    && visibilityMutation.variables?.visible === true
+    && Array.isArray(visibilityMutation.variables?.selectedSessions),
+  );
+  useEffect(() => {
+    if (
+      !enabled
+      || requestedSessions === undefined
+      || !visible
+      || !available
+      || loading
+      || pending
+      || requestedSessionsKey === serverSessionsKey
+    ) {
+      if (!visible || requestedSessionsKey === serverSessionsKey) {
+        lastSyncAttemptRef.current = "";
+      }
+      return;
+    }
+    if (lastSyncAttemptRef.current === syncAttemptKey) return;
+    lastSyncAttemptRef.current = syncAttemptKey;
+    visibilityMutation.mutate({
+      visible: true,
+      workspaceId,
+      selectedSessions: requestedSessions,
+    });
+  }, [
+    available,
+    enabled,
+    loading,
+    pending,
+    requestedSessionsKey,
+    serverSessionsKey,
+    syncAttemptKey,
+    visibilityMutation.mutate,
+    visible,
+    workspaceId,
+  ]);
+
+  return {
+    available,
+    loading,
+    pending,
+    requestedSessions,
+    selectedSessionCount,
+    status,
+    statusQuery,
+    syncPending,
+    visibilityMutation,
+    visible,
+    visibleForAnotherWorkspace,
+  };
+}
+
+function normalizeOverlaySessions(value) {
+  if (!Array.isArray(value)) return undefined;
+  return value.slice(0, 3).map((session, index) => ({
+    provider: String(session?.provider || "").trim().toLowerCase(),
+    session_id: String(session?.session_id || session?.sessionId || "").trim(),
+    title: String(session?.title || "Untitled session").trim() || "Untitled session",
+    ordinal: Number.isInteger(Number(session?.ordinal))
+      ? Number(session.ordinal)
+      : index + 1,
+  })).filter((session) => session.provider && session.session_id);
+}
+
+function overlaySessionIdentityKey(sessions) {
+  return JSON.stringify((sessions || []).map((session) => [
+    session.provider,
+    session.session_id,
+    session.ordinal,
+  ]));
+}
+
 function overlayStateLabel({
   available,
   loading,
   pending,
+  pendingTargetVisible,
   requestFailed,
+  syncPending,
   visible,
   visibleForAnotherWorkspace,
 }) {
-  if (pending) return visible ? "Hiding…" : "Showing…";
+  if (pending) {
+    if (syncPending) return "Syncing…";
+    return pendingTargetVisible === false ? "Hiding…" : "Showing…";
+  }
   if (loading) return "Checking…";
   if (requestFailed || !available) return "Unavailable";
   if (visibleForAnotherWorkspace) return "Other project";

@@ -106,8 +106,10 @@ If nothing appears, see [Session discovery troubleshooting](#session-discovery-t
 ### 2. Use Continue
 
 Continue is intentionally opinionated: it uses the newest eligible root session
-for the selected project. A Library selection, URL parameter, or old recovery
-point cannot silently replace it.
+for the selected project by default. A Library selection, URL parameter, or old
+recovery point cannot silently replace it. To choose exact historical sessions,
+use **Choose custom sessions in Execute** from Continue and return through the
+numbered custom-session flow.
 
 1. Review the detected session, current lead, repository freshness, and provider
    readiness.

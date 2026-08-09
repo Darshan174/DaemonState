@@ -11,6 +11,14 @@ private enum PreferenceKey {
     static let originY = "DaemonStateOverlay.originY"
 }
 
+private enum OverlayDiagnosticsError: LocalizedError {
+    case clipboardUnavailable
+
+    var errorDescription: String? {
+        "Recent error details could not be written to the clipboard."
+    }
+}
+
 private struct LaunchConfiguration {
     let apiURL: URL
     let workspaceID: String?
@@ -96,6 +104,8 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
     private var pendingPasteTarget: FocusedTextPasteService.TargetCapture?
     private var visualResetWorkItem: DispatchWorkItem?
     private var promptSelection = PromptSelection()
+    private var selectedSessions: [OverlaySelectedSession] = []
+    private var errorHistory = OverlayErrorHistory()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configuration = LaunchConfiguration.current()
@@ -134,8 +144,15 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
             guard let self, let control else { return }
             self.showContextMenu(at: location, in: control)
         }
-        control.onMove = { [weak self] origin in
-            self?.saveOrigin(origin)
+        control.onMove = { [weak self, weak panelController] origin in
+            let collapsedOrigin = panelController?.collapsedOrigin(
+                forPanelOrigin: origin
+            ) ?? origin
+            self?.saveOrigin(collapsedOrigin)
+        }
+        panelController.onSelectSession = { [weak self] session in
+            self?.capturePasteTarget()
+            self?.pasteExplicitSession(session)
         }
         let promptButton = panelController.promptMenuButton
         promptButton.onPress = { [weak self, weak promptButton] in
@@ -160,12 +177,16 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
         promptDropdownController.selectedPromptIDs = { [weak self] in
             self?.promptSelection.selectedIDs ?? []
         }
+        promptDropdownController.onError = { [weak self] operation, error in
+            self?.recordError(error, operation: operation)
+        }
         applyPromptSelectionVisuals()
         panelController.show()
-        runtimeController?.start { [weak self] visible, workspaceID in
+        runtimeController?.start { [weak self] visible, workspaceID, sessions in
             self?.applyRuntimeControl(
                 visible: visible,
-                workspaceID: workspaceID
+                workspaceID: workspaceID,
+                selectedSessions: sessions
             )
         }
         guard publishRuntimeState() else {
@@ -200,6 +221,16 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func insertCurrentContext() {
+        insertContext(
+            scope: scope,
+            explicitSession: nil
+        )
+    }
+
+    private func insertContext(
+        scope requestedScope: ContextScope,
+        explicitSession requestedExplicitSession: OverlaySelectedSession?
+    ) {
         guard !busy,
               let target = pendingPasteTarget,
               let api,
@@ -210,13 +241,16 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
 
         pendingPasteTarget = nil
         busy = true
-        let requestedScope = scope
+        let requestedDisplayName = displayName(
+            for: requestedScope,
+            explicitSession: requestedExplicitSession
+        )
         if case .accessibilityUnavailable = target {
             pasteService.requestAccessibilityPermission()
         }
         setVisualState(.loading)
         statusController.show(
-            "Preparing \(displayName(for: requestedScope))…",
+            "Preparing \(requestedDisplayName)…",
             relativeTo: panel,
             dismissAfter: nil
         )
@@ -229,11 +263,20 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
                     preferredID: self.preferredWorkspaceID
                 )
                 self.selectWorkspace(workspace.id)
-                let context = try await api.fetchContext(
-                    scope: requestedScope,
-                    workspaceID: workspace.id,
-                    repoPath: workspace.repoPath ?? workspace.repoPaths.first
-                )
+                let context: VerifiedContext
+                if let requestedExplicitSession {
+                    context = try await api.fetchSessionContext(
+                        workspaceID: workspace.id,
+                        provider: requestedExplicitSession.provider,
+                        sessionID: requestedExplicitSession.sessionID
+                    )
+                } else {
+                    context = try await api.fetchContext(
+                        scope: requestedScope,
+                        workspaceID: workspace.id,
+                        repoPath: workspace.repoPath ?? workspace.repoPaths.first
+                    )
+                }
                 let outcome = try await self.pasteService.deliver(
                     context.content,
                     to: target
@@ -242,7 +285,7 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
                 case .pasted:
                     self.setVisualState(.success, resetAfter: 1.1)
                     self.statusController.show(
-                        "\(self.displayName(for: requestedScope)) pasted",
+                        "\(requestedDisplayName) pasted",
                         tone: .success,
                         relativeTo: panel,
                         dismissAfter: 1.8
@@ -257,9 +300,9 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
                 }
             } catch {
                 self.setVisualState(.failure, resetAfter: 1.35)
-                self.statusController.show(
-                    self.conciseError(error),
-                    tone: .failure,
+                self.presentError(
+                    error,
+                    operation: "Paste \(requestedDisplayName)",
                     relativeTo: panel,
                     dismissAfter: 4.5
                 )
@@ -300,10 +343,14 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
                     selection.combinedContent,
                     to: target
                 )
-                try? await api.recordPromptUsage(
-                    workspaceID: workspaceID,
-                    promptIDs: selection.ids
-                )
+                do {
+                    try await api.recordPromptUsage(
+                        workspaceID: workspaceID,
+                        promptIDs: selection.ids
+                    )
+                } catch {
+                    self.recordError(error, operation: "Record Prompt Usage")
+                }
                 self.setVisualState(.success, resetAfter: 1.1)
                 switch outcome {
                 case .pasted:
@@ -324,9 +371,9 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
                 }
             } catch {
                 self.setVisualState(.failure, resetAfter: 1.35)
-                self.statusController.show(
-                    self.conciseError(error),
-                    tone: .failure,
+                self.presentError(
+                    error,
+                    operation: "Paste Selected Prompts",
                     relativeTo: panel,
                     dismissAfter: 4.5
                 )
@@ -411,7 +458,6 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func toggleScope() {
-        pendingPasteTarget = nil
         guard !busy else {
             if let panel = panelController?.window {
                 statusController.show(
@@ -423,21 +469,35 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
-        setScope(scope.toggled)
+        capturePasteTarget()
+        let nextScope = scope.toggled
+        prepareForDirectContextAction(scope: nextScope)
+        insertContext(scope: nextScope, explicitSession: nil)
+    }
+
+    private func pasteExplicitSession(_ session: OverlaySelectedSession) {
+        guard !busy,
+              selectedSessions.contains(where: { $0.identity == session.identity })
+        else {
+            return
+        }
+        prepareForDirectContextAction(scope: .session)
+        panelController?.collapse()
+        insertContext(scope: .session, explicitSession: session)
     }
 
     private func setScope(_ nextScope: ContextScope) {
         scope = nextScope
         panelController?.logoControl.scope = scope
         panelController?.logoControl.visualState = .idle
-        if let panel = panelController?.window {
-            statusController.show(
-                "\(displayName(for: scope)) selected",
-                tone: scope == .project ? .success : .neutral,
-                relativeTo: panel,
-                dismissAfter: 1.7
-            )
+    }
+
+    private func prepareForDirectContextAction(scope nextScope: ContextScope) {
+        if promptSelection.isActive {
+            promptSelection.clear()
+            applyPromptSelectionVisuals()
         }
+        setScope(nextScope)
     }
 
     private func setVisualState(
@@ -458,10 +518,11 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showContextMenu(at location: NSPoint, in control: NSView) {
+        capturePasteTarget()
         let menu = NSMenu(title: "DaemonState")
 
         let sessionItem = NSMenuItem(
-            title: "Session Context",
+            title: "Paste Session Context",
             action: #selector(selectSessionContext),
             keyEquivalent: ""
         )
@@ -471,7 +532,7 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(sessionItem)
 
         let projectItem = NSMenuItem(
-            title: "Workspace Context",
+            title: "Paste Workspace Context",
             action: #selector(selectProjectContext),
             keyEquivalent: ""
         )
@@ -479,6 +540,29 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
         projectItem.state = scope == .project ? .on : .off
         projectItem.isEnabled = !busy
         menu.addItem(projectItem)
+
+        if !selectedSessions.isEmpty {
+            let selectedItem = NSMenuItem(
+                title: "Paste Selected Session",
+                action: nil,
+                keyEquivalent: ""
+            )
+            let selectedMenu = NSMenu(title: "Selected Sessions")
+            for session in selectedSessions {
+                let item = NSMenuItem(
+                    title: "\(session.ordinalLabel) · \(session.providerDisplayName) · \(session.title)",
+                    action: #selector(selectExplicitSessionFromMenu(_:)),
+                    keyEquivalent: "\(session.ordinal)"
+                )
+                item.target = self
+                item.representedObject = session.identity
+                item.keyEquivalentModifierMask = [.command, .option]
+                item.isEnabled = !busy
+                selectedMenu.addItem(item)
+            }
+            selectedItem.submenu = selectedMenu
+            menu.addItem(selectedItem)
+        }
         menu.addItem(.separator())
 
         let workspaceItem = NSMenuItem(title: "Workspace", action: nil, keyEquivalent: "")
@@ -516,6 +600,19 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
         refreshItem.target = self
         menu.addItem(refreshItem)
 
+        let errorCountSuffix = errorHistory.isEmpty
+            ? ""
+            : " (\(errorHistory.count))"
+        let copyErrorsItem = NSMenuItem(
+            title: "Copy Recent Error Details\(errorCountSuffix)",
+            action: #selector(copyRecentErrorDetails),
+            keyEquivalent: ""
+        )
+        copyErrorsItem.target = self
+        copyErrorsItem.isEnabled = !errorHistory.isEmpty
+        menu.addItem(copyErrorsItem)
+        menu.addItem(.separator())
+
         let openItem = NSMenuItem(
             title: "Open DaemonState",
             action: #selector(openDashboard),
@@ -537,14 +634,25 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func selectSessionContext() {
-        setScope(.session)
+        prepareForDirectContextAction(scope: .session)
+        insertContext(scope: .session, explicitSession: nil)
     }
 
     @objc private func selectProjectContext() {
-        setScope(.project)
+        prepareForDirectContextAction(scope: .project)
+        insertContext(scope: .project, explicitSession: nil)
+    }
+
+    @objc private func selectExplicitSessionFromMenu(_ sender: NSMenuItem) {
+        guard let identity = sender.representedObject as? String,
+              let session = selectedSessions.first(where: {
+                  $0.identity == identity
+              }) else { return }
+        pasteExplicitSession(session)
     }
 
     @objc private func selectWorkspaceFromMenu(_ sender: NSMenuItem) {
+        pendingPasteTarget = nil
         guard let workspaceID = sender.representedObject as? String else { return }
         selectWorkspace(workspaceID)
         if let workspace = workspaces.first(where: { $0.id == workspaceID }),
@@ -559,12 +667,45 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func refreshWorkspacesFromMenu() {
+        pendingPasteTarget = nil
         Task { [weak self] in
             await self?.refreshWorkspaces(showFailure: true)
         }
     }
 
+    @objc private func copyRecentErrorDetails() {
+        pendingPasteTarget = nil
+        let details = errorHistory.clipboardText()
+        guard !details.isEmpty else { return }
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        guard pasteboard.setString(details, forType: .string) else {
+            let error = OverlayDiagnosticsError.clipboardUnavailable
+            recordError(error, operation: "Copy Recent Error Details")
+            if let panel = panelController?.window {
+                statusController.show(
+                    conciseError(error),
+                    tone: .failure,
+                    relativeTo: panel,
+                    dismissAfter: 3.5
+                )
+            }
+            return
+        }
+        if let panel = panelController?.window {
+            let noun = errorHistory.count == 1 ? "error" : "errors"
+            statusController.show(
+                "Copied \(errorHistory.count) recent \(noun) with full details",
+                tone: .success,
+                relativeTo: panel,
+                dismissAfter: 2.2
+            )
+        }
+    }
+
     @objc private func openDashboard() {
+        pendingPasteTarget = nil
         guard var components = URLComponents(
             url: configuration.apiURL,
             resolvingAgainstBaseURL: false
@@ -600,6 +741,7 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
                 selectWorkspace(selected.id)
             }
         } catch {
+            recordError(error, operation: "Refresh Workspaces")
             guard showFailure, let panel = panelController?.window else { return }
             statusController.show(
                 conciseError(error),
@@ -610,25 +752,34 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func selectWorkspace(_ workspaceID: String) {
-        if let current = preferredWorkspaceID,
-           current != workspaceID,
-           promptSelection.isActive
-        {
-            promptSelection.clear()
-            applyPromptSelectionVisuals()
+    private func selectWorkspace(
+        _ workspaceID: String,
+        publishState: Bool = true
+    ) {
+        if let current = preferredWorkspaceID, current != workspaceID {
+            if promptSelection.isActive {
+                promptSelection.clear()
+                applyPromptSelectionVisuals()
+            }
+            applySelectedSessions([])
         }
         preferredWorkspaceID = workspaceID
         preferences.set(workspaceID, forKey: PreferenceKey.workspaceID)
-        publishRuntimeState()
+        if publishState {
+            publishRuntimeState()
+        }
     }
 
     private func applyRuntimeControl(
         visible: Bool,
-        workspaceID: String?
+        workspaceID: String?,
+        selectedSessions incomingSessions: [OverlaySelectedSession]?
     ) {
         if let workspaceID {
-            selectWorkspace(workspaceID)
+            selectWorkspace(workspaceID, publishState: false)
+        }
+        if let incomingSessions {
+            applySelectedSessions(incomingSessions)
         }
         if visible {
             panelController?.show()
@@ -645,8 +796,15 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
     private func publishRuntimeState() -> Bool {
         runtimeController?.publish(
             visible: panelController?.window?.isVisible == true,
-            workspaceID: preferredWorkspaceID
+            workspaceID: preferredWorkspaceID,
+            selectedSessions: selectedSessions
         ) ?? false
+    }
+
+    private func applySelectedSessions(_ sessions: [OverlaySelectedSession]) {
+        let normalized = normalizedOverlaySelectedSessions(sessions)
+        selectedSessions = normalized
+        panelController?.setSelectedSessions(normalized)
     }
 
     private func capturePasteTarget() {
@@ -674,16 +832,36 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
-    private func displayName(for scope: ContextScope) -> String {
-        scope == .session ? "Session Context" : "Workspace Context"
+    private func displayName(
+        for scope: ContextScope,
+        explicitSession: OverlaySelectedSession? = nil
+    ) -> String {
+        if scope == .session, let explicitSession {
+            return "Session \(explicitSession.ordinalLabel) Context"
+        }
+        return scope == .session ? "Session Context" : "Workspace Context"
+    }
+
+    private func recordError(_ error: Error, operation: String) {
+        errorHistory.record(operation: operation, error: error)
+    }
+
+    private func presentError(
+        _ error: Error,
+        operation: String,
+        relativeTo panel: NSWindow,
+        dismissAfter: TimeInterval
+    ) {
+        recordError(error, operation: operation)
+        statusController.show(
+            conciseError(error),
+            tone: .failure,
+            relativeTo: panel,
+            dismissAfter: dismissAfter
+        )
     }
 
     private func conciseError(_ error: Error) -> String {
-        let message = error.localizedDescription
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if message.count <= 150 {
-            return message
-        }
-        return "\(message.prefix(147))…"
+        OverlayErrorHistory.conciseMessage(error.localizedDescription)
     }
 }

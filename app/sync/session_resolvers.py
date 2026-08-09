@@ -1066,6 +1066,7 @@ def _resolve_opencode_session(session_id: str) -> ResolvedSession:
             conn.close()
 
     messages: list[tuple[str, str]] = []
+    compaction_checkpoints: list[dict[str, Any]] = []
     events: list[NormalizedSessionEvent] = []
     for index, row in enumerate(rows, start=1):
         role = "message"
@@ -1082,14 +1083,66 @@ def _resolve_opencode_session(session_id: str) -> ResolvedSession:
         part_type = str(part_data.get("type") or "").strip().lower()
         occurred_at = _millis_to_iso(row["part_time"])
         provider_event_id = str(row["part_id"] or f"part:{index}")
+        part_metadata = (
+            part_data.get("metadata")
+            if isinstance(part_data.get("metadata"), dict)
+            else {}
+        )
+        if (
+            part_data.get("synthetic") is True
+            and part_metadata.get("compaction_continue") is True
+        ):
+            events.append(NormalizedSessionEvent(
+                provider_event_id=provider_event_id,
+                sequence_number=index,
+                event_type="runtime_instruction",
+                role="system",
+                occurred_at=occurred_at,
+                content=_extract_content_text(part_data),
+                payload={
+                    "message_id": row["message_id"],
+                    "part_type": part_type or None,
+                    "synthetic": True,
+                    "compaction_continue": True,
+                },
+            ))
+            continue
         if part_type in {"compaction", "summary"}:
+            compaction_payload = {
+                "part_type": part_type,
+                "turn_count": len(messages),
+                "user_turn_count": sum(role == "user" for role, _ in messages),
+                "assistant_turn_count": sum(
+                    role == "assistant" for role, _ in messages
+                ),
+                "window_id": part_data.get("tail_start_id"),
+                "tail_start_id": part_data.get("tail_start_id"),
+                "auto": part_data.get("auto"),
+                "overflow": part_data.get("overflow"),
+            }
+            if messages:
+                descriptor = build_compaction_checkpoint_descriptor(
+                    messages,
+                    {
+                        "timestamp": occurred_at,
+                        "payload": compaction_payload,
+                    },
+                    provider="opencode",
+                    ordinal=len(compaction_checkpoints) + 1,
+                    repo_path=session_row["directory"],
+                )
+                if not any(
+                    current["id"] == descriptor["id"]
+                    for current in compaction_checkpoints
+                ):
+                    compaction_checkpoints.append(descriptor)
             events.append(NormalizedSessionEvent(
                 provider_event_id=provider_event_id,
                 sequence_number=index,
                 event_type="compaction_boundary",
                 occurred_at=occurred_at,
                 content=_none_if_blank(part_data.get("summary")),
-                payload={"part_type": part_type, "turn_count": len(messages)},
+                payload=compaction_payload,
             ))
             continue
         if part_type in {"tool", "tool_use", "tool_result"}:
@@ -1191,6 +1244,8 @@ def _resolve_opencode_session(session_id: str) -> ResolvedSession:
     metadata["compaction_count"] = sum(
         event.event_type == "compaction_boundary" for event in events
     )
+    if compaction_checkpoints:
+        metadata["compaction_checkpoints"] = compaction_checkpoints
     return ResolvedSession("opencode", session_id, content, metadata, events)
 
 

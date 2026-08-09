@@ -229,6 +229,7 @@ struct SessionHandoffEnvelope: Decodable {
     let content: String?
     let sha256: String?
     let qualityReport: SessionQualityEnvelope?
+    let readinessDimensions: SessionReadinessDimensionsEnvelope?
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -240,6 +241,33 @@ struct SessionHandoffEnvelope: Decodable {
         case content
         case sha256
         case qualityReport = "quality_report"
+        case readinessDimensions = "readiness_dimensions"
+    }
+}
+
+struct SessionReadinessDimensionsEnvelope: Decodable {
+    let semanticReadiness: SessionSemanticReadinessEnvelope?
+    let evidenceAccess: SessionEvidenceAccessEnvelope?
+
+    private enum CodingKeys: String, CodingKey {
+        case semanticReadiness = "semantic_readiness"
+        case evidenceAccess = "evidence_access"
+    }
+}
+
+struct SessionSemanticReadinessEnvelope: Decodable {
+    let copyReady: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case copyReady = "copy_ready"
+    }
+}
+
+struct SessionEvidenceAccessEnvelope: Decodable {
+    let blocksCopy: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case blocksCopy = "blocks_copy"
     }
 }
 
@@ -369,23 +397,75 @@ private enum FoundationJSONValue: Decodable {
         }
     }
 
-    var foundationObject: Any {
+    func canonicalJSONData() throws -> Data {
+        Data(try canonicalJSONString().utf8)
+    }
+
+    private func canonicalJSONString() throws -> String {
         switch self {
         case let .object(value):
-            return value.mapValues(\.foundationObject)
+            let entries = try value.keys.sorted().map { key in
+                let encodedKey = Self.canonicalJSONString(key)
+                let encodedValue = try value[key]!.canonicalJSONString()
+                return "\(encodedKey):\(encodedValue)"
+            }
+            return "{\(entries.joined(separator: ","))}"
         case let .array(value):
-            return value.map(\.foundationObject)
+            let entries = try value.map { try $0.canonicalJSONString() }
+            return "[\(entries.joined(separator: ","))]"
         case let .string(value):
-            return value
+            return Self.canonicalJSONString(value)
         case let .integer(value):
-            return value
+            return String(value)
         case let .number(value):
-            return value
+            guard value.isFinite else {
+                throw DaemonStateError.invalidPayload(
+                    "workspace foundation contains a non-finite number"
+                )
+            }
+            if value == 0 {
+                return "0"
+            }
+            if value.rounded(.towardZero) == value,
+               value >= Double(Int64.min),
+               value <= Double(Int64.max)
+            {
+                return String(Int64(value))
+            }
+            return String(value)
         case let .boolean(value):
-            return value
+            return value ? "true" : "false"
         case .null:
-            return NSNull()
+            return "null"
         }
+    }
+
+    private static func canonicalJSONString(_ value: String) -> String {
+        var encoded = "\""
+        for scalar in value.unicodeScalars {
+            switch scalar.value {
+            case 0x08:
+                encoded += "\\b"
+            case 0x09:
+                encoded += "\\t"
+            case 0x0A:
+                encoded += "\\n"
+            case 0x0C:
+                encoded += "\\f"
+            case 0x0D:
+                encoded += "\\r"
+            case 0x22:
+                encoded += "\\\""
+            case 0x5C:
+                encoded += "\\\\"
+            case 0x00...0x1F:
+                encoded += String(format: "\\u%04x", scalar.value)
+            default:
+                encoded.unicodeScalars.append(scalar)
+            }
+        }
+        encoded += "\""
+        return encoded
     }
 
     var objectValue: [String: FoundationJSONValue]? {
@@ -450,10 +530,7 @@ struct WorkspaceFoundationEnvelope: Decodable {
             )
         }
         object.removeValue(forKey: "artifact_sha256")
-        return try JSONSerialization.data(
-            withJSONObject: object.mapValues(\.foundationObject),
-            options: [.sortedKeys, .withoutEscapingSlashes]
-        )
+        return try FoundationJSONValue.object(object).canonicalJSONData()
     }
 
     func canonicalSemanticData() throws -> Data {
@@ -469,10 +546,7 @@ struct WorkspaceFoundationEnvelope: Decodable {
             repository.removeValue(forKey: "captured_at")
             object["repository_state"] = .object(repository)
         }
-        return try JSONSerialization.data(
-            withJSONObject: object.mapValues(\.foundationObject),
-            options: [.sortedKeys, .withoutEscapingSlashes]
-        )
+        return try FoundationJSONValue.object(object).canonicalJSONData()
     }
 
     private func value(_ key: String) -> FoundationJSONValue? {

@@ -4,6 +4,11 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import NowPage from "./NowPage";
+import {
+  readExecuteActiveSessionIdentities,
+  writeExecuteActiveSessionIdentities,
+  writeExecuteSessionContexts,
+} from "./executeSessionSelection";
 import { copyReadySessionContextContent } from "./sessionContinuity";
 
 function sha256Text(value) {
@@ -246,6 +251,16 @@ vi.mock("../api/hooks", () => ({
 
 beforeEach(() => {
   globalThis.sessionStorage?.clear();
+  const storedPreferences = new Map();
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      clear: () => storedPreferences.clear(),
+      getItem: (key) => storedPreferences.get(key) ?? null,
+      removeItem: (key) => storedPreferences.delete(key),
+      setItem: (key, value) => storedPreferences.set(key, String(value)),
+    },
+  });
   Object.values(mocks.hookCalls).forEach((calls) => calls.splice(0));
   mocks.workspace.activeWorkspace = {
     id: "workspace-1",
@@ -679,6 +694,28 @@ describe("checkpoint product loop", () => {
     expect(mocks.continuation.mutateAsync).not.toHaveBeenCalled();
   });
 
+  it("uses the explicit latest-session count when descriptors are empty", () => {
+    mocks.latestDiscovery.data = latestDiscoveryResult({
+      compaction_count: 2,
+      compaction_checkpoints: [],
+    });
+    mocks.history.data = { checkpoints: [] };
+
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+
+    const providerButtons = [
+      screen.getByRole("button", { name: "Open desktop handoff in Codex" }),
+      screen.getByRole("button", { name: "Open desktop handoff in Claude Code" }),
+      screen.getByRole("button", { name: "Open desktop handoff in OpenCode" }),
+    ];
+    providerButtons.forEach((button) => {
+      expect(button).toBeEnabled();
+      expect(button).toHaveAttribute("data-context-ready", "true");
+      expect(button).toHaveAttribute("data-compaction-count", "2");
+    });
+    expect(screen.getAllByText("Open desktop")).toHaveLength(3);
+  });
+
   it("shows current work and a complete structured checkpoint on Now", () => {
     render(<MemoryRouter><NowPage /></MemoryRouter>);
 
@@ -709,7 +746,7 @@ describe("checkpoint product loop", () => {
     });
     expect(continuationChoices).toHaveClass("mx-auto", "w-full", "max-w-4xl");
     expect(within(continuationChoices).getAllByRole("link")).toHaveLength(1);
-    expect(screen.getByRole("link", { name: "Choose custom sessions in Execute" })).toHaveAttribute("href", "/app/execute");
+    expect(screen.getByRole("link", { name: "Choose custom sessions in Execute" })).toHaveAttribute("href", "/app/execute?from=continue");
     expect(screen.queryByRole("link", { name: "Prepare an older session" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Context ready for selection" })).not.toBeInTheDocument();
     expect(screen.queryByTestId("context-package-card")).not.toBeInTheDocument();
@@ -790,6 +827,156 @@ describe("checkpoint product loop", () => {
       enabled: true,
     });
     expect(mocks.hookCalls.refresh).toEqual([]);
+  });
+
+  it("shows numbered provider session blades only after the Continue selection flow and stages the chosen exact session", async () => {
+    writeExecuteSessionContexts("workspace-1", [
+      {
+        source_document_id: "source-custom-one",
+        connector_type: "codex",
+        session_id: "custom-one",
+        title: "First Codex task",
+        cwd: "/workspace/daemonstate",
+        compaction_count: 2,
+      },
+      {
+        source_document_id: "source-custom-two",
+        connector_type: "codex",
+        session_id: "custom-two",
+        title: "Second Codex task",
+        compaction_count: 2,
+      },
+      {
+        source_document_id: "source-custom-three",
+        connector_type: "claude",
+        session_id: "custom-three",
+        title: "Claude architecture task",
+        cwd: "/workspace/daemonstate",
+        compaction_count: 2,
+      },
+    ]);
+
+    render(
+      <MemoryRouter initialEntries={["/app?session_flow=custom"]}>
+        <NowPage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("region", {
+      name: "Custom Continue sessions",
+    })).toBeInTheDocument();
+    const codexBlade = screen.getByRole("button", {
+      name: "Codex custom sessions, session 1 selected",
+    });
+    expect(codexBlade).toBeInTheDocument();
+    expect(screen.getByRole("button", {
+      name: "Claude Code custom sessions, session 3 selected",
+    })).toBeInTheDocument();
+    expect(screen.queryByRole("button", {
+      name: /OpenCode custom sessions/,
+    })).not.toBeInTheDocument();
+
+    fireEvent.click(codexBlade);
+    fireEvent.click(screen.getByRole("menuitemradio", {
+      name: /Second Codex task/,
+    }));
+    await waitFor(() => expect(
+      readExecuteActiveSessionIdentities("workspace-1"),
+    ).toMatchObject({ codex: "codex:custom-two" }));
+
+    const codexHandoff = screen.getByRole("button", {
+      name: "Open desktop handoff in Codex",
+    });
+    expect(codexHandoff.closest("article")).toHaveAttribute(
+      "data-selected-session-ordinal",
+      "2",
+    );
+    fireEvent.click(codexHandoff);
+
+    await waitFor(() => expect(mocks.continuation.mutateAsync).toHaveBeenCalled());
+    expect(mocks.continuation.mutateAsync.mock.calls.at(-1)[0]).toMatchObject({
+      workspace_id: "workspace-1",
+      target_provider: "codex",
+      source_provider: "codex",
+      source_session_id: "custom-two",
+      repo_path: "/workspace/daemonstate",
+    });
+  });
+
+  it("restores and syncs saved session blades on a direct Continue visit", async () => {
+    writeExecuteSessionContexts("workspace-1", [{
+      source_document_id: "source-hidden",
+      connector_type: "codex",
+      session_id: "hidden-session",
+      title: "Stored Execute session",
+      compaction_count: 2,
+    }]);
+    mocks.overlayStatus.data = {
+      available: true,
+      visible: true,
+      workspace_id: "workspace-1",
+      selected_sessions: [],
+    };
+
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+
+    expect(screen.getByRole("region", {
+      name: "Custom Continue sessions",
+    })).toBeInTheDocument();
+    expect(screen.getByRole("button", {
+      name: "Codex custom sessions, session 1 selected",
+    })).toBeInTheDocument();
+    expect(screen.getByRole("button", {
+      name: "Open desktop handoff in Codex",
+    }).closest("article")).toHaveAttribute("data-selected-session-ordinal", "1");
+    await waitFor(() => expect(mocks.overlayVisibility.mutate).toHaveBeenCalledWith({
+      visible: true,
+      workspaceId: "workspace-1",
+      selectedSessions: [{
+        provider: "codex",
+        session_id: "hidden-session",
+        title: "Stored Execute session",
+        ordinal: 1,
+      }],
+    }));
+  });
+
+  it("restores the active numbered choice after a custom Continue reload", () => {
+    writeExecuteSessionContexts("workspace-1", [
+      {
+        source_document_id: "source-reload-one",
+        connector_type: "codex",
+        session_id: "reload-one",
+        title: "First saved choice",
+        compaction_count: 2,
+      },
+      {
+        source_document_id: "source-reload-two",
+        connector_type: "codex",
+        session_id: "reload-two",
+        title: "Second saved choice",
+        compaction_count: 2,
+      },
+    ]);
+    writeExecuteActiveSessionIdentities("workspace-1", {
+      codex: "codex:reload-two",
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/app?session_flow=custom"]}>
+        <NowPage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("button", {
+      name: "Codex custom sessions, session 2 selected",
+    })).toBeInTheDocument();
+    expect(screen.getByRole("button", {
+      name: "Open desktop handoff in Codex",
+    }).closest("article")).toHaveAttribute(
+      "data-selected-session-ordinal",
+      "2",
+    );
   });
 
   it("falls back from an imported-chat disclaimer to the real session task", () => {
@@ -1211,7 +1398,7 @@ describe("checkpoint product loop", () => {
     })).toBeInTheDocument();
   });
 
-  it("ignores URL task envelopes and keeps model controls on the latest session", async () => {
+  it("ignores URL task envelopes and leaves model settings to the desktop app", async () => {
     const attachmentEnvelope = `# Files mentioned by the user:
 
 ## Screenshot 2026-07-23 at 16.42.18.png: /var/folders/example/TemporaryItems/NSIRD_screencaptureui_abc/Screenshot 2026-07-23 at 16.42.18.png
@@ -1238,14 +1425,7 @@ Remove screenshot IDs and temporary paths from the Now page.
     expect(screen.queryByText(/\/var\/folders/)).not.toBeInTheDocument();
     expect(screen.queryByText(/screencaptureui_/)).not.toBeInTheDocument();
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Codex model" }), {
-      target: { value: "gpt-5.6-terra" },
-    });
-    fireEvent.change(screen.getByRole("combobox", {
-      name: "Codex reasoning effort",
-    }), {
-      target: { value: "high" },
-    });
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", {
       name: "Open desktop handoff in Codex",
     }));
@@ -1255,10 +1435,45 @@ Remove screenshot IDs and temporary paths from the Now page.
       source_provider: "codex",
       source_session_id: "session-1",
       target_provider: "codex",
-      provider_model: "gpt-5.6-terra",
-      provider_effort: "high",
     });
+    expect(request).not.toHaveProperty("provider_model");
+    expect(request).not.toHaveProperty("provider_effort");
     expect(request).not.toHaveProperty("objective");
+  });
+
+  it("requires an explicit repository choice when the workspace has multiple repositories", async () => {
+    mocks.workspace.activeWorkspace = {
+      ...mocks.workspace.activeWorkspace,
+      repo_paths: ["/workspace/service-one", "/workspace/service-two"],
+    };
+    mocks.workspace.workspaces = [mocks.workspace.activeWorkspace];
+
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+
+    const repository = screen.getByRole("combobox", {
+      name: "Repository for Continue",
+    });
+    const codex = screen.getByRole("button", {
+      name: "Open desktop handoff in Codex",
+    });
+    expect(codex).toBeDisabled();
+    expect(screen.queryByRole("combobox", { name: "Codex model" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", {
+      name: "Codex reasoning effort",
+    })).not.toBeInTheDocument();
+
+    fireEvent.change(repository, { target: { value: "/workspace/service-two" } });
+    expect(codex).toBeEnabled();
+    fireEvent.click(codex);
+
+    await waitFor(() => expect(mocks.continuation.mutateAsync).toHaveBeenCalled());
+    const request = mocks.continuation.mutateAsync.mock.calls.at(-1)[0];
+    expect(request).toMatchObject({
+      repo_path: "/workspace/service-two",
+      target_provider: "codex",
+    });
+    expect(request).not.toHaveProperty("provider_model");
+    expect(request).not.toHaveProperty("provider_effort");
   });
 
   it("falls back instead of displaying metadata-only activity", () => {
@@ -2803,15 +3018,11 @@ Remove screenshot IDs and temporary paths from the Now page.
     fireEvent.click(screen.getByRole("button", { name: "Open desktop handoff in Codex" }));
     expect(await screen.findByRole("status")).toHaveTextContent("Continue in Claude Code");
 
-    mocks.digest.data.activity.recent_sessions[0] = {
-      ...mocks.digest.data.activity.recent_sessions[0],
-      cwd: "/workspace/daemonstate-next",
+    mocks.workspace.activeWorkspace = {
+      ...mocks.workspace.activeWorkspace,
+      repo_path: "/workspace/daemonstate-next",
     };
-    mocks.latestDiscovery.data = latestDiscoveryResult({
-      cwd: "/workspace/daemonstate-next",
-      updated_at: "2026-07-21T10:01:00Z",
-      revision_number: 2,
-    });
+    mocks.workspace.workspaces = [mocks.workspace.activeWorkspace];
     view.rerender(<MemoryRouter><NowPage /></MemoryRouter>);
 
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
@@ -2891,7 +3102,7 @@ Remove screenshot IDs and temporary paths from the Now page.
     expect(screen.getByRole("link", { name: "Choose work to continue" })).toHaveAttribute("href", "/app/library");
   });
 
-  it("uses authoritative latest discovery when the digest still points to older work", async () => {
+  it("uses authoritative latest discovery while keeping repository scope workspace-verified", async () => {
     mocks.digest.data.current_goal = { title: "Stale workspace goal" };
     mocks.digest.data.scope = { project_paths: ["/workspace/stale-scope"] };
     mocks.digest.data.activity.primary = {
@@ -2927,7 +3138,7 @@ Remove screenshot IDs and temporary paths from the Now page.
     await waitFor(() => expect(mocks.continuation.mutateAsync).toHaveBeenCalled());
     const request = mocks.continuation.mutateAsync.mock.calls.at(-1)[0];
     expect(request).toMatchObject({
-      repo_path: "/workspace/newest-root-session",
+      repo_path: "/workspace/daemonstate",
       source_provider: "codex",
       source_session_id: "newest-root-session",
     });
@@ -3310,7 +3521,20 @@ function sessionHandoff(content, overrides = {}) {
       automatic_execution_ready: false,
       blocking_issues: [],
       warnings: [],
+      semantic_readiness: { copy_ready: true },
+      evidence_access: { status: "not_required", blocks_copy: false },
     },
+    readiness_dimensions: {
+      semantic_readiness: { copy_ready: true },
+      evidence_access: { status: "not_required", blocks_copy: false },
+      budget_fit: {
+        efficiency_target: { within_target: true },
+        destination_limit: { status: "unknown" },
+      },
+    },
+    token_accounting: { blocks_automatic_delivery: false },
+    advisories: [],
+    delivery: { mode: "direct_copy", ready_for_target: true },
     ...overrides,
   };
 }

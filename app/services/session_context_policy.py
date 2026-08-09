@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import SessionEvent, SourceDocument
@@ -83,8 +85,57 @@ async def session_context_eligibility(
     if session_key is None:
         raise ValueError("provider and session_id must be non-empty")
     normalized_provider, normalized_session_id = session_key
-    compaction_count = int(await session.scalar(
-        select(func.count(func.distinct(SessionEvent.provider_event_id)))
+    compaction_counts = await session_context_compaction_counts(
+        session,
+        workspace_id=workspace_id,
+        session_keys=(session_key,),
+        access_scope=access_scope,
+    )
+    return SessionContextEligibility(
+        workspace_id=workspace_id,
+        provider=normalized_provider,
+        session_id=normalized_session_id,
+        compaction_count=compaction_counts[session_key],
+    )
+
+
+async def session_context_compaction_counts(
+    session: AsyncSession,
+    *,
+    workspace_id: UUID,
+    session_keys: Iterable[tuple[str, str]],
+    access_scope: AccessScope,
+) -> dict[tuple[str, str], int]:
+    """Return ledger-backed compaction counts for normalized session keys.
+
+    The Session Library and the Execute eligibility gate must project the same
+    persisted events.  Reading resolver metadata or checkpoint descriptors here
+    would let legacy imports and schema upgrades disagree with the gate again.
+    """
+
+    normalized_keys = {
+        normalized
+        for provider, session_id in session_keys
+        if (normalized := normalize_session_key(provider, session_id)) is not None
+    }
+    if not normalized_keys:
+        return {}
+
+    provider_values = tuple(sorted({
+        value
+        for provider, _ in normalized_keys
+        for value in session_provider_values(provider)
+    }))
+    session_id_values = tuple(sorted({
+        session_id for _, session_id in normalized_keys
+    }))
+    rows = await session.execute(
+        select(
+            SessionEvent.provider,
+            SessionEvent.session_id,
+            SessionEvent.provider_event_id,
+        )
+        .distinct()
         .select_from(SessionEvent)
         .join(
             SourceDocument,
@@ -92,23 +143,24 @@ async def session_context_eligibility(
         )
         .where(
             SessionEvent.workspace_id == workspace_id,
-            SessionEvent.provider.in_(
-                session_provider_values(normalized_provider)
-            ),
-            SessionEvent.session_id == normalized_session_id,
+            SessionEvent.provider.in_(provider_values),
+            SessionEvent.session_id.in_(session_id_values),
             SessionEvent.event_type == "compaction_boundary",
             source_access_predicate(
                 access_scope,
                 workspace_id=workspace_id,
             ),
         )
-    ) or 0)
-    return SessionContextEligibility(
-        workspace_id=workspace_id,
-        provider=normalized_provider,
-        session_id=normalized_session_id,
-        compaction_count=compaction_count,
     )
+    event_ids: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for provider, session_id, provider_event_id in rows:
+        key = normalize_session_key(provider, session_id)
+        if key in normalized_keys:
+            event_ids[key].add(str(provider_event_id))
+    return {
+        key: len(event_ids[key])
+        for key in normalized_keys
+    }
 
 
 async def require_session_context_compactions(
