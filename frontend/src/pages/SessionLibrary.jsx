@@ -11,12 +11,14 @@ import {
   FolderGit2,
   GitFork,
   History,
+  ListChecks,
   LockKeyhole,
   Loader2,
   Radio,
   RefreshCw,
   Search,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
 
@@ -61,11 +63,15 @@ export default function SessionLibrary() {
   const syncMutation = useSyncSessionLibrary();
   const selectMutation = useSelectSessionFromLibrary();
   const executeSelectionMode = searchParams.get("mode") === "execute-context";
+  const returnToContinue = (
+    executeSelectionMode
+    && searchParams.get("return_to") === "continue"
+  );
   const libraryHomePath = useMemo(() => {
     return executeSelectionMode
-      ? "/app/library?mode=execute-context"
+      ? `/app/library?mode=execute-context${returnToContinue ? "&return_to=continue" : ""}`
       : "/app/library";
-  }, [executeSelectionMode]);
+  }, [executeSelectionMode, returnToContinue]);
   const sessionsRef = useRef(null);
   const [selectedHarness, setSelectedHarness] = useState(null);
   const [hoveredHarness, setHoveredHarness] = useState(null);
@@ -73,6 +79,12 @@ export default function SessionLibrary() {
   const [visibleSessionCount, setVisibleSessionCount] = useState(INITIAL_SESSION_COUNT);
   const [evidenceSelection, setEvidenceSelection] = useState(null);
   const [selectingSessionId, setSelectingSessionId] = useState(null);
+  const [selectionManagerOpen, setSelectionManagerOpen] = useState(false);
+  const selectionManagerTriggerRef = useRef(null);
+  const selectionManagerPanelRef = useRef(null);
+  const selectionManagerCheckboxRefs = useRef(new Map());
+  const selectionManagerPendingFocusIndexRef = useRef(null);
+  const executeApplyButtonRef = useRef(null);
   const executeSelectionWorkspaceId = workspace.activeWorkspaceId || "";
   const storedActiveExecuteSessions = useMemo(
     () => readExecuteSessionContexts(executeSelectionWorkspaceId),
@@ -110,6 +122,10 @@ export default function SessionLibrary() {
 
   const library = libraryQuery.data;
   const sessions = library?.sessions || [];
+  const executeSelectionApplyBlocked = Boolean(
+    executeSessionContexts.length
+    && (!library || libraryQuery.isLoading || libraryQuery.isError),
+  );
   const harnesses = useMemo(() => {
     const byType = Object.fromEntries((library?.harnesses || []).map((item) => [item.connector_type, item]));
     return HARNESS_ORDER.map((connectorType) => {
@@ -153,6 +169,7 @@ export default function SessionLibrary() {
       item.connector_type,
       item.session_id,
       item.revision_number,
+      sessionContextCompactionCount(item),
     ].join(":"))
     .join("|");
 
@@ -172,21 +189,44 @@ export default function SessionLibrary() {
       if (current.length >= MAX_EXECUTE_SESSION_CONTEXTS) return current;
       return resolveExecuteSessionContexts(
         [...current, item],
-        [...sessions, item],
+        [...sessions.filter(sessionContextIsEligible), item],
       );
     });
   };
 
+  const removeExecuteSessionContext = (sourceDocumentId, removedIndex) => {
+    const normalizedSourceDocumentId = String(sourceDocumentId || "").trim();
+    if (!normalizedSourceDocumentId) return;
+    selectionManagerPendingFocusIndexRef.current = Number.isInteger(removedIndex)
+      ? removedIndex
+      : null;
+    setExecuteSessionContexts((current) => current.filter(
+      (session) => session.sourceDocumentId !== normalizedSourceDocumentId,
+    ));
+  };
+
+  const clearExecuteSessionContexts = () => {
+    selectionManagerPendingFocusIndexRef.current = null;
+    setExecuteSessionContexts([]);
+    setSelectionManagerOpen(false);
+    executeApplyButtonRef.current?.focus();
+  };
+
   const applyExecuteSessionContexts = () => {
+    if (executeSelectionApplyBlocked) return;
     const selected = writeExecuteSessionContexts(
       workspace.activeWorkspaceId,
       resolveExecuteSessionContexts(
         executeSessionContexts,
-        library ? sessions : undefined,
+        library ? sessions.filter(sessionContextIsEligible) : undefined,
       ),
     );
     setExecuteSessionContexts(selected);
-    navigate("/app/execute");
+    navigate(returnToContinue
+      ? selected.length
+        ? "/app?session_flow=custom"
+        : "/app"
+      : "/app/execute");
   };
 
   useEffect(() => {
@@ -201,9 +241,80 @@ export default function SessionLibrary() {
   }, [executeSelectionWorkspaceId, storedActiveExecuteSessions]);
 
   useEffect(() => {
+    if (executeSelectionMode && executeSessionContexts.length > 0) return;
+    if (selectionManagerOpen) {
+      setSelectionManagerOpen(false);
+      executeApplyButtonRef.current?.focus();
+    }
+  }, [
+    executeSelectionMode,
+    executeSessionContexts.length,
+    selectionManagerOpen,
+  ]);
+
+  useEffect(() => {
+    setSelectionManagerOpen(false);
+  }, [executeSelectionWorkspaceId]);
+
+  useEffect(() => {
+    if (!selectionManagerOpen) {
+      selectionManagerPendingFocusIndexRef.current = null;
+      return;
+    }
+    const firstSession = executeSessionContexts[0];
+    if (firstSession) {
+      selectionManagerCheckboxRefs.current
+        .get(firstSession.sourceDocumentId)
+        ?.focus();
+    }
+  }, [selectionManagerOpen]);
+
+  useEffect(() => {
+    if (!selectionManagerOpen) return;
+    const removedIndex = selectionManagerPendingFocusIndexRef.current;
+    if (!Number.isInteger(removedIndex)) return;
+    selectionManagerPendingFocusIndexRef.current = null;
+    const nextSession = executeSessionContexts[
+      Math.min(removedIndex, executeSessionContexts.length - 1)
+    ];
+    if (nextSession) {
+      selectionManagerCheckboxRefs.current
+        .get(nextSession.sourceDocumentId)
+        ?.focus();
+      return;
+    }
+    executeApplyButtonRef.current?.focus();
+  }, [executeSessionContexts, selectionManagerOpen]);
+
+  useEffect(() => {
+    if (!selectionManagerOpen) return undefined;
+    const closeOnOutsidePointer = (event) => {
+      if (
+        selectionManagerPanelRef.current?.contains(event.target)
+        || selectionManagerTriggerRef.current?.contains(event.target)
+      ) return;
+      setSelectionManagerOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key !== "Escape") return;
+      setSelectionManagerOpen(false);
+      selectionManagerTriggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [selectionManagerOpen]);
+
+  useEffect(() => {
     if (!executeSelectionMode || !library) return;
     setExecuteSessionContexts((current) => {
-      const resolved = resolveExecuteSessionContexts(current, sessions);
+      const resolved = resolveExecuteSessionContexts(
+        current,
+        sessions.filter(sessionContextIsEligible),
+      );
       return JSON.stringify(current) === JSON.stringify(resolved)
         ? current
         : resolved;
@@ -306,30 +417,51 @@ export default function SessionLibrary() {
             ) : null}
           </div>
           {executeSelectionMode ? (
-            <div className="relative z-20 flex flex-wrap items-center gap-2 self-start lg:self-auto">
+            <div className="relative z-20 grid w-full grid-cols-2 gap-2 self-start sm:w-auto sm:min-w-[25rem] lg:self-auto">
               <span
                 aria-live="polite"
-                className="mr-1 text-xs font-black text-[#68685f] dark:text-[#c7c7bd]"
+                className="col-span-2 mb-0.5 text-right text-xs font-black text-[#68685f] dark:text-[#c7c7bd]"
               >
                 {executeSessionContexts.length} of {MAX_EXECUTE_SESSION_CONTEXTS} selected
               </span>
               <button
                 type="button"
-                onClick={() => navigate("/app/execute")}
-                className="inline-flex h-11 items-center justify-center rounded-xl border border-[#d8d8cf] bg-white/70 px-4 text-xs font-black text-[#68685f] transition hover:border-[#aaa99f] hover:text-[#171713] dark:border-[#383832] dark:bg-white/[0.04] dark:text-[#c7c7bd] dark:hover:text-white"
+                onClick={() => navigate(returnToContinue
+                  ? "/app/execute?from=continue"
+                  : "/app/execute")}
+                className="inline-flex h-11 min-w-0 items-center justify-center rounded-xl border border-[#d8d8cf] bg-white/70 px-4 text-xs font-black text-[#68685f] transition hover:border-[#aaa99f] hover:text-[#171713] dark:border-[#383832] dark:bg-white/[0.04] dark:text-[#c7c7bd] dark:hover:text-white"
               >
                 Cancel
               </button>
               <button
+                ref={executeApplyButtonRef}
                 type="button"
                 onClick={applyExecuteSessionContexts}
-                className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-[#9dbc47]/55 bg-[#d9ff68] px-5 text-xs font-black text-[#28310a] shadow-[0_8px_24px_rgba(157,188,71,0.18)] transition hover:-translate-y-0.5 hover:bg-[#e4ff91]"
+                disabled={executeSelectionApplyBlocked}
+                title={executeSelectionApplyBlocked
+                  ? "Wait for the Session Library to verify these selections."
+                  : undefined}
+                className="inline-flex h-11 min-w-0 items-center justify-center gap-2 rounded-xl border border-[#9dbc47]/55 bg-[#d9ff68] px-5 text-xs font-black text-[#28310a] shadow-[0_8px_24px_rgba(157,188,71,0.18)] transition hover:-translate-y-0.5 hover:bg-[#e4ff91] disabled:cursor-wait disabled:translate-y-0 disabled:opacity-60"
               >
                 <Check className="h-3.5 w-3.5" aria-hidden="true" />
                 {executeSessionContexts.length
                   ? `Use ${executeSessionContexts.length} session${executeSessionContexts.length === 1 ? "" : "s"}`
                   : "Clear selected sessions"}
               </button>
+              {executeSessionContexts.length ? (
+                <button
+                  ref={selectionManagerTriggerRef}
+                  type="button"
+                  aria-expanded={selectionManagerOpen}
+                  aria-controls="selected-session-manager"
+                  aria-haspopup="dialog"
+                  onClick={() => setSelectionManagerOpen((open) => !open)}
+                  className="col-span-2 inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-[#a71919] bg-[#d92d20] px-5 text-xs font-black text-white shadow-[0_9px_26px_rgba(185,28,28,0.22)] transition hover:-translate-y-0.5 hover:bg-[#b42318] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#f97066] focus-visible:ring-offset-2"
+                >
+                  <ListChecks className="h-3.5 w-3.5" aria-hidden="true" />
+                  Review / remove {executeSessionContexts.length} session{executeSessionContexts.length === 1 ? "" : "s"}
+                </button>
+              ) : null}
             </div>
           ) : (
             <button
@@ -344,6 +476,105 @@ export default function SessionLibrary() {
           )}
         </div>
       </header>
+
+      {executeSelectionMode && selectionManagerOpen ? (
+        <section
+          ref={selectionManagerPanelRef}
+          id="selected-session-manager"
+          role="dialog"
+          aria-modal="false"
+          aria-labelledby="selected-session-manager-title"
+          aria-describedby="selected-session-manager-description"
+          className="relative z-30 ml-auto w-full max-w-xl overflow-hidden rounded-2xl border border-[#efaaa4] bg-[#fffafa] text-[#171713] shadow-[0_24px_70px_rgba(127,29,29,0.18)] dark:border-[#7f2d27] dark:bg-[#1b1110] dark:text-white"
+        >
+          <div className="flex items-start justify-between gap-4 border-b border-[#f3d0cc] px-5 py-4 dark:border-[#4c2925]">
+            <div>
+              <p className="text-[9px] font-black uppercase tracking-[0.16em] text-[#b42318] dark:text-[#ff8a80]">Selection checklist</p>
+              <h2 id="selected-session-manager-title" className="mt-1 text-base font-black">
+                {executeSessionContexts.length} selected session{executeSessionContexts.length === 1 ? "" : "s"}
+              </h2>
+              <p
+                id="selected-session-manager-description"
+                className="mt-1 text-[11px] font-medium text-[#77776e] dark:text-[#bdb4b2]"
+              >
+                Uncheck a session to remove it from this Execute draft. Changes are saved when you use this selection.
+              </p>
+            </div>
+            <button
+              type="button"
+              aria-label="Close selected sessions checklist"
+              onClick={() => {
+                setSelectionManagerOpen(false);
+                selectionManagerTriggerRef.current?.focus();
+              }}
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-[#e4b9b4] text-[#8f3b33] transition hover:border-[#d92d20] hover:bg-[#fee4e2] hover:text-[#b42318] dark:border-[#5b3531] dark:text-[#e6aaa4] dark:hover:bg-[#3b1c19]"
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </div>
+
+          <fieldset className="space-y-2 px-4 py-4">
+            <legend className="sr-only">Currently selected sessions</legend>
+            {executeSessionContexts.map((session, index) => {
+              const providerMeta = HARNESS_META[session.provider] || HARNESS_META.codex;
+              return (
+                <label
+                  key={session.sourceDocumentId}
+                  className="group flex min-h-14 cursor-pointer items-center gap-3 rounded-xl border border-[#ead9d6] bg-white/80 px-3.5 py-3 transition hover:border-[#e17369] hover:bg-[#fff1ef] dark:border-[#49302d] dark:bg-white/[0.035] dark:hover:border-[#9d4b43] dark:hover:bg-[#351b18]"
+                >
+                  <input
+                    ref={(node) => {
+                      if (node) {
+                        selectionManagerCheckboxRefs.current.set(
+                          session.sourceDocumentId,
+                          node,
+                        );
+                      } else {
+                        selectionManagerCheckboxRefs.current.delete(
+                          session.sourceDocumentId,
+                        );
+                      }
+                    }}
+                    type="checkbox"
+                    checked
+                    aria-label={`Selected session ${index + 1}: keep ${session.title} from ${session.harness || providerMeta.name} selected for Execute`}
+                    onChange={() => removeExecuteSessionContext(
+                      session.sourceDocumentId,
+                      index,
+                    )}
+                    className="h-4 w-4 shrink-0 accent-[#d92d20]"
+                  />
+                  <span
+                    aria-hidden="true"
+                    className="grid h-6 min-w-6 shrink-0 place-items-center rounded-full bg-[#171713] px-1 font-mono text-[9px] font-black text-white dark:bg-[#f97066] dark:text-[#171713]"
+                  >
+                    {index + 1}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs font-black">{session.title}</span>
+                    <span className="mt-0.5 block truncate text-[9px] font-bold uppercase tracking-[0.1em] text-[#85857c] dark:text-[#bdb4b2]">
+                      {session.harness || providerMeta.name}
+                      {session.topic ? ` · ${session.topic}` : ""}
+                    </span>
+                  </span>
+                  <span className="text-[9px] font-black uppercase tracking-[0.1em] text-[#b42318] opacity-70 transition group-hover:opacity-100 dark:text-[#ff8a80]">Remove</span>
+                </label>
+              );
+            })}
+          </fieldset>
+
+          <div className="border-t border-[#f3d0cc] bg-[#fff5f4] p-4 dark:border-[#4c2925] dark:bg-[#241310]">
+            <button
+              type="button"
+              onClick={clearExecuteSessionContexts}
+              className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-[#a71919] bg-[#d92d20] px-5 text-xs font-black text-white shadow-[0_8px_22px_rgba(185,28,28,0.18)] transition hover:bg-[#b42318] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#f97066] focus-visible:ring-offset-2"
+            >
+              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+              Unselect everything
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       {syncMutation.isError ? (
         <Notice tone="error">Sync failed: {syncMutation.error?.message}</Notice>
@@ -443,7 +674,7 @@ export default function SessionLibrary() {
 
                 {filteredSessions.length ? (
                   <div className="grid items-start gap-4 md:grid-cols-2 xl:grid-cols-3">
-                    {visibleSessions.map((item) => (
+                    {visibleSessions.map((item, index) => (
                       <SessionCard
                         key={item.id}
                         item={item}
@@ -455,6 +686,10 @@ export default function SessionLibrary() {
                         selectionPending={selectMutation.isPending}
                         contextSelectionMode={executeSelectionMode}
                         contextSelected={selectedExecuteSourceIds.has(item.source_document_id)}
+                        contextOrdinal={executeSessionContexts.findIndex(
+                          (session) => session.sourceDocumentId === item.source_document_id,
+                        ) + 1}
+                        contextPosition={index + 1}
                         contextSelectionDisabled={
                           executeSessionContexts.length >= MAX_EXECUTE_SESSION_CONTEXTS
                           && !selectedExecuteSourceIds.has(item.source_document_id)
@@ -516,6 +751,8 @@ function SessionCard({
   selectionPending = false,
   contextSelectionMode = false,
   contextSelected = false,
+  contextOrdinal = 0,
+  contextPosition = 0,
   contextSelectionDisabled = false,
   onToggleContext,
   onSelectSession,
@@ -526,50 +763,96 @@ function SessionCard({
   const folder = item.cwd ? item.cwd.split("/").filter(Boolean).at(-1) : null;
   const topics = item.topics || [];
   const latestTopic = item.latest_topic || topics.at(-1) || item.title;
+  const displayedTopic = contextSelectionMode
+    ? latestTopic
+    : selectedTopic || latestTopic;
   const meta = HARNESS_META[item.connector_type] || HARNESS_META.codex;
   const contextCompactionCount = sessionContextCompactionCount(item);
   const contextCompactionBlocked = Boolean(
     contextSelectionMode
-    && !contextSelected
     && !sessionContextIsEligible(item),
   );
   const selectionDisabled = (
     contextSelectionDisabled || contextCompactionBlocked
   );
+  const contextState = !contextSelectionMode
+    ? "browse"
+    : contextSelected
+      ? "selected"
+      : contextCompactionBlocked
+        ? "locked"
+        : contextSelectionDisabled
+          ? "limit"
+          : "available";
+  const contextStatusId = `session-context-status-${String(
+    item.source_document_id || item.id,
+  ).replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  const cardStateClass = {
+    available: "border-[#9dbc47] bg-[linear-gradient(145deg,#fbfff1_0%,#fbfbf6_62%)] ring-1 ring-[#b8dc45]/70 shadow-[0_16px_38px_rgba(126,156,39,0.15)] hover:-translate-y-1 hover:border-[#7f9c25] hover:shadow-[0_22px_48px_rgba(126,156,39,0.24)] dark:border-[#8aa62a] dark:bg-[linear-gradient(145deg,rgba(217,255,104,0.10)_0%,#141411_62%)] dark:ring-[#d9ff68]/35",
+    selected: "border-[#708a22] bg-[linear-gradient(145deg,#f4ffd5_0%,#fbfbf6_64%)] ring-2 ring-[#9dbc47]/80 shadow-[0_18px_44px_rgba(126,156,39,0.22)] hover:-translate-y-1 dark:border-[#b8dc45] dark:bg-[linear-gradient(145deg,rgba(217,255,104,0.17)_0%,#141411_64%)] dark:ring-[#d9ff68]/50",
+    locked: "border-[#d8d8cf] bg-[#f7f7f2] shadow-none hover:translate-y-0 hover:shadow-none dark:border-[#30302b] dark:bg-[#11110f]",
+    limit: "border-[#d8d8cf] bg-[#f4f4ef] shadow-none hover:translate-y-0 hover:shadow-none dark:border-[#30302b] dark:bg-[#11110f]",
+    browse: "border-[#d8d8cf] bg-[#fbfbf6] hover:-translate-y-1 hover:shadow-[0_18px_40px_rgba(23,23,19,0.09)] dark:border-[#292925] dark:bg-[#141411]",
+  }[contextState];
 
   return (
     <article
       data-session-card={item.id}
       data-selected={selected ? "true" : "false"}
+      data-context-state={contextState}
+      data-context-eligibility={sessionContextIsEligible(item) ? "available" : "locked"}
       onMouseEnter={() => setRevealed(true)}
       onMouseLeave={() => setRevealed(false)}
       onFocusCapture={() => setRevealed(true)}
       onBlurCapture={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget)) setRevealed(false);
       }}
-      className="group relative min-h-56 overflow-hidden rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6] p-5 outline-none transition-all duration-300 hover:-translate-y-1 hover:shadow-[0_18px_40px_rgba(23,23,19,0.09)] focus-within:ring-2 focus-within:ring-[#b8dc45] dark:border-[#292925] dark:bg-[#141411]"
-      style={{ borderColor: revealed ? meta.accent : undefined }}
+      className={`group relative min-h-56 overflow-hidden rounded-2xl border p-5 outline-none transition-all duration-300 ${
+        contextState === "browse"
+          ? "focus-within:ring-2 focus-within:ring-[#9dbc47]"
+          : ""
+      } ${cardStateClass}`}
+      style={{
+        borderColor: revealed && contextState === "browse" ? meta.accent : undefined,
+      }}
     >
-      <span className="absolute inset-x-0 top-0 h-0.5 origin-left scale-x-0 transition-transform duration-500 group-hover:scale-x-100 group-focus-visible:scale-x-100" style={{ backgroundColor: meta.accent }} />
+      <span
+        className={`absolute inset-x-0 top-0 h-0.5 origin-left transition-transform duration-500 ${
+          ["available", "selected"].includes(contextState)
+            ? "scale-x-100"
+            : contextState === "browse"
+              ? "scale-x-0 group-hover:scale-x-100 group-focus-within:scale-x-100"
+              : "scale-x-0"
+        }`}
+        style={{
+          backgroundColor: ["available", "selected"].includes(contextState)
+            ? "#9dbc47"
+            : meta.accent,
+        }}
+      />
       <span
         aria-hidden="true"
-        className="pointer-events-none absolute -right-[9%] top-12 h-44 w-52 origin-center opacity-[0.055] transition-[transform,opacity] duration-700 ease-out group-hover:-translate-x-3 group-hover:scale-110 group-hover:opacity-[0.09] dark:opacity-[0.08] dark:group-hover:opacity-[0.12]"
+        className={`pointer-events-none absolute -right-[9%] top-12 h-44 w-52 origin-center transition-[transform,opacity] duration-700 ease-out ${
+          ["locked", "limit"].includes(contextState)
+            ? "opacity-[0.035] dark:opacity-[0.05]"
+            : "opacity-[0.055] group-hover:-translate-x-3 group-hover:scale-110 group-hover:opacity-[0.09] dark:opacity-[0.08] dark:group-hover:opacity-[0.12]"
+        }`}
       >
         <HarnessArtwork type={item.connector_type} />
       </span>
 
       <div className="relative">
-        <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           {contextSelectionMode ? (
             <label
-              className={`inline-flex min-h-8 items-center gap-2 rounded-lg border px-2.5 text-[9px] font-black uppercase tracking-[0.1em] transition ${
+              className={`inline-flex min-h-11 max-w-full shrink-0 items-center gap-2 rounded-xl border px-3 text-[9px] font-black uppercase tracking-[0.1em] transition focus-within:outline-none focus-within:ring-2 focus-within:ring-[#9dbc47] focus-within:ring-offset-2 ${
                 contextSelected
-                  ? "border-[#9dbc47] bg-[#d9ff68] text-[#28310a]"
+                  ? "cursor-pointer border-[#708a22] bg-[#d9ff68] text-[#28310a] shadow-[0_7px_18px_rgba(126,156,39,0.2)]"
                   : contextCompactionBlocked
-                    ? "cursor-not-allowed border-transparent bg-[#d9ff68] text-[#171713]"
+                    ? "cursor-not-allowed border-[#d2d2c9] bg-[#ecece5] text-[#68685f] dark:border-[#3b3b35] dark:bg-[#252521] dark:text-[#b8b8af]"
                     : contextSelectionDisabled
-                      ? "cursor-not-allowed border-[#d8d8cf] bg-[#ecece4] text-[#999990] opacity-70 dark:border-[#34342f] dark:bg-[#252521]"
-                    : "cursor-pointer border-[#c9c9bf] bg-white/80 text-[#68685f] hover:border-[#9dbc47] dark:border-[#383832] dark:bg-black/20 dark:text-[#c7c7bd]"
+                      ? "cursor-not-allowed border-[#d8d8cf] bg-[#ecece4] text-[#68685f] dark:border-[#34342f] dark:bg-[#252521] dark:text-[#b8b8af]"
+                    : "cursor-pointer border-[#7f9c25] bg-[#d9ff68] text-[#28310a] shadow-[0_8px_22px_rgba(126,156,39,0.22)] hover:border-[#657d1d] hover:bg-[#e4ff91] dark:border-[#b8dc45]"
               }`}
             >
               <input
@@ -577,7 +860,8 @@ function SessionCard({
                 checked={contextSelected}
                 disabled={selectionDisabled}
                 onChange={onToggleContext}
-                aria-label={`Select ${item.title} for Execute`}
+                aria-label={`Select ${item.title} from ${item.harness || meta.name} for Execute (session ${contextPosition || item.session_id || item.id})`}
+                aria-describedby={contextStatusId}
                 className="sr-only"
               />
               {contextCompactionBlocked ? (
@@ -595,14 +879,46 @@ function SessionCard({
                 </span>
               )}
               {contextSelected
-                ? "Selected"
+                ? (
+                  <>
+                    <span
+                      aria-hidden="true"
+                      className="grid h-4 min-w-4 place-items-center rounded-full bg-[#171713] px-0.5 font-mono text-[8px] text-white"
+                    >
+                      {contextOrdinal}
+                    </span>
+                    <span>Selected</span>
+                  </>
+                )
                 : contextCompactionBlocked
-                  ? sessionContextCompactionProgress(contextCompactionCount)
-                  : "Add to Execute"}
+                  ? (
+                    <>
+                      <span>Locked</span>
+                      <span aria-hidden="true">·</span>
+                      <span>{sessionContextCompactionProgress(contextCompactionCount)}</span>
+                    </>
+                  )
+                  : contextSelectionDisabled
+                    ? (
+                      <>
+                        <span>Limit reached</span>
+                        <span aria-hidden="true">·</span>
+                        <span>{sessionContextCompactionProgress(contextCompactionCount)}</span>
+                      </>
+                    )
+                    : (
+                      <>
+                        <span>Available</span>
+                        <span aria-hidden="true">·</span>
+                        <span>{sessionContextCompactionProgress(contextCompactionCount)}</span>
+                      </>
+                    )}
             </label>
           ) : <span aria-hidden="true" />}
-          <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.12em] text-[#85857c]">
-            {selected ? <span className="rounded-full bg-[#d9ff68] px-2 py-1 text-[#37420f]">Selected</span> : null}
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2 text-[9px] font-black uppercase tracking-[0.12em] text-[#85857c]">
+            {selected && !contextSelectionMode ? (
+              <span className="rounded-full bg-[#d9ff68] px-2 py-1 text-[#37420f]">Selected</span>
+            ) : null}
             {item.forked_from ? (
               <span
                 aria-label={`Continued in a new task from ${item.forked_from.title}`}
@@ -619,9 +935,13 @@ function SessionCard({
                 title="Open context captured automatically before harness compaction"
                 onClick={(event) => {
                   event.stopPropagation();
-                  onOpen(selectedTopic || latestTopic);
+                  onOpen(displayedTopic);
                 }}
-                className="inline-flex items-center gap-1 rounded-full border border-[#b8ca7b] bg-[#f2f7df] px-2 py-1 text-[#58691c] transition hover:border-[#8aa62a] hover:bg-[#eaf3cb] dark:border-[#53602f] dark:bg-[#d9ff68]/[0.07] dark:text-[#d9ff68]"
+                className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 ${
+                  contextSelectionMode && ["locked", "limit"].includes(contextState)
+                    ? "border-[#d2d2c9] bg-[#ecece5] text-[#68685f] hover:border-[#aaa99f] hover:bg-[#e4e4dc] focus-visible:ring-[#aaa99f] dark:border-[#3b3b35] dark:bg-[#252521] dark:text-[#b8b8af]"
+                    : "border-[#b8ca7b] bg-[#f2f7df] text-[#58691c] hover:border-[#8aa62a] hover:bg-[#eaf3cb] focus-visible:ring-[#9dbc47] dark:border-[#53602f] dark:bg-[#d9ff68]/[0.07] dark:text-[#d9ff68]"
+                }`}
               >
                 <History className="h-3 w-3" /> {item.compaction_checkpoints.length} checkpoints
               </button>
@@ -639,8 +959,10 @@ function SessionCard({
             <span className="truncate">Continued from · {item.forked_from.title}</span>
           </p>
         ) : null}
-        {selectedTopic || latestTopic ? (
-          <p className="mt-2 line-clamp-1 text-[9px] font-bold text-[#58691c] dark:text-[#d9ff68]">{selectedTopic ? "Selected" : "Latest"} · {selectedTopic || latestTopic}</p>
+        {displayedTopic ? (
+          <p className="mt-2 line-clamp-1 text-[9px] font-bold text-[#58691c] dark:text-[#d9ff68]">
+            {contextSelectionMode || !selectedTopic ? "Latest" : "Selected"} · {displayedTopic}
+          </p>
         ) : null}
         <div className="mt-3 flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2 text-[10px] font-semibold text-[#77776e] dark:text-[#aaa9a0]">
@@ -653,14 +975,33 @@ function SessionCard({
         </div>
 
         {contextSelectionMode ? (
-          <div className="mt-4 border-t border-[#e1e1d8] pt-3 text-[9px] font-black uppercase tracking-[0.11em] text-[#77776e] dark:border-[#30302b] dark:text-[#aaa9a0]">
+          <div
+            id={contextStatusId}
+            className={`mt-4 border-t pt-3 text-[9px] font-black uppercase tracking-[0.11em] ${
+              contextState === "available"
+                ? "border-[#c8dc86] text-[#526619] dark:border-[#526619] dark:text-[#d9ff68]"
+                : "border-[#e1e1d8] text-[#77776e] dark:border-[#30302b] dark:text-[#aaa9a0]"
+            }`}
+          >
             {contextSelected
-              ? "Will appear in Execute"
+              ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="grid h-4 min-w-4 place-items-center rounded-full bg-[#171713] px-0.5 font-mono text-[8px] text-white dark:bg-[#d9ff68] dark:text-[#171713]">
+                    {contextOrdinal}
+                  </span>
+                  <span>Will appear in Execute</span>
+                </span>
+              )
               : contextCompactionBlocked
                 ? "2 compactions required"
               : contextSelectionDisabled
                 ? "Three-session maximum reached"
-                : "Use the checkbox to add this session"}
+                : (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Check className="h-3 w-3" aria-hidden="true" />
+                    Ready to add to Execute
+                  </span>
+                )}
           </div>
         ) : (
           <>
@@ -682,7 +1023,7 @@ function SessionCard({
                     aria-label={`Open checkpoints for ${item.title}`}
                     onClick={(event) => {
                       event.stopPropagation();
-                      onOpen(selectedTopic || latestTopic);
+                      onOpen(displayedTopic);
                     }}
                     className="inline-flex items-center gap-1 text-[8px] font-bold uppercase tracking-[0.12em] text-[#58691c] transition hover:text-[#171713] dark:text-[#d9ff68] dark:hover:text-white"
                   >
@@ -703,7 +1044,7 @@ function SessionCard({
                   aria-label={`Inspect evidence for ${item.title}`}
                   onClick={(event) => {
                     event.stopPropagation();
-                    onOpen(selectedTopic || latestTopic);
+                    onOpen(displayedTopic);
                   }}
                   className="inline-flex items-center gap-1 text-[8px] font-bold uppercase tracking-[0.12em] text-[#85857c] transition hover:text-[#171713] dark:hover:text-white"
                 >
@@ -805,6 +1146,7 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onUseTopic, sel
   };
 
   const continueFromCheckpoint = async (checkpoint) => {
+    if (checkpoint?.restorable !== true) return;
     setCheckpointState({
       status: "loading",
       checkpointId: checkpoint.id,
@@ -917,6 +1259,7 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onUseTopic, sel
                         checkpointState.status === "loading"
                         && checkpointState.checkpointId === checkpoint.id
                       );
+                      const checkpointRestorable = checkpoint.restorable === true;
                       return (
                         <article key={checkpoint.id} className="rounded-xl border border-[#d6dfbd] bg-white/75 p-3 dark:border-[#3e4925] dark:bg-black/15">
                           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -930,11 +1273,15 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onUseTopic, sel
                             <button
                               type="button"
                               onClick={() => continueFromCheckpoint(checkpoint)}
-                              disabled={checkpointState.status === "loading"}
+                              disabled={checkpointState.status === "loading" || !checkpointRestorable}
                               className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg bg-[#171713] px-3 text-[9px] font-black text-white disabled:cursor-wait disabled:opacity-60 dark:bg-[#d9ff68] dark:text-[#171713]"
                             >
                               {loadingCheckpoint ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowRight className="h-3.5 w-3.5" />}
-                              {loadingCheckpoint ? "Preparing…" : "Prepare from checkpoint"}
+                              {loadingCheckpoint
+                                ? "Preparing…"
+                                : checkpointRestorable
+                                  ? "Prepare from checkpoint"
+                                  : "No active task"}
                             </button>
                           </div>
                         </article>
