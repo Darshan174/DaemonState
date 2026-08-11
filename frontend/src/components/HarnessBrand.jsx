@@ -4,6 +4,11 @@ import imgOpenCode from "../assets/opencode-icon.png";
 
 export const HARNESS_ORDER = ["codex", "claude", "opencode"];
 
+const ANTHROPIC_TILE_BACKGROUND = "#C99E7B";
+const ANTHROPIC_TILE_MARK = "#252525";
+const FLOATING_BUTTON_MARK = "#171713";
+const FLOATING_BUTTON_SHADOW = "0 8px 20px rgba(23,23,19,0.09)";
+
 export const HARNESS_META = {
   codex: {
     name: "Codex",
@@ -134,6 +139,8 @@ export function HarnessLogo({
   type,
   size = "medium",
   decorative = false,
+  anthropicFilled = false,
+  floatingButtonStyle = false,
   className = "",
 }) {
   const sizes = {
@@ -149,25 +156,77 @@ export function HarnessLogo({
   const meta = harnessMeta(type);
   const outerSize = sizes[size] || sizes.medium;
   const iconSize = iconSizes[size] || iconSizes.medium;
+  const useAnthropicFill = (
+    (anthropicFilled || floatingButtonStyle)
+    && type === "claude"
+  );
+  const useFloatingVector = (
+    floatingButtonStyle
+    && (type === "codex" || type === "opencode")
+  );
+  const treatment = floatingButtonStyle
+    ? "floating-button"
+    : useAnthropicFill
+      ? "anthropic-filled"
+      : "soft";
   return (
     <span
       role={decorative ? undefined : "img"}
       data-harness-logo={type || "unknown"}
+      data-harness-logo-treatment={treatment}
       aria-label={decorative ? undefined : meta.name}
       aria-hidden={decorative || undefined}
-      className={`relative flex shrink-0 items-center justify-center overflow-hidden border border-black/10 bg-white shadow-[0_8px_20px_rgba(23,23,19,0.09)] dark:border-white/10 ${outerSize} ${className}`}
-      style={{ boxShadow: `0 10px 25px ${meta.glow}` }}
+      className={`relative flex shrink-0 items-center justify-center overflow-hidden border border-black/10 shadow-[0_8px_20px_rgba(23,23,19,0.09)] dark:border-white/10 ${useAnthropicFill ? "" : "bg-white"} ${outerSize} ${className}`}
+      style={{
+        backgroundColor: useAnthropicFill ? ANTHROPIC_TILE_BACKGROUND : undefined,
+        boxShadow: floatingButtonStyle
+          ? FLOATING_BUTTON_SHADOW
+          : `0 10px 25px ${meta.glow}`,
+      }}
     >
-      <span
-        aria-hidden="true"
-        className="absolute inset-0 opacity-20"
-        style={{ background: `radial-gradient(circle at 24% 16%, ${meta.accent}, transparent 68%)` }}
-      />
-      {type === "codex" ? <img src={imgOpenAI} alt="" className={`relative ${iconSize} object-contain`} /> : null}
-      {type === "claude" ? <AnthropicIcon className={`relative ${iconSize}`} decorative /> : null}
-      {type === "opencode" ? <img src={imgOpenCode} alt="" className={`relative ${iconSize} object-contain`} /> : null}
+      {!floatingButtonStyle && !useAnthropicFill ? (
+        <span
+          aria-hidden="true"
+          className="absolute inset-0 opacity-20"
+          style={{ background: `radial-gradient(circle at 24% 16%, ${meta.accent}, transparent 68%)` }}
+        />
+      ) : null}
+      {type === "codex" ? (
+        useFloatingVector ? (
+          <OpenAIArtwork
+            className={`relative ${iconSize}`}
+            color={FLOATING_BUTTON_MARK}
+            decorative
+            dataHarnessArtwork="codex"
+          />
+        ) : (
+          <img src={imgOpenAI} alt="" className={`relative ${iconSize} object-contain`} />
+        )
+      ) : null}
+      {type === "claude" ? (
+        <AnthropicIcon
+          className={`relative ${iconSize}`}
+          color={useAnthropicFill ? ANTHROPIC_TILE_MARK : undefined}
+          decorative
+          dataHarnessArtwork={useAnthropicFill ? "claude" : undefined}
+        />
+      ) : null}
+      {type === "opencode" ? (
+        useFloatingVector ? (
+          <OpenCodeArtwork
+            className={`relative ${iconSize}`}
+            color={FLOATING_BUTTON_MARK}
+            decorative
+            dataHarnessArtwork="opencode"
+          />
+        ) : (
+          <img src={imgOpenCode} alt="" className={`relative ${iconSize} object-contain`} />
+        )
+      ) : null}
       {!HARNESS_META[type] ? (
-        <span className="relative font-mono text-xs font-black" style={{ color: meta.accent }}>AI</span>
+        <span className="relative font-mono text-xs font-black" style={{ color: meta.accent }}>
+          AI
+        </span>
       ) : null}
     </span>
   );

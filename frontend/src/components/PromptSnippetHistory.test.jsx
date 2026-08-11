@@ -53,6 +53,10 @@ beforeEach(() => {
   mocks.remove.variables = null;
   mocks.remove.mutateAsync.mockReset();
   mocks.remove.reset.mockReset();
+  Object.defineProperty(globalThis.navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: vi.fn().mockResolvedValue(undefined) },
+  });
   document.body.style.overflow = "";
 });
 
@@ -107,7 +111,7 @@ describe("PromptSnippetHistory", () => {
     render(<PromptSnippetHistory workspaceId="workspace-1" />);
 
     const library = screen.getByRole("region", {
-      name: "Reusable prompt history",
+      name: "Prompt library",
     });
     const addButton = screen.getByRole("button", { name: "Add prompt manually" });
     expect(within(screen.getByTestId("prompt-library-header")).getByRole("button", {
@@ -222,7 +226,45 @@ describe("PromptSnippetHistory", () => {
     expect(screen.getByRole("article", { name: "Selected prompt" })).toHaveTextContent(
       "Keep this prompt",
     );
-    expect(screen.getByText("1 saved")).toBeInTheDocument();
+    expect(screen.getByText("1 prompt")).toBeInTheDocument();
+  });
+
+  it("copies the selected prompt and confirms the action inline", async () => {
+    mocks.prompts.data = {
+      prompts: [promptFixture({
+        content: "Review the current diff\nReturn only actionable findings.",
+      })],
+    };
+    render(<PromptSnippetHistory workspaceId="workspace-1" />);
+
+    const copyButton = screen.getByRole("button", {
+      name: "Copy prompt: Review the current diff",
+    });
+    fireEvent.click(copyButton);
+
+    await waitFor(() => expect(globalThis.navigator.clipboard.writeText).toHaveBeenCalledWith(
+      "Review the current diff\nReturn only actionable findings.",
+    ));
+    expect(copyButton).toHaveTextContent("Copied");
+  });
+
+  it("uses compact list rows without decorative numbering", () => {
+    mocks.prompts.data = {
+      prompts: [
+        promptFixture({ id: "prompt-1", content: "First prompt" }),
+        promptFixture({ id: "prompt-2", content: "Second prompt" }),
+      ],
+    };
+    render(<PromptSnippetHistory workspaceId="workspace-1" />);
+
+    expect(screen.queryByText("01", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByText("02", { exact: true })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add prompt manually" })).toHaveTextContent(
+      "New prompt",
+    );
+    expect(screen.getByRole("button", {
+      name: "Select prompt: First prompt",
+    })).toHaveClass("shadow-[inset_3px_0_0_#9aae35]");
   });
 
   it("keeps the floating-dropdown path visible in the empty state", () => {
@@ -231,7 +273,7 @@ describe("PromptSnippetHistory", () => {
     expect(screen.getByText("No saved prompts yet")).toBeInTheDocument();
     expect(document.querySelector(".lucide-sparkles")).not.toBeInTheDocument();
     expect(screen.getByText(
-      "Use the green + button or paste one directly into the floating dropdown.",
+      "Choose New prompt or paste one directly into the floating menu.",
     )).toBeInTheDocument();
     expect(screen.getByText("Nothing selected yet")).toBeInTheDocument();
   });
