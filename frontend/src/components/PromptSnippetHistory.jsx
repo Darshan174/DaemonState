@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Check,
-  History,
+  Copy,
   LoaderCircle,
   Plus,
   Trash2,
@@ -19,6 +19,8 @@ const MAX_PROMPT_CHARACTERS = 20_000;
 
 export default function PromptSnippetHistory({ workspaceId }) {
   const [content, setContent] = useState("");
+  const [copiedPromptId, setCopiedPromptId] = useState(null);
+  const [copyError, setCopyError] = useState("");
   const [editorError, setEditorError] = useState("");
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [recentlySavedPrompt, setRecentlySavedPrompt] = useState(null);
@@ -26,6 +28,7 @@ export default function PromptSnippetHistory({ workspaceId }) {
   const [savedMessage, setSavedMessage] = useState("");
   const [selectedPromptId, setSelectedPromptId] = useState(null);
   const addPromptButtonRef = useRef(null);
+  const copyResetTimerRef = useRef(null);
   const libraryRef = useRef(null);
   const promptsQuery = usePromptSnippets(workspaceId);
   const createPrompt = useCreatePromptSnippet();
@@ -52,7 +55,13 @@ export default function PromptSnippetHistory({ workspaceId }) {
   ) || prompts[0] || null;
 
   useEffect(() => {
+    if (copyResetTimerRef.current) {
+      window.clearTimeout(copyResetTimerRef.current);
+      copyResetTimerRef.current = null;
+    }
     setContent("");
+    setCopiedPromptId(null);
+    setCopyError("");
     setEditorError("");
     setIsEditorOpen(false);
     setRecentlySavedPrompt(null);
@@ -60,6 +69,10 @@ export default function PromptSnippetHistory({ workspaceId }) {
     setSavedMessage("");
     setSelectedPromptId(null);
   }, [workspaceId]);
+
+  useEffect(() => () => {
+    if (copyResetTimerRef.current) window.clearTimeout(copyResetTimerRef.current);
+  }, []);
 
   useEffect(() => {
     if (
@@ -141,6 +154,7 @@ export default function PromptSnippetHistory({ workspaceId }) {
       const removedIndex = prompts.findIndex((prompt) => prompt.id === promptId);
       const remainingPrompts = prompts.filter((prompt) => prompt.id !== promptId);
       setRemovedPromptIds((current) => new Set(current).add(promptId));
+      if (copiedPromptId === promptId) setCopiedPromptId(null);
       if (recentlySavedPrompt?.id === promptId) setRecentlySavedPrompt(null);
       if (selectedPrompt?.id === promptId) {
         const nextIndex = Math.min(
@@ -154,63 +168,76 @@ export default function PromptSnippetHistory({ workspaceId }) {
     }
   };
 
+  const copySelectedPrompt = async () => {
+    if (!selectedPrompt) return;
+    setCopyError("");
+    try {
+      if (!globalThis.navigator?.clipboard?.writeText) {
+        throw new Error("Clipboard access is unavailable.");
+      }
+      await globalThis.navigator.clipboard.writeText(selectedPrompt.content);
+      setCopiedPromptId(selectedPrompt.id);
+      if (copyResetTimerRef.current) window.clearTimeout(copyResetTimerRef.current);
+      copyResetTimerRef.current = window.setTimeout(() => {
+        setCopiedPromptId(null);
+      }, 1600);
+    } catch {
+      setCopiedPromptId(null);
+      setCopyError("The prompt could not be copied. Try again.");
+    }
+  };
+
   return (
     <>
       <section
         ref={libraryRef}
         aria-labelledby="prompt-library-title"
-        className="overflow-hidden rounded-[1.75rem] border border-[#d8d8cf] bg-[#fbfbf6] shadow-[0_20px_60px_rgba(23,23,19,0.06)] dark:border-[#2d2d28] dark:bg-[#12120f] dark:shadow-none"
+        className="overflow-hidden rounded-[14px] border border-[#d8d8cf] bg-[#fbfbf6] shadow-[0_8px_28px_rgba(23,23,19,0.05)] dark:border-[#2d2d28] dark:bg-[#12120f] dark:shadow-none"
       >
         <div
-          className="relative border-b border-[#deded5] px-5 py-5 dark:border-[#292925] sm:px-6"
+          className="border-b border-[#deded5] px-4 py-4 dark:border-[#292925] sm:px-5"
           data-testid="prompt-library-header"
         >
-          <button
-            ref={addPromptButtonRef}
-            type="button"
-            aria-haspopup="dialog"
-            aria-expanded={isEditorOpen}
-            aria-label="Add prompt manually"
-            title={workspaceId ? "Add prompt" : "Select a workspace to add a prompt"}
-            disabled={!workspaceId}
-            onClick={openPromptEditor}
-            className="absolute right-5 top-5 grid h-10 w-10 place-items-center rounded-full border border-[#a8c342] bg-[#d9ff68] text-[#171713] shadow-[0_7px_18px_rgba(126,146,42,0.22)] transition hover:scale-105 hover:bg-[#e4ff94] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#7e922a] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-45 dark:border-[#d9ff68]/65 dark:focus-visible:ring-[#d9ff68] dark:focus-visible:ring-offset-[#12120f] motion-reduce:hover:scale-100 sm:right-6"
-          >
-            <Plus className="h-5 w-5" aria-hidden="true" />
-          </button>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-            <div className="pr-14 sm:pr-16">
-              <p className="text-[11px] font-black uppercase tracking-[0.18em] text-[#5b691d] dark:text-[#d9ff68]">
-                Floating prompt library
-              </p>
-              <h2
-                id="prompt-library-title"
-                className="mt-2 text-2xl font-semibold tracking-[-0.035em] text-[#171713] dark:text-white"
-              >
-                Reusable prompt history
-              </h2>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
-                Save prompts once, select one or more from the floating dropdown, then use the logo to paste them into any focused AI editor.
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <h2
+                  id="prompt-library-title"
+                  className="text-xl font-semibold tracking-[-0.025em] text-[#171713] dark:text-white"
+                >
+                  Prompt library
+                </h2>
+                <span className="text-xs font-medium text-[#77776f] dark:text-[#92928a]">
+                  {prompts.length} {prompts.length === 1 ? "prompt" : "prompts"}
+                </span>
+              </div>
+              <p className="mt-1 text-xs leading-5 text-[#68685f] dark:text-[#aaa9a0]">
+                Saved instructions available from the floating paste menu.
               </p>
             </div>
-            <div className="inline-flex w-fit self-end items-center gap-2 rounded-full border border-[#d3d3c8] bg-white px-3 py-1.5 text-xs font-semibold text-[#66665e] dark:border-white/10 dark:bg-white/[0.04] dark:text-[#b8b8af]">
-              <History className="h-3.5 w-3.5" aria-hidden="true" />
-              {prompts.length} saved
-            </div>
+            <button
+              ref={addPromptButtonRef}
+              type="button"
+              aria-haspopup="dialog"
+              aria-expanded={isEditorOpen}
+              aria-label="Add prompt manually"
+              title={workspaceId ? "Add prompt" : "Select a workspace to add a prompt"}
+              disabled={!workspaceId}
+              onClick={openPromptEditor}
+              className="inline-flex h-9 w-fit shrink-0 items-center justify-center gap-2 rounded-lg border border-[#9aae35] bg-[#d9ff68] px-3 text-xs font-semibold text-[#171713] transition-colors hover:bg-[#e4ff94] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#7e922a] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-45 dark:border-[#d9ff68]/65 dark:focus-visible:ring-[#d9ff68] dark:focus-visible:ring-offset-[#12120f]"
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              New prompt
+            </button>
           </div>
         </div>
 
-        <div className="grid min-h-[31rem] gap-0 lg:grid-cols-[minmax(17rem,0.82fr)_minmax(0,1.48fr)]">
+        <div className="grid min-h-[27rem] gap-0 lg:grid-cols-[minmax(16rem,20rem)_minmax(0,1fr)]">
           <div className="flex min-h-0 flex-col border-b border-[#deded5] dark:border-[#292925] lg:border-b-0 lg:border-r">
-            <div className="flex min-h-[4.75rem] items-center justify-between gap-3 border-b border-[#deded5] px-5 py-4 dark:border-[#292925] sm:px-6">
-              <div className="min-w-0">
-                <h3 className="text-sm font-semibold text-[#282822] dark:text-[#efefe8]">
-                  Saved prompts
-                </h3>
-                <p className="mt-1 text-[11px] text-[#7b7b73] dark:text-[#8f8f87]">
-                  Select one to read it in full.
-                </p>
-              </div>
+            <div className="flex min-h-14 items-center justify-between gap-3 border-b border-[#deded5] px-4 py-3 dark:border-[#292925]">
+              <h3 className="text-xs font-semibold uppercase tracking-[0.08em] text-[#55554e] dark:text-[#c8c8c0]">
+                Saved prompts
+              </h3>
               {promptsQuery.isFetching && prompts.length ? (
                 <span className="inline-flex shrink-0 items-center gap-1.5 text-[10px] text-[#85857d]">
                   <LoaderCircle className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
@@ -219,34 +246,35 @@ export default function PromptSnippetHistory({ workspaceId }) {
               ) : null}
             </div>
 
-            <div className="min-h-0 flex-1 p-3 sm:p-4">
+            <div className="min-h-0 flex-1">
               {promptsQuery.isLoading && !prompts.length ? (
-                <div role="status" className="flex min-h-40 items-center justify-center rounded-2xl border border-dashed border-[#d4d4ca] text-sm text-[#77776f] dark:border-white/10 dark:text-[#92928a]">
+                <div role="status" className="m-4 flex min-h-32 items-center justify-center border border-dashed border-[#d4d4ca] text-sm text-[#77776f] dark:border-white/10 dark:text-[#92928a]">
                   Loading saved prompts…
                 </div>
               ) : promptsQuery.isError && !prompts.length ? (
-                <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800 dark:border-red-900/60 dark:bg-red-950/25 dark:text-red-100">
+                <div className="m-4 border border-red-200 bg-red-50 p-4 text-sm text-red-800 dark:border-red-900/60 dark:bg-red-950/25 dark:text-red-100">
                   <p className="font-semibold">Prompt history could not be loaded</p>
                   <p className="mt-1 text-xs leading-5 opacity-75">
                     {promptsQuery.error?.message || "Try refreshing the project."}
                   </p>
                 </div>
               ) : !prompts.length ? (
-                <div className="flex min-h-40 flex-col items-center justify-center rounded-2xl border border-dashed border-[#d4d4ca] px-5 text-center dark:border-white/10">
+                <div className="m-4 flex min-h-32 flex-col items-center justify-center border border-dashed border-[#d4d4ca] px-5 text-center dark:border-white/10">
                   <p className="text-sm font-semibold text-[#3e3e37] dark:text-[#e2e2da]">
                     No saved prompts yet
                   </p>
                   <p className="mt-1 max-w-xs text-xs leading-5 text-[#7b7b73] dark:text-[#8f8f87]">
-                    Use the green + button or paste one directly into the floating dropdown.
+                    Choose New prompt or paste one directly into the floating menu.
                   </p>
                 </div>
               ) : (
-                <ol
-                  className="max-h-[25.5rem] space-y-2 overflow-y-auto pr-1"
+                <ul
+                  className="max-h-[22.5rem] overflow-y-auto"
                   aria-label="Saved reusable prompts"
                 >
-                  {prompts.map((prompt, index) => {
+                  {prompts.map((prompt) => {
                     const isSelected = selectedPrompt?.id === prompt.id;
+                    const preview = promptPreview(prompt.content);
                     return (
                       <li key={prompt.id}>
                         <button
@@ -256,103 +284,110 @@ export default function PromptSnippetHistory({ workspaceId }) {
                           onClick={() => {
                             setSelectedPromptId(prompt.id);
                             setSavedMessage("");
+                            setCopyError("");
+                            setCopiedPromptId(null);
                           }}
-                          className={`group flex w-full items-start gap-3 rounded-2xl border p-3 text-left outline-none transition focus-visible:ring-2 focus-visible:ring-[#93aa34] dark:focus-visible:ring-[#d9ff68] ${
+                          className={`group block w-full border-b border-[#e2e2d9] px-4 py-3 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#93aa34] dark:border-[#292925] dark:focus-visible:ring-[#d9ff68] ${
                             isSelected
-                              ? "border-[#aabe56] bg-[#f1f8d7] shadow-[0_8px_22px_rgba(23,23,19,0.06)] dark:border-[#d9ff68]/45 dark:bg-[#d9ff68]/[0.09] dark:shadow-none"
-                              : "border-transparent bg-transparent hover:border-[#d9d9d0] hover:bg-white dark:hover:border-white/10 dark:hover:bg-white/[0.035]"
+                              ? "bg-[#f3f5e9] shadow-[inset_3px_0_0_#9aae35] dark:bg-[#d9ff68]/[0.07] dark:shadow-[inset_3px_0_0_#d9ff68]"
+                              : "bg-transparent hover:bg-white dark:hover:bg-white/[0.035]"
                           }`}
                         >
-                          <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-full text-[10px] font-black ${
-                            isSelected
-                              ? "bg-[#d9ff68] text-[#36400e] dark:text-[#171713]"
-                              : "bg-[#eeeee7] text-[#77776f] dark:bg-white/[0.07] dark:text-[#aaa9a0]"
-                          }`}
-                          >
-                            {String(index + 1).padStart(2, "0")}
+                          <span className="block truncate text-sm font-semibold text-[#2f2f29] dark:text-[#f2f2eb]">
+                            {promptTitle(prompt.content)}
                           </span>
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-sm font-semibold text-[#2f2f29] dark:text-[#f2f2eb]">
-                              {promptTitle(prompt.content)}
+                          {preview ? (
+                            <span className="mt-1 line-clamp-1 whitespace-pre-wrap break-words text-xs leading-5 text-[#73736b] dark:text-[#9d9d95]">
+                              {preview}
                             </span>
-                            <span className="mt-1.5 line-clamp-2 whitespace-pre-wrap break-words text-xs leading-5 text-[#73736b] dark:text-[#9d9d95]">
-                              {prompt.content}
-                            </span>
-                            <span className="mt-2 block text-[9px] font-semibold uppercase tracking-[0.1em] text-[#999990] dark:text-[#77776f]">
-                              {promptActivity(prompt)}
-                            </span>
+                          ) : null}
+                          <span className="mt-1.5 block text-[10px] text-[#8d8d84] dark:text-[#7f7f77]">
+                            {promptActivity(prompt)}
                           </span>
                         </button>
                       </li>
                     );
                   })}
-                </ol>
+                </ul>
               )}
             </div>
           </div>
 
-          <div className="flex min-w-0 flex-col p-5 sm:p-6">
-            <div className="flex min-h-10 items-center justify-between gap-3">
-              <div>
-                <p className="text-[10px] font-black uppercase tracking-[0.16em] text-[#7e922a] dark:text-[#d9ff68]">
-                  Selected prompt
-                </p>
-                <h3 className="mt-1 text-sm font-semibold text-[#282822] dark:text-[#efefe8]">
-                  Prompt details
-                </h3>
-              </div>
-              {selectedPrompt ? (
-                <button
-                  type="button"
-                  aria-label={`Delete prompt: ${promptTitle(selectedPrompt.content)}`}
-                  title="Delete prompt"
-                  disabled={deletePrompt.isPending}
-                  onClick={() => removePrompt(selectedPrompt.id)}
-                  className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-[#deded5] text-[#88887f] transition hover:border-red-200 hover:bg-red-50 hover:text-red-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:cursor-wait disabled:opacity-40 dark:border-white/10 dark:hover:border-red-900/60 dark:hover:bg-red-950/30 dark:hover:text-red-300"
-                >
-                  {deletePrompt.isPending
-                    && deletePrompt.variables?.promptId === selectedPrompt.id ? (
-                      <LoaderCircle className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-                    ) : (
-                      <Trash2 className="h-4 w-4" aria-hidden="true" />
-                    )}
-                </button>
-              ) : null}
-            </div>
-
+          <div className="flex min-w-0 flex-col">
             {savedMessage ? (
-              <p role="status" className="mt-4 rounded-xl border border-[#cbdc83] bg-[#f2f8dc] px-3 py-2 text-xs leading-5 text-[#536119] dark:border-[#d9ff68]/20 dark:bg-[#d9ff68]/[0.07] dark:text-[#d9ff68]">
+              <p role="status" className="mx-5 mt-5 border border-[#cbdc83] bg-[#f2f8dc] px-3 py-2 text-xs leading-5 text-[#536119] dark:border-[#d9ff68]/20 dark:bg-[#d9ff68]/[0.07] dark:text-[#d9ff68] sm:mx-6">
                 {savedMessage}
               </p>
             ) : null}
             {deletePrompt.error ? (
-              <p role="alert" className="mt-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700 dark:border-red-900/60 dark:bg-red-950/25 dark:text-red-300">
+              <p role="alert" className="mx-5 mt-5 border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700 dark:border-red-900/60 dark:bg-red-950/25 dark:text-red-300 sm:mx-6">
                 {deletePrompt.error.message || "The prompt could not be deleted."}
+              </p>
+            ) : null}
+            {copyError ? (
+              <p role="alert" className="mx-5 mt-5 border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700 dark:border-red-900/60 dark:bg-red-950/25 dark:text-red-300 sm:mx-6">
+                {copyError}
               </p>
             ) : null}
 
             {selectedPrompt ? (
-              <article aria-label="Selected prompt" className="mt-5 flex min-h-0 flex-1 flex-col">
-                <h4 className="text-xl font-semibold tracking-[-0.025em] text-[#24241f] dark:text-white">
-                  {promptTitle(selectedPrompt.content)}
-                </h4>
-                <p className="mt-2 text-[10px] font-semibold uppercase tracking-[0.11em] text-[#909087] dark:text-[#77776f]">
-                  {promptActivity(selectedPrompt)}
-                </p>
+              <article aria-label="Selected prompt" className="min-h-0 p-5 sm:p-6">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <h3 className="text-lg font-semibold tracking-[-0.02em] text-[#24241f] dark:text-white">
+                      {promptTitle(selectedPrompt.content)}
+                    </h3>
+                    <p className="mt-1 text-[11px] text-[#88887f] dark:text-[#85857d]">
+                      {promptActivity(selectedPrompt)}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      aria-label={`Copy prompt: ${promptTitle(selectedPrompt.content)}`}
+                      title="Copy prompt"
+                      onClick={copySelectedPrompt}
+                      className="inline-flex h-9 items-center gap-2 rounded-lg border border-[#d4d4ca] bg-white px-3 text-xs font-semibold text-[#42423b] transition-colors hover:border-[#a7a79d] hover:bg-[#f7f7f2] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#93aa34] dark:border-white/10 dark:bg-white/[0.04] dark:text-[#deded6] dark:hover:bg-white/[0.08] dark:focus-visible:ring-[#d9ff68]"
+                    >
+                      {copiedPromptId === selectedPrompt.id ? (
+                        <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                      ) : (
+                        <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                      )}
+                      {copiedPromptId === selectedPrompt.id ? "Copied" : "Copy"}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Delete prompt: ${promptTitle(selectedPrompt.content)}`}
+                      title="Delete prompt"
+                      disabled={deletePrompt.isPending}
+                      onClick={() => removePrompt(selectedPrompt.id)}
+                      className="inline-flex h-9 items-center gap-2 rounded-lg border border-[#d4d4ca] bg-transparent px-3 text-xs font-semibold text-[#68685f] transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 disabled:cursor-wait disabled:opacity-40 dark:border-white/10 dark:text-[#aaa9a0] dark:hover:border-red-900/60 dark:hover:bg-red-950/30 dark:hover:text-red-300"
+                    >
+                      {deletePrompt.isPending
+                        && deletePrompt.variables?.promptId === selectedPrompt.id ? (
+                          <LoaderCircle className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                        ) : (
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                        )}
+                      Delete
+                    </button>
+                  </div>
+                </div>
                 <pre
                   tabIndex={0}
-                  className="mt-5 max-h-[20.5rem] min-h-52 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-[#d9d9d0] bg-white p-5 font-sans text-sm leading-6 text-[#33332d] outline-none focus-visible:ring-2 focus-visible:ring-[#93aa34] dark:border-white/10 dark:bg-black/20 dark:text-[#e7e7df] dark:focus-visible:ring-[#d9ff68]"
+                  className="mt-4 max-h-[21rem] min-h-44 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-[#d9d9d0] bg-[#f7f7f3] p-4 font-sans text-sm leading-6 text-[#33332d] outline-none focus-visible:ring-2 focus-visible:ring-[#93aa34] dark:border-white/10 dark:bg-black/20 dark:text-[#e7e7df] dark:focus-visible:ring-[#d9ff68]"
                 >
                   {selectedPrompt.content}
                 </pre>
               </article>
             ) : (
-              <div className="mt-5 flex min-h-64 flex-1 flex-col items-center justify-center rounded-2xl border border-dashed border-[#d4d4ca] px-6 text-center dark:border-white/10">
+              <div className="m-5 flex min-h-48 flex-1 flex-col items-center justify-center border border-dashed border-[#d4d4ca] px-6 text-center dark:border-white/10 sm:m-6">
                 <p className="text-sm font-semibold text-[#3e3e37] dark:text-[#e2e2da]">
                   Nothing selected yet
                 </p>
                 <p className="mt-1 max-w-sm text-xs leading-5 text-[#7b7b73] dark:text-[#8f8f87]">
-                  Add a prompt and its complete text will be displayed here.
+                  Add a prompt to view its full text here.
                 </p>
               </div>
             )}
@@ -444,7 +479,7 @@ function PromptEditorDialog({
     <div
       data-testid="prompt-editor-backdrop"
       role="presentation"
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/65 px-4 py-6 backdrop-blur-[7px]"
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 px-4 py-6 backdrop-blur-[3px]"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget && !isPending) onClose();
       }}
@@ -455,7 +490,7 @@ function PromptEditorDialog({
         aria-modal="true"
         aria-labelledby="prompt-editor-title"
         aria-describedby="prompt-editor-description"
-        className="w-full max-w-2xl overflow-hidden rounded-[1.75rem] border border-[#d8d8cf] bg-[#fbfbf6] shadow-[0_36px_120px_rgba(0,0,0,0.48)] dark:border-[#393934] dark:bg-[#0b0b09]"
+        className="w-full max-w-2xl overflow-hidden rounded-[14px] border border-[#d8d8cf] bg-[#fbfbf6] shadow-[0_24px_70px_rgba(0,0,0,0.32)] dark:border-[#393934] dark:bg-[#0b0b09]"
       >
         <form onSubmit={onSubmit}>
           <div className="border-b border-[#deded5] px-5 py-4 dark:border-[#292925] sm:px-6">
@@ -500,7 +535,7 @@ function PromptEditorDialog({
               rows={10}
               placeholder="Paste or write your reusable prompt here…"
               disabled={isPending}
-              className="min-h-64 w-full resize-y rounded-2xl border border-[#d4d4ca] bg-white px-4 py-3 text-sm leading-6 text-[#22221e] outline-none transition placeholder:text-[#9a9a91] focus:border-[#93aa34] focus:ring-4 focus:ring-[#d9ff68]/20 disabled:cursor-wait disabled:opacity-60 dark:border-white/10 dark:bg-black/20 dark:text-white dark:placeholder:text-white/35 dark:focus:border-[#d9ff68]/60"
+              className="min-h-64 w-full resize-y rounded-lg border border-[#d4d4ca] bg-white px-4 py-3 text-sm leading-6 text-[#22221e] outline-none transition placeholder:text-[#9a9a91] focus:border-[#93aa34] focus:ring-2 focus:ring-[#d9ff68]/25 disabled:cursor-wait disabled:opacity-60 dark:border-white/10 dark:bg-black/20 dark:text-white dark:placeholder:text-white/35 dark:focus:border-[#d9ff68]/60"
             />
 
             {errorMessage ? (
@@ -518,13 +553,14 @@ function PromptEditorDialog({
                 aria-label="Save prompt"
                 title="Save prompt"
                 disabled={!content.trim() || isPending}
-                className="grid h-11 w-11 shrink-0 place-items-center rounded-full border border-[#a8c342] bg-[#d9ff68] text-[#171713] shadow-[0_8px_20px_rgba(126,146,42,0.24)] transition hover:scale-105 hover:bg-[#e4ff94] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#7e922a] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-45 dark:border-[#d9ff68]/65 dark:focus-visible:ring-[#d9ff68] dark:focus-visible:ring-offset-[#0b0b09] motion-reduce:hover:scale-100"
+                className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-[#9aae35] bg-[#d9ff68] px-3 text-xs font-semibold text-[#171713] transition-colors hover:bg-[#e4ff94] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#7e922a] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-45 dark:border-[#d9ff68]/65 dark:focus-visible:ring-[#d9ff68] dark:focus-visible:ring-offset-[#0b0b09]"
               >
                 {isPending ? (
                   <LoaderCircle className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
                 ) : (
-                  <Check className="h-5 w-5" strokeWidth={3} aria-hidden="true" />
+                  <Check className="h-4 w-4" strokeWidth={2.5} aria-hidden="true" />
                 )}
+                {isPending ? "Saving" : "Save prompt"}
               </button>
             </div>
           </div>
@@ -547,6 +583,16 @@ function promptTitle(content) {
     .map((line) => line.trim())
     .find(Boolean) || "Untitled prompt";
   return firstLine.length > 72 ? `${firstLine.slice(0, 69)}…` : firstLine;
+}
+
+function promptPreview(content) {
+  const lines = String(content || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length <= 1) return "";
+  const preview = lines.slice(1).join(" ");
+  return preview.length > 120 ? `${preview.slice(0, 117)}…` : preview;
 }
 
 function formatPromptTime(value) {

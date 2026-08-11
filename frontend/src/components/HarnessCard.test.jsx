@@ -5,7 +5,7 @@ import { HarnessArchiveCard, HarnessContinuationCard } from "./HarnessCard";
 
 describe("HarnessContinuationCard", () => {
   it.each(["codex", "claude", "opencode"])(
-    "uses transparent gold vector artwork for the %s continuation card",
+    "keeps gold artwork and a colored ready tag on the glass %s continuation card",
     (provider) => {
       render(
         <HarnessContinuationCard
@@ -26,9 +26,53 @@ describe("HarnessContinuationCard", () => {
       );
       expect(artwork?.tagName).toBe("svg");
       expect(artwork).toHaveStyle({ color: "#D4AF37" });
-      expect(article).not.toHaveStyle({ color: "#D4AF37" });
+      expect(article).toHaveAttribute("data-card-tone", "neutral");
+      expect(article).toHaveAttribute("data-card-surface", "glass");
+      expect(article).toHaveClass(
+        "bg-[#fbfbf6]/50",
+        "backdrop-blur-xl",
+        "backdrop-saturate-150",
+        "text-[#171713]",
+      );
+      expect(article.querySelector("[data-card-tint]")).not.toBeInTheDocument();
+      expect(article.querySelector("[data-card-glass-body]")).toHaveClass(
+        "from-[#fbfbf6]/55",
+        "via-[#fbfbf6]/25",
+        "to-transparent",
+      );
+      expect(article.querySelector("[data-card-accent-line]")).toHaveStyle({
+        backgroundColor: "#10B981",
+      });
+      expect(screen.getByText("Ready")).toHaveClass(
+        "border-emerald-500/60",
+        "bg-emerald-200",
+        "text-emerald-950",
+      );
     },
   );
+
+  it("removes card and session numbering while retaining the session label", () => {
+    render(
+      <HarnessContinuationCard
+        index={1}
+        provider={{
+          provider: "claude",
+          ready: true,
+          status: "ready",
+          message: "Claude Code is ready.",
+        }}
+        sessionOrdinal={7}
+        sessionTitle="Selected implementation session"
+        taskReady
+        onContinue={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("02", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByText("7", { exact: true })).not.toBeInTheDocument();
+    expect(screen.getByText("Session", { exact: true })).toBeVisible();
+    expect(screen.getByText("Anthropic")).toHaveClass("text-[#171713]");
+  });
 
   it("leaves model and reasoning settings to Codex Desktop", () => {
     const onContinue = vi.fn();
@@ -80,10 +124,10 @@ describe("HarnessContinuationCard", () => {
       "max-w-[280px]",
       "snap-center",
       "snap-always",
-      "dark:text-white",
+      "text-[#171713]",
     );
     expect(screen.getByRole("article")).toHaveStyle({
-      "--tw-ring-color": "#10a37f",
+      "--tw-ring-color": "#171713",
       zIndex: "10",
     });
     expect(screen.getByRole("article")).toHaveAttribute("data-fan-position", "left");
@@ -188,7 +232,7 @@ describe("HarnessContinuationCard", () => {
     expect(article).toHaveAttribute("aria-disabled", "true");
     expect(article).toHaveAttribute("data-context-ready", "false");
     expect(article).toHaveAttribute("data-compaction-count", "1");
-    expect(article).toHaveClass("bg-[#fbfbf6]", "dark:bg-[#141411]");
+    expect(article).toHaveClass("bg-[#fbfbf6]/50", "backdrop-blur-xl", "text-[#171713]");
     expect(article).not.toHaveClass("opacity-[0.78]");
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute("data-context-ready", "false");
@@ -229,7 +273,7 @@ describe("HarnessContinuationCard", () => {
   });
 
   it.each(["codex", "claude", "opencode"])(
-    "renders an unavailable %s harness monochrome without gold artwork and prevents execution",
+    "renders an unavailable %s harness with the same neutral card treatment and prevents execution",
     (provider) => {
       const onContinue = vi.fn();
       render(
@@ -258,14 +302,20 @@ describe("HarnessContinuationCard", () => {
       expect(artwork).toHaveClass("grayscale");
       expect(artwork).not.toHaveStyle({ color: "#D4AF37" });
       expect(screen.getByRole("article")).toHaveClass(
-        "bg-[#fbfbf6]",
-        "dark:bg-[#141411]",
-        "text-[#34342f]",
-        "dark:text-white",
+        "bg-[#fbfbf6]/50",
+        "backdrop-blur-xl",
+        "text-[#171713]",
+      );
+      expect(screen.getByText("Desktop missing")).toHaveClass(
+        "bg-white/80",
+        "text-[#171713]",
       );
       expect(screen.getByRole("article")).not.toHaveStyle({
         backgroundColor: "#171715",
       });
+      expect(screen.getByRole("article").querySelector(
+        "[data-card-accent-line]",
+      )).toHaveStyle({ backgroundColor: "#171713" });
       const button = screen.getByRole("button", { name: /Open desktop handoff in/ });
       expect(button).toBeDisabled();
       fireEvent.click(button);
@@ -398,7 +448,11 @@ describe("HarnessContinuationCard", () => {
         />,
       );
 
-      expect(screen.getByText(label)).toBeVisible();
+      expect(screen.getByText(label)).toHaveClass(
+        "border-amber-500/60",
+        "bg-amber-200",
+        "text-amber-950",
+      );
       const handoff = screen.getByRole("button", {
         name: "Open desktop handoff in Codex",
       });
@@ -462,5 +516,13 @@ describe("HarnessContinuationCard", () => {
       zIndex: "40",
       "--daemonstate-card-rotation": "0deg",
     });
+    expect(screen.getByRole("button", { name: "Open OpenCode sessions" })).toHaveAttribute(
+      "data-card-tone",
+      "provider",
+    );
+    expect(screen.getByRole("button", { name: "Open OpenCode sessions" }).querySelector(
+      "[data-card-tint]",
+    )).toBeInTheDocument();
+    expect(screen.getAllByText("03", { exact: true })).toHaveLength(2);
   });
 });
