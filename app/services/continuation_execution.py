@@ -18,6 +18,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import ContinuationExecution, ContinuationRequirement
 from app.schemas.continuation_execution import (
     MAX_CONTINUATION_ARTIFACTS,
+    MAX_OPERATIONAL_CHANGE_INTENTS,
+    MAX_OPERATIONAL_CHANGED_PATHS,
+    MAX_OPERATIONAL_DURABLE_FACTS,
+    MAX_OPERATIONAL_GAPS,
+    MAX_OPERATIONAL_PRODUCTION_FLOWS,
+    MAX_OPERATIONAL_VERIFICATION_RUNS,
     MAX_REPOSITORY_EVIDENCE_ITEMS,
     AtomicRequirement,
     ArtifactReference,
@@ -29,6 +35,10 @@ from app.schemas.continuation_execution import (
     ExecutionPolicy,
     HandoffReconciliation,
     HandoffTruthState,
+    OperationalReadinessDimensions,
+    OperationalReadinessStatus,
+    OperationalWorkspaceMode,
+    OperationalWorkspaceProjection,
     PreexistingChange,
     ProjectContextKind,
     ReadPlanItem,
@@ -51,6 +61,11 @@ from app.schemas.continuation_execution import (
     resolve_task_mode,
     sha256_text,
 )
+from app.schemas.workspace_foundation import (
+    RepositoryChangeCompletionStatus,
+    RepositoryChangeRemainingWorkStatus,
+    WorkspaceFoundationArtifact,
+)
 from app.services.access import AccessScope
 from app.services.checkpoints import derive_session_handoff_requirements
 from app.services.execution_prompt_renderer import (
@@ -63,7 +78,7 @@ from app.services.project_foundation import (
 from app.time import utc_now
 
 
-WORKER_CONTEXT_PROJECTION_VERSION = "worker_context_projection.v8"
+WORKER_CONTEXT_PROJECTION_VERSION = "worker_context_projection.v9"
 _TOOL_SELECTION_DECISION_RE = re.compile(
     r"\b(?:i|we)\s*(?:(?:'ll|’ll|will|would|should|can)\s+|"
     r"(?:am|are|'m|’m|'re|’re)\s+(?:now\s+)?)"
@@ -128,6 +143,224 @@ class CompiledContinuationExecution:
     execution: ContinuationExecution
     contract: ContinuationExecutionContract
     prompt_markdown: str
+
+
+def _operational_workspace_projection(
+    manifest: dict[str, Any],
+    *,
+    repository: RepositoryContract,
+    handoff: StructuredHandoff,
+    requirements: tuple[AtomicRequirement, ...],
+    selected_task_lifecycle: SelectedTaskLifecycle,
+    project_context_count: int,
+) -> OperationalWorkspaceProjection | None:
+    raw_foundation = manifest.get("workspace_foundation")
+    if raw_foundation is None:
+        return None
+    foundation = WorkspaceFoundationArtifact.model_validate(raw_foundation)
+
+    changes = tuple(
+        foundation.repository_state.changes[:MAX_OPERATIONAL_CHANGED_PATHS]
+    )
+    changed_paths = tuple(change.path for change in changes)
+    changed_capability_ids = {
+        capability_id
+        for change in changes
+        for capability_id in change.capability_ids
+    }
+    change_intents = tuple(sorted(
+        foundation.change_intents,
+        key=lambda item: (
+            0
+            if changed_capability_ids.intersection(item.capability_ids)
+            else 1,
+            item.capability.casefold(),
+            item.id,
+        ),
+    )[:MAX_OPERATIONAL_CHANGE_INTENTS])
+    production_flows = tuple(sorted(
+        foundation.production_flows,
+        key=lambda item: (
+            0
+            if changed_capability_ids.intersection(item.capability_ids)
+            else 1,
+            0 if item.complete else 1,
+            item.name.casefold(),
+            item.id,
+        ),
+    )[:MAX_OPERATIONAL_PRODUCTION_FLOWS])
+    verification_runs = tuple(
+        foundation.verification_runs[:MAX_OPERATIONAL_VERIFICATION_RUNS]
+    )
+    durable_facts = tuple(
+        (foundation.durable_facts or foundation.durable_knowledge)[
+            :MAX_OPERATIONAL_DURABLE_FACTS
+        ]
+    )
+
+    task_state = (
+        OperationalReadinessStatus.READY
+        if requirements
+        else OperationalReadinessStatus.MISSING
+    )
+    durable_foundation = (
+        OperationalReadinessStatus.READY
+        if durable_facts or project_context_count
+        else OperationalReadinessStatus.PARTIAL
+    )
+    repository_state = (
+        OperationalReadinessStatus.PARTIAL
+        if repository.status_truncated
+        or foundation.repository_state.changes_truncated
+        else OperationalReadinessStatus.READY
+    )
+
+    if not foundation.repository_state.dirty:
+        semantic_delta = OperationalReadinessStatus.NOT_APPLICABLE
+        change_intent = OperationalReadinessStatus.NOT_APPLICABLE
+    else:
+        semantic_records = [
+            change.semantic_delta
+            for change in changes
+            if change.semantic_delta is not None
+        ]
+        if not semantic_records:
+            semantic_delta = OperationalReadinessStatus.MISSING
+        elif (
+            len(semantic_records) == len(changes)
+            and all(delta.complete for delta in semantic_records)
+            and not foundation.repository_state.changes_truncated
+        ):
+            semantic_delta = OperationalReadinessStatus.READY
+        else:
+            semantic_delta = OperationalReadinessStatus.PARTIAL
+
+        intent_paths = {
+            path
+            for item in change_intents
+            for path in item.changed_paths
+        }
+        intent_complete = bool(change_intents) and all(
+            item.before_behavior is not None
+            and item.after_behavior is not None
+            and item.completed is not RepositoryChangeCompletionStatus.UNKNOWN
+            and item.remaining_status
+            is not RepositoryChangeRemainingWorkStatus.UNKNOWN
+            for item in change_intents
+        )
+        if not change_intents:
+            change_intent = OperationalReadinessStatus.MISSING
+        elif (
+            intent_complete
+            and set(changed_paths).issubset(intent_paths)
+            and not foundation.repository_state.changes_truncated
+        ):
+            change_intent = OperationalReadinessStatus.READY
+        else:
+            change_intent = OperationalReadinessStatus.PARTIAL
+
+    if not production_flows:
+        production_flow_readiness = OperationalReadinessStatus.MISSING
+    elif all(flow.complete for flow in production_flows):
+        production_flow_readiness = OperationalReadinessStatus.READY
+    else:
+        production_flow_readiness = OperationalReadinessStatus.PARTIAL
+
+    if not verification_runs:
+        verification_readiness = OperationalReadinessStatus.MISSING
+    elif foundation.quality_report.repository_health in {"verified", "passing"}:
+        verification_readiness = OperationalReadinessStatus.READY
+    else:
+        verification_readiness = OperationalReadinessStatus.PARTIAL
+
+    readiness = OperationalReadinessDimensions(
+        task_state=task_state,
+        durable_foundation=durable_foundation,
+        repository_state=repository_state,
+        semantic_delta=semantic_delta,
+        change_intent=change_intent,
+        production_flows=production_flow_readiness,
+        verification=verification_readiness,
+    )
+    investigation_base = (
+        task_state,
+        durable_foundation,
+        repository_state,
+    )
+    continuation_dimensions = (
+        *investigation_base,
+        semantic_delta,
+        change_intent,
+        production_flow_readiness,
+    )
+    if selected_task_lifecycle is SelectedTaskLifecycle.COMPLETED or any(
+        status is OperationalReadinessStatus.MISSING
+        for status in investigation_base
+    ):
+        overall_mode = OperationalWorkspaceMode.ORIENTATION_ONLY
+    elif all(
+        status in {
+            OperationalReadinessStatus.READY,
+            OperationalReadinessStatus.NOT_APPLICABLE,
+        }
+        for status in continuation_dimensions
+    ):
+        overall_mode = (
+            OperationalWorkspaceMode.EXECUTION_READY
+            if verification_readiness is OperationalReadinessStatus.READY
+            else OperationalWorkspaceMode.CONTINUATION_READY
+        )
+    else:
+        overall_mode = OperationalWorkspaceMode.INVESTIGATION_READY
+
+    gaps: list[str] = []
+    if repository_state is OperationalReadinessStatus.PARTIAL:
+        gaps.append(
+            "Repository or semantic-change coverage is truncated; the Repository "
+            "Contract remains the authoritative protected baseline."
+        )
+    if durable_foundation is OperationalReadinessStatus.PARTIAL:
+        gaps.append("No durable workspace fact was admitted into this projection.")
+    if semantic_delta is OperationalReadinessStatus.MISSING:
+        gaps.append("No semantic delta was observed for the current changed paths.")
+    elif semantic_delta is OperationalReadinessStatus.PARTIAL:
+        gaps.append("Semantic delta coverage is partial for the current changed paths.")
+    if change_intent is OperationalReadinessStatus.MISSING:
+        gaps.append(
+            "No trusted change-intent record is included; do not infer intent from the diff."
+        )
+    elif change_intent is OperationalReadinessStatus.PARTIAL:
+        gaps.append(
+            "Change scope is grouped, but trusted before/after behavior, completion, or "
+            "remaining-work coverage is incomplete."
+        )
+    if production_flow_readiness is OperationalReadinessStatus.MISSING:
+        gaps.append("No evidence-backed production flow is included.")
+    elif production_flow_readiness is OperationalReadinessStatus.PARTIAL:
+        gaps.append("Only partial production flows are included; honor their named gaps.")
+    if verification_readiness is OperationalReadinessStatus.MISSING:
+        gaps.append("No snapshot-bound verification run is included.")
+    elif verification_readiness is OperationalReadinessStatus.PARTIAL:
+        gaps.append(
+            "Verification runs are present, but they do not establish passing repository health."
+        )
+
+    return OperationalWorkspaceProjection.from_payload({
+        "overall_mode": overall_mode,
+        "foundation_schema_version": foundation.schema_version,
+        "foundation_semantic_sha256": foundation.semantic_sha256,
+        "foundation_artifact_sha256": foundation.artifact_sha256,
+        "repository_snapshot_sha256": foundation.repository_state.snapshot_fingerprint,
+        "readiness": readiness,
+        "repository_health": foundation.quality_report.repository_health,
+        "changed_paths": changed_paths,
+        "changes": changes,
+        "change_intents": change_intents,
+        "production_flows": production_flows,
+        "verification_runs": verification_runs,
+        "durable_facts": durable_facts,
+        "gaps": tuple(dict.fromkeys(gaps))[:MAX_OPERATIONAL_GAPS],
+    })
 
 
 async def compile_and_persist_continuation_execution(
@@ -220,6 +453,14 @@ async def compile_and_persist_continuation_execution(
         repository_fingerprint=repository_contract.status_fingerprint,
         access_scope=access_scope,
     )
+    operational_workspace = _operational_workspace_projection(
+        context_manifest,
+        repository=repository_contract,
+        handoff=handoff,
+        requirements=requirements,
+        selected_task_lifecycle=selected_lifecycle,
+        project_context_count=len(project_foundation.items),
+    )
     repository_evidence = _repository_evidence_items(
         context_manifest,
         repository=repository_contract,
@@ -252,6 +493,7 @@ async def compile_and_persist_continuation_execution(
         ),
         repository=repository_contract,
         handoff=handoff,
+        operational_workspace=operational_workspace,
         project_foundation=project_foundation.snapshot,
         project_context=project_foundation.items,
         repository_evidence=repository_evidence,
@@ -281,6 +523,21 @@ async def compile_and_persist_continuation_execution(
                 sort_keys=True,
                 separators=(",", ":"),
             )
+        ),
+        workspace_foundation_semantic_sha256=(
+            operational_workspace.foundation_semantic_sha256
+            if operational_workspace is not None
+            else None
+        ),
+        workspace_foundation_artifact_sha256=(
+            operational_workspace.foundation_artifact_sha256
+            if operational_workspace is not None
+            else None
+        ),
+        operational_workspace_package_sha256=(
+            operational_workspace.package_sha256
+            if operational_workspace is not None
+            else None
         ),
         execution_focus=execution_focus,
         artifacts=artifact_references,
@@ -2434,6 +2691,9 @@ def _execution_idempotency_key(
     checkpoint_id: str | None,
     repository_fingerprint: str | None,
     project_foundation_sha256: str,
+    workspace_foundation_semantic_sha256: str | None,
+    workspace_foundation_artifact_sha256: str | None,
+    operational_workspace_package_sha256: str | None,
     execution_focus: str | None,
     artifacts: tuple[ArtifactReference, ...],
     supporting_context: tuple[SupportingContextItem, ...],
@@ -2446,6 +2706,15 @@ def _execution_idempotency_key(
         "checkpoint_id": checkpoint_id,
         "repository_fingerprint": repository_fingerprint,
         "project_foundation_sha256": project_foundation_sha256,
+        "workspace_foundation_semantic_sha256": (
+            workspace_foundation_semantic_sha256
+        ),
+        "workspace_foundation_artifact_sha256": (
+            workspace_foundation_artifact_sha256
+        ),
+        "operational_workspace_package_sha256": (
+            operational_workspace_package_sha256
+        ),
         "execution_focus": str(execution_focus or "").strip() or None,
         "artifacts": [artifact.model_dump(mode="json") for artifact in artifacts],
         "supporting_context": [item.model_dump(mode="json") for item in supporting_context],

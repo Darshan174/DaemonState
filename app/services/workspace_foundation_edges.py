@@ -673,7 +673,7 @@ def _observe_call_edges(
                 and caller_identity not in caller_identities
             ):
                 continue
-            if hint.binding_kind == "local_symbol":
+            if hint.binding_kind in {"local_symbol", "self_method"}:
                 target_path = source_path
             else:
                 specifier = str(hint.target_specifier or "")
@@ -702,6 +702,26 @@ def _observe_call_edges(
                 in {"function", "async_function", "class", "component"}
                 and symbol.name == hint.target_name
             ]
+            if hint.target_container:
+                containers = [
+                    symbol
+                    for symbol in target_file.symbols
+                    if symbol.symbol_type == "class"
+                    and symbol.name == hint.target_container
+                    and symbol.start_line is not None
+                    and symbol.end_line is not None
+                ]
+                if len(containers) != 1:
+                    continue
+                container = containers[0]
+                target_symbols = [
+                    symbol
+                    for symbol in target_symbols
+                    if symbol.start_line is not None
+                    and symbol.end_line is not None
+                    and container.start_line < symbol.start_line
+                    and symbol.end_line <= container.end_line
+                ]
             if len(target_symbols) != 1:
                 continue
             target_symbol = target_symbols[0]
@@ -713,6 +733,15 @@ def _observe_call_edges(
                 continue
             if not rank_before_limit and len(edges) >= limit:
                 return _EdgeCandidates(edges=tuple(edges), truncated=True)
+            evidence = {
+                "caller": source_symbol.qualified_name or source_symbol.name,
+                "callee": target_symbol.qualified_name or target_symbol.name,
+                "binding_kind": hint.binding_kind,
+                "specifier": hint.target_specifier,
+                "call_line": hint.start_line,
+            }
+            if hint.target_container:
+                evidence["target_container"] = hint.target_container
             edges.append(_edge(
                 frame=frame,
                 source_path=source_path,
@@ -724,13 +753,7 @@ def _observe_call_edges(
                 evidence_end_line=hint.end_line,
                 source_identity=_symbol_identity(source_path, source_symbol),
                 target_identity=_symbol_identity(target_path, target_symbol),
-                evidence={
-                    "caller": source_symbol.qualified_name or source_symbol.name,
-                    "callee": target_symbol.qualified_name or target_symbol.name,
-                    "binding_kind": hint.binding_kind,
-                    "specifier": hint.target_specifier,
-                    "call_line": hint.start_line,
-                },
+                evidence=evidence,
             ))
     if not rank_before_limit:
         return _EdgeCandidates(edges=tuple(edges), truncated=False)

@@ -84,8 +84,8 @@ def _artifact(
                 "status": "pass",
                 "publishable": True,
                 "copy_ready": True,
-                "score": 100,
-                "semantic_coverage_score": 100,
+                "score": 94,
+                "semantic_coverage_score": 94,
             },
         }
     )

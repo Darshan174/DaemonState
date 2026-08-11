@@ -102,7 +102,7 @@ def _git(root: Path, *args: str) -> None:
 
 def test_worker_projection_version_invalidates_pre_relevance_prompts() -> None:
     assert (
-        continuation_execution.WORKER_CONTEXT_PROJECTION_VERSION == "worker_context_projection.v8"
+        continuation_execution.WORKER_CONTEXT_PROJECTION_VERSION == "worker_context_projection.v9"
     )
 
 

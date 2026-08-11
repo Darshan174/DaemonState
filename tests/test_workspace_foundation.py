@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import struct
+import subprocess
+import zlib
 from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -48,6 +52,20 @@ from app.services.workspace_foundation_verification import (
 
 
 pytestmark = pytest.mark.anyio
+
+
+def _png_bytes(width: int, height: int, marker: bytes) -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        checksum = zlib.crc32(kind + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", checksum)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"tEXt", marker)
+        + chunk(b"IEND", b"")
+    )
 
 
 async def _compile(root, *, durable_foundation=None):
@@ -756,13 +774,18 @@ async def test_foundation_builds_capability_linked_production_trace_before_tests
         9,
     ]
     rendered = render_workspace_foundation_markdown(artifact)
+    assert "Operational use: `orientation_only`" in rendered
+    assert rendered.index("## Critical production paths") < rendered.index(
+        "## Workflows and capability-to-code map"
+    )
+    assert rendered.index("## Snapshot-bound verification runs") < rendered.index(
+        "## Architecture and system map"
+    )
     assert "### Documentation-stated system and data flows" in rendered
     assert "The data layer stores the record." in rendered
     assert "repository-stated, not implementation proof" in rendered
-    assert rendered.index("### Code-observed production call flows") < rendered.index(
-        "## Architecture and system map"
-    )
-    assert "`production_call_flow`" in rendered
+    assert "### Code-observed production call flows" not in rendered
+    assert "`code_observed` / `partial`" in rendered
     assert "app/api/process.py#POST /api/process" in rendered
     assert "machine-readable artifact" not in rendered
 
@@ -927,6 +950,126 @@ async def test_entrypoint_relevance_beats_a_longer_secondary_route_chain(tmp_pat
     )
     assert "provider_readiness" not in rendered_chain
     assert [hop.relation.value for hop in trace.hops[:2]] == ["owns", "calls"]
+
+
+async def test_action_endpoint_beats_read_only_metadata_for_same_capability(tmp_path):
+    (tmp_path / "README.md").write_text(
+        "# Atlas\n\n"
+        "## Overview\n\n"
+        "Atlas continues coding work.\n\n"
+        "## Capabilities\n\n"
+        "| Capability | What it does |\n"
+        "|---|---|\n"
+        "| Continue | Prepares continuation context from available providers. |\n",
+        encoding="utf-8",
+    )
+    api = tmp_path / "app" / "api"
+    services = tmp_path / "app" / "services"
+    api.mkdir(parents=True)
+    services.mkdir(parents=True)
+    (api / "continuations.py").write_text(
+        "from app.services.continuations import prepare_context, provider_readiness\n"
+        "from fastapi import APIRouter\n\n"
+        "router = APIRouter()\n\n"
+        "@router.get('/continuations/providers')\n"
+        "def get_providers(): return provider_readiness()\n\n"
+        "@router.post('/continuations/prepare')\n"
+        "def prepare_continuation(): return prepare_context()\n",
+        encoding="utf-8",
+    )
+    (services / "continuations.py").write_text(
+        "def provider_readiness(): return {'providers': []}\n\n"
+        "def prepare_context(): return {'context': 'ready'}\n",
+        encoding="utf-8",
+    )
+
+    _frame, artifact = await _compile(tmp_path)
+
+    capability = next(item for item in artifact.capabilities if item.name == "Continue")
+    trace = next(
+        item for item in artifact.implementation_traces if capability.id in item.capability_ids
+    )
+    assert trace.hops[0].source_symbol == "POST /continuations/prepare"
+    assert all(
+        "provider_readiness" not in str(hop.target_symbol)
+        for hop in trace.hops
+    )
+
+
+async def test_documented_execute_endpoint_beats_execution_name_noise(
+    tmp_path,
+):
+    (tmp_path / "README.md").write_text(
+        "# Atlas\n\n"
+        "## Overview\n\n"
+        "Atlas compiles controlled workspace context.\n\n"
+        "## Capabilities\n\n"
+        "| Surface | Status | Current behavior |\n"
+        "|---|---|---|\n"
+        "| Execute | Available | Compiles and previews Workspace Context in the dashboard. |\n\n"
+        "## Execute\n\n"
+        "The inspector can read `GET /api/context/claims/{claim_id}/timeline`.\n"
+        "The page calls `POST /api/context/prepare` before previewing context.\n",
+        encoding="utf-8",
+    )
+    api = tmp_path / "app" / "api"
+    schemas = tmp_path / "app" / "schemas"
+    services = tmp_path / "app" / "services"
+    frontend = tmp_path / "frontend" / "src"
+    for directory in (api, schemas, services, frontend):
+        directory.mkdir(parents=True)
+    (schemas / "execution.py").write_text(
+        "class ExecutionAuthority:\n    pass\n",
+        encoding="utf-8",
+    )
+    (frontend / "ExecutePage.jsx").write_text(
+        'import { prepareContext } from "./api";\n\n'
+        "export function ExecutePage() {\n"
+        "  return prepareContext({ mode: 'project_snapshot' });\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (frontend / "api.js").write_text(
+        'import { api } from "./client";\n\n'
+        "export function prepareContext(payload) {\n"
+        '  return api.post("/context/prepare", payload);\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    (frontend / "client.js").write_text(
+        "export const api = {};\n",
+        encoding="utf-8",
+    )
+    (api / "context.py").write_text(
+        "from app.services.context import compile_context\n"
+        "from fastapi import APIRouter\n\n"
+        "router = APIRouter()\n\n"
+        "@router.get('/context/claims/{claim_id}/timeline')\n"
+        "def claim_timeline(claim_id): return {'claim_id': claim_id}\n\n"
+        "@router.post('/context/prepare')\n"
+        "def prepare_context(): return compile_context()\n",
+        encoding="utf-8",
+    )
+    (services / "context.py").write_text(
+        "def compile_context(): return {'context': 'ready'}\n",
+        encoding="utf-8",
+    )
+
+    _frame, artifact = await _compile(tmp_path)
+
+    capability = next(item for item in artifact.capabilities if item.name == "Execute")
+    surfaces = {item.id: item for item in artifact.capability_surfaces}
+    trace = next(
+        item for item in artifact.implementation_traces if capability.id in item.capability_ids
+    )
+    assert capability.summary.startswith("Compiles and previews")
+    assert any(
+        surfaces[item].name == "POST /context/prepare"
+        for item in capability.surface_ids
+    )
+    assert trace.kind.value == "production_call_flow"
+    assert trace.hops[0].source_path == "frontend/src/api.js"
+    assert trace.hops[1].source_symbol == "POST /context/prepare"
 
 
 async def test_call_only_trace_is_internal_and_cannot_claim_production_flow(tmp_path):
@@ -1172,6 +1315,84 @@ async def test_dirty_state_is_annotated_by_role_capability_and_exact_tests(tmp_p
     assert "machine-readable artifact" not in rendered
 
 
+async def test_binary_asset_change_compiles_and_renders_hash_bound_metadata(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "workspace-foundation@example.invalid"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Workspace Foundation Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+    (tmp_path / "README.md").write_text(
+        "# Atlas\n\n## Overview\n\nAtlas prepares controlled application assets.\n",
+        encoding="utf-8",
+    )
+    resources = tmp_path / "Resources"
+    resources.mkdir()
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    source = source_dir / "view.tsx"
+    source.write_text(
+        'import icon from "../Resources/icon.png";\n'
+        "export function View() { return <img src={icon} />; }\n",
+        encoding="utf-8",
+    )
+    icon = resources / "icon.png"
+    head_bytes = _png_bytes(12, 10, b"baseline")
+    icon.write_bytes(head_bytes)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "baseline"],
+        cwd=tmp_path,
+        check=True,
+    )
+    current_bytes = _png_bytes(
+        24,
+        20,
+        b"opaque\xffbytes\n# \xffbinary-heading-garbage\n",
+    )
+    icon.write_bytes(current_bytes)
+
+    frame, artifact = await _compile(tmp_path)
+    raw_change = next(
+        item for item in frame.changed_files if item["path"] == "Resources/icon.png"
+    )
+    change = next(
+        item for item in artifact.repository_state.changes
+        if item.path == "Resources/icon.png"
+    )
+
+    assert "semantic_delta" not in raw_change
+    assert change.role.value == "asset"
+    assert change.semantic_delta is None
+    assert change.binary_asset is not None
+    assert change.binary_asset.current is not None
+    assert change.binary_asset.head is not None
+    assert change.binary_asset.current.content_sha256 == hashlib.sha256(current_bytes).hexdigest()
+    assert change.binary_asset.head.content_sha256 == hashlib.sha256(head_bytes).hexdigest()
+    assert (change.binary_asset.current.width_px, change.binary_asset.current.height_px) == (
+        24,
+        20,
+    )
+    assert change.binary_asset.import_references[0].source_path == "src/view.tsx"
+    assert change.binary_asset.import_references[0].source_sha256 == hashlib.sha256(
+        source.read_bytes()
+    ).hexdigest()
+
+    rendered = render_workspace_foundation_markdown(artifact)
+    assert "Binary asset metadata vs `HEAD`" in rendered
+    assert "MIME `image/png`" in rendered
+    assert "dimensions: `24×20 px`" in rendered
+    assert hashlib.sha256(current_bytes).hexdigest() in rendered
+    assert "`src/view.tsx:1` imports `../Resources/icon.png`" in rendered
+    assert "binary-heading-garbage" not in rendered
+    assert "headings added" not in rendered
+
+
 async def test_dirty_capabilities_require_direct_surfaces_or_typed_trace_paths():
     direct_surface = SimpleNamespace(
         id="surface.direct",
@@ -1401,10 +1622,43 @@ async def test_architecture_fill_is_deterministic_and_prefers_path_layer_diversi
         "component.cli",
         "component.services",
         "component.models",
-        "component.infra",
     } <= set(selected_ids)
+    assert len(selected_ids) == 5
     assert "component.app" not in selected_ids
     assert "component.frontend.pages" not in selected_ids
+
+
+async def test_active_change_hotspot_reserves_architecture_slot():
+    def component(component_id: str, path: str) -> ArchitectureComponent:
+        return ArchitectureComponent(
+            id=component_id,
+            kind=ArchitectureComponentKind.MODULE,
+            name=path,
+            responsibility="Observed repository module.",
+            repository_paths=(path,),
+            evidence_ref_ids=("ev.test",),
+        )
+
+    unchanged = tuple(
+        component(f"component.unchanged.{index}", f"app/layer{index}")
+        for index in range(8)
+    )
+    desktop = component("component.desktop", "desktop/macos")
+    candidates = (*unchanged, desktop)
+    artifact = SimpleNamespace(
+        architecture_components=candidates,
+        structural_edges=(),
+        repository_state=SimpleNamespace(
+            changes=(SimpleNamespace(component_ids=(desktop.id,)),)
+        ),
+    )
+
+    selected, _edges, _all_components, _all_edges = _select_production_architecture(
+        artifact,
+        {item.id: item for item in candidates},
+    )
+
+    assert desktop.id in {item.id for item in selected}
 
 
 async def test_repository_engineering_knowledge_is_exact_and_separate_from_promotion(

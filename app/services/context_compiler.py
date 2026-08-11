@@ -619,17 +619,64 @@ def _readme_inventory_summary(
                 break
 
     capabilities: list[dict[str, str]] = []
+    capability_columns: tuple[int, int] | None = None
+    feature_headers = {
+        "capability",
+        "feature",
+        "flow",
+        "surface",
+        "use case",
+        "workflow",
+    }
+    definition_headers = {
+        "behavior",
+        "current behavior",
+        "definition",
+        "description",
+        "meaning",
+        "purpose",
+        "what it does",
+        "what it helps you do",
+    }
     for raw_line in text.splitlines():
         if not raw_line.strip().startswith("|"):
+            capability_columns = None
             continue
         cells = [cell.strip() for cell in raw_line.strip().strip("|").split("|")]
         if len(cells) < 2:
             continue
-        name = re.sub(r"[*_`]", "", cells[0]).strip()
-        description = re.sub(r"[*_`]", "", cells[1]).strip()
+        normalized_cells = [
+            " ".join(re.sub(r"[*_`]", "", cell).casefold().split())
+            for cell in cells
+        ]
+        feature_index = next(
+            (
+                index
+                for index, cell in enumerate(normalized_cells)
+                if cell in feature_headers
+            ),
+            None,
+        )
+        definition_index = next(
+            (
+                index
+                for index, cell in enumerate(normalized_cells)
+                if cell in definition_headers
+            ),
+            None,
+        )
+        if feature_index is not None and definition_index is not None:
+            capability_columns = (feature_index, definition_index)
+            continue
+        if set("".join(cells)) <= {"-", ":", " ", "|"}:
+            continue
+        if capability_columns is None or max(capability_columns) >= len(cells):
+            continue
+        name = re.sub(r"[*_`]", "", cells[capability_columns[0]]).strip()
+        description = re.sub(r"[*_`]", "", cells[capability_columns[1]]).strip()
         if (
             not name
-            or name.casefold() in {"feature", "context"}
+            or name.casefold() in feature_headers
             or set(name) <= {"-", ":", " "}
             or set(description) <= {"-", ":", " "}
             or _prompt_injection_risk(f"{name} {description}") >= 0.70
@@ -1099,7 +1146,8 @@ class ContextCompiler:
         retrieval_keywords = set() if is_project_snapshot else goal_frame.keywords
         retrieval_file_hints = [] if is_project_snapshot else goal_frame.file_hints
         repo_state = repo_frame.to_manifest(retrieval_keywords, retrieval_file_hints)
-        if is_project_snapshot:
+        needs_workspace_foundation = is_project_snapshot or continuation_frame is not None
+        if needs_workspace_foundation:
             repo_state["workspace_inventory"] = _workspace_repository_inventory(repo_frame)
         repository_evidence = repo_frame.repository_evidence_for_goal(
             retrieval_keywords,
@@ -1118,13 +1166,18 @@ class ContextCompiler:
         project_foundation: CompiledProjectFoundation | None = None
         workspace_foundation: WorkspaceFoundationArtifact | None = None
         workspace_verification_observations = ()
-        if is_project_snapshot and self.session is not None and workspace_uuid is not None:
+        if (
+            needs_workspace_foundation
+            and self.session is not None
+            and workspace_uuid is not None
+        ):
             project_foundation = await compile_workspace_project_foundation(
                 self.session,
                 workspace_id=workspace_uuid,
                 repository_fingerprint=(
                     str(
-                        repo_state.get("state_fingerprint")
+                        repo_state.get("status_fingerprint")
+                        or repo_state.get("state_fingerprint")
                         or repo_state.get("snapshot_fingerprint")
                         or ""
                     ).strip()
@@ -1142,14 +1195,15 @@ class ContextCompiler:
                     repo_frame,
                 )
             )
-        if is_project_snapshot:
+        if needs_workspace_foundation:
             workspace_foundation = compile_workspace_foundation(
                 frame=repo_frame,
                 inventory=repo_state["workspace_inventory"],
                 durable_foundation=project_foundation,
                 repository_fingerprint=(
                     str(
-                        repo_state.get("state_fingerprint")
+                        repo_state.get("status_fingerprint")
+                        or repo_state.get("state_fingerprint")
                         or repo_state.get("snapshot_fingerprint")
                         or ""
                     ).strip()

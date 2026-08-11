@@ -306,6 +306,104 @@ def test_observes_unique_local_symbol_calls_and_rejects_ambiguous_targets():
     )
 
 
+def test_bound_instance_and_self_calls_resolve_within_the_named_class():
+    service = _indexed_file(
+        "app/service.py",
+        symbols=(
+            IndexedSymbol(
+                symbol_type="class",
+                name="Worker",
+                qualified_name="app.service.Worker",
+                start_line=1,
+                end_line=10,
+            ),
+            IndexedSymbol(
+                symbol_type="function",
+                name="run",
+                qualified_name="app.service.run",
+                start_line=2,
+                end_line=4,
+            ),
+            IndexedSymbol(
+                symbol_type="function",
+                name="compile",
+                qualified_name="app.service.compile",
+                start_line=6,
+                end_line=8,
+            ),
+            IndexedSymbol(
+                symbol_type="class",
+                name="OtherWorker",
+                qualified_name="app.service.OtherWorker",
+                start_line=12,
+                end_line=20,
+            ),
+            IndexedSymbol(
+                symbol_type="function",
+                name="run",
+                qualified_name="app.service.other_run",
+                start_line=14,
+                end_line=16,
+            ),
+        ),
+        call_hints=(
+            IndexedCall(
+                caller_name="run",
+                caller_start_line=2,
+                target_name="compile",
+                target_specifier=None,
+                target_container="Worker",
+                binding_kind="self_method",
+                start_line=3,
+                end_line=3,
+            ),
+        ),
+    )
+    api = _indexed_file(
+        "app/api.py",
+        symbols=(
+            IndexedSymbol(
+                symbol_type="async_function",
+                name="create_item",
+                qualified_name="app.api.create_item",
+                start_line=5,
+                end_line=8,
+            ),
+        ),
+        call_hints=(
+            IndexedCall(
+                caller_name="create_item",
+                caller_start_line=5,
+                target_name="run",
+                target_specifier=".service",
+                target_container="Worker",
+                binding_kind="bound_instance_method",
+                start_line=7,
+                end_line=7,
+            ),
+        ),
+    )
+
+    call_edges = [
+        edge
+        for edge in observe_workspace_edges(_frame(api, service))
+        if edge["rule_id"] == "local_symbol_call.v1"
+    ]
+
+    assert len(call_edges) == 2
+    assert [edge["evidence"]["target_container"] for edge in call_edges] == [
+        "Worker",
+        "Worker",
+    ]
+    assert {
+        (edge["source_path"], edge["target_path"], edge["evidence"]["callee"])
+        for edge in call_edges
+    } == {
+        ("app/api.py", "app/service.py", "app.service.run"),
+        ("app/service.py", "app/service.py", "app.service.compile"),
+    }
+
+
 def test_links_static_frontend_http_reference_to_one_exact_backend_route():
     frontend = _indexed_file(
         "frontend/hooks.js",

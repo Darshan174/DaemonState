@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from datetime import datetime
 from enum import StrEnum
@@ -8,6 +9,14 @@ from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.schemas.workspace_foundation import (
+    ChangeIntent,
+    DurableKnowledgeFact,
+    ProductionFlow,
+    RepositoryChange,
+    VerificationRun,
+)
 
 
 CONTINUATION_EXECUTION_SCHEMA_VERSION = "continuation_execution.v1"
@@ -17,6 +26,12 @@ MAX_PROJECT_CONTEXT_ITEMS = 48
 MAX_REPOSITORY_EVIDENCE_ITEMS = 24
 MAX_SUPPORTING_CONTEXT_ITEMS = 4
 MAX_SUPPORTING_CONTEXT_CHARS = 30_000
+MAX_OPERATIONAL_CHANGED_PATHS = 32
+MAX_OPERATIONAL_CHANGE_INTENTS = 8
+MAX_OPERATIONAL_PRODUCTION_FLOWS = 8
+MAX_OPERATIONAL_VERIFICATION_RUNS = 12
+MAX_OPERATIONAL_DURABLE_FACTS = 16
+MAX_OPERATIONAL_GAPS = 16
 _HISTORICAL_SPEECH_RE = re.compile(
     r"^(?:the\s+)?(?:prior|previous|historical)\s+"
     r"(?:agent|assistant|user|transcript|message)\s+"
@@ -546,6 +561,198 @@ class _FrozenContract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class OperationalWorkspaceMode(StrEnum):
+    """How much of the composite continuation package is safe to rely on."""
+
+    ORIENTATION_ONLY = "orientation_only"
+    INVESTIGATION_READY = "investigation_ready"
+    CONTINUATION_READY = "continuation_ready"
+    EXECUTION_READY = "execution_ready"
+
+
+class OperationalReadinessStatus(StrEnum):
+    READY = "ready"
+    PARTIAL = "partial"
+    MISSING = "missing"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class OperationalReadinessDimensions(_FrozenContract):
+    """Independent readiness signals; one strong lane cannot mask a missing one."""
+
+    task_state: OperationalReadinessStatus
+    durable_foundation: OperationalReadinessStatus
+    repository_state: OperationalReadinessStatus
+    semantic_delta: OperationalReadinessStatus
+    change_intent: OperationalReadinessStatus
+    production_flows: OperationalReadinessStatus
+    verification: OperationalReadinessStatus
+
+
+class OperationalWorkspaceProjectionPayload(_FrozenContract):
+    """Bounded model-facing projection of the hash-bound Workspace Foundation."""
+
+    schema_version: Literal["continuation_workspace_projection.v1"] = (
+        "continuation_workspace_projection.v1"
+    )
+    overall_mode: OperationalWorkspaceMode
+    foundation_schema_version: Literal[
+        "workspace_foundation.v1",
+        "workspace_foundation.v2",
+    ]
+    foundation_semantic_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    foundation_artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    repository_snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    readiness: OperationalReadinessDimensions
+    repository_health: Literal[
+        "verified",
+        "passing",
+        "failing",
+        "stale",
+        "unknown",
+    ] = "unknown"
+    changed_paths: tuple[str, ...] = Field(
+        default=(),
+        max_length=MAX_OPERATIONAL_CHANGED_PATHS,
+    )
+    changes: tuple[RepositoryChange, ...] = Field(
+        default=(),
+        max_length=MAX_OPERATIONAL_CHANGED_PATHS,
+    )
+    change_intents: tuple[ChangeIntent, ...] = Field(
+        default=(),
+        max_length=MAX_OPERATIONAL_CHANGE_INTENTS,
+    )
+    production_flows: tuple[ProductionFlow, ...] = Field(
+        default=(),
+        max_length=MAX_OPERATIONAL_PRODUCTION_FLOWS,
+    )
+    verification_runs: tuple[VerificationRun, ...] = Field(
+        default=(),
+        max_length=MAX_OPERATIONAL_VERIFICATION_RUNS,
+    )
+    durable_facts: tuple[DurableKnowledgeFact, ...] = Field(
+        default=(),
+        max_length=MAX_OPERATIONAL_DURABLE_FACTS,
+    )
+    gaps: tuple[str, ...] = Field(default=(), max_length=MAX_OPERATIONAL_GAPS)
+
+    @model_validator(mode="after")
+    def validate_projection(self) -> "OperationalWorkspaceProjectionPayload":
+        if len(self.changed_paths) != len(set(self.changed_paths)):
+            raise ValueError("operational workspace projection contains duplicate changed paths")
+        projected_change_paths = tuple(change.path for change in self.changes)
+        if projected_change_paths != self.changed_paths:
+            raise ValueError(
+                "operational changed_paths must exactly match the ordered change projection"
+            )
+        if self.production_flows and (
+            self.readiness.production_flows is OperationalReadinessStatus.MISSING
+        ):
+            raise ValueError("included production flows cannot have missing readiness")
+        if not self.production_flows and (
+            self.readiness.production_flows is not OperationalReadinessStatus.MISSING
+        ):
+            raise ValueError("absent production flows require missing readiness")
+        if self.verification_runs and (
+            self.readiness.verification is OperationalReadinessStatus.MISSING
+        ):
+            raise ValueError("included verification runs cannot have missing readiness")
+        if not self.verification_runs and (
+            self.readiness.verification is not OperationalReadinessStatus.MISSING
+        ):
+            raise ValueError("absent verification runs require missing readiness")
+        if self.change_intents and (
+            self.readiness.change_intent is OperationalReadinessStatus.MISSING
+        ):
+            raise ValueError("included change intent cannot have missing readiness")
+        investigation_base = (
+            self.readiness.task_state,
+            self.readiness.durable_foundation,
+            self.readiness.repository_state,
+        )
+        if self.overall_mode is not OperationalWorkspaceMode.ORIENTATION_ONLY and any(
+            status is OperationalReadinessStatus.MISSING
+            for status in investigation_base
+        ):
+            raise ValueError(
+                "investigation-ready modes require task, foundation, and repository state"
+            )
+        continuation_dimensions = (
+            *investigation_base,
+            self.readiness.semantic_delta,
+            self.readiness.change_intent,
+            self.readiness.production_flows,
+        )
+        if self.overall_mode in {
+            OperationalWorkspaceMode.CONTINUATION_READY,
+            OperationalWorkspaceMode.EXECUTION_READY,
+        } and any(
+            status not in {
+                OperationalReadinessStatus.READY,
+                OperationalReadinessStatus.NOT_APPLICABLE,
+            }
+            for status in continuation_dimensions
+        ):
+            raise ValueError(
+                "continuation-ready modes require every task, repository, change, "
+                "and production-flow lane"
+            )
+        if self.overall_mode is OperationalWorkspaceMode.EXECUTION_READY:
+            execution_dimensions = (
+                self.readiness.task_state,
+                self.readiness.durable_foundation,
+                self.readiness.repository_state,
+                self.readiness.semantic_delta,
+                self.readiness.change_intent,
+                self.readiness.production_flows,
+                self.readiness.verification,
+            )
+            if any(
+                status not in {
+                    OperationalReadinessStatus.READY,
+                    OperationalReadinessStatus.NOT_APPLICABLE,
+                }
+                for status in execution_dimensions
+            ):
+                raise ValueError(
+                    "execution-ready mode requires every applicable readiness lane"
+                )
+        return self
+
+
+class OperationalWorkspaceProjection(OperationalWorkspaceProjectionPayload):
+    package_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: OperationalWorkspaceProjectionPayload | dict[str, Any],
+    ) -> "OperationalWorkspaceProjection":
+        validated = OperationalWorkspaceProjectionPayload.model_validate(payload)
+        values = validated.model_dump(mode="python")
+        return cls(
+            **values,
+            package_sha256=operational_workspace_package_sha256(validated),
+        )
+
+    @model_validator(mode="after")
+    def validate_package_hash(self) -> "OperationalWorkspaceProjection":
+        expected = operational_workspace_package_sha256(self)
+        if self.package_sha256 != expected:
+            raise ValueError("operational workspace package SHA-256 does not match payload")
+        return self
+
+
+def operational_workspace_package_sha256(
+    value: OperationalWorkspaceProjectionPayload | OperationalWorkspaceProjection,
+) -> str:
+    payload = value.model_dump(mode="json", exclude={"package_sha256"})
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 class AuthoritativeRequest(_FrozenContract):
     request_verbatim: str
     request_normalized: str
@@ -1059,6 +1266,10 @@ class ContinuationExecutionContract(_FrozenContract):
     definition_of_done: tuple[str, ...]
     repository: RepositoryContract
     handoff: StructuredHandoff = Field(default_factory=StructuredHandoff)
+    operational_workspace: OperationalWorkspaceProjection | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     project_foundation: ProjectFoundationSnapshot | None = None
     project_context: tuple[ProjectContextItem, ...] = Field(
         default=(),
@@ -1215,6 +1426,33 @@ class ContinuationExecutionContract(_FrozenContract):
             raise ValueError("execution authority does not match task mode")
         if self.authority.allow_product_edits is not self.task_mode.allows_edits:
             raise ValueError("product edit authority does not match task mode")
+        if self.operational_workspace is not None:
+            repository_fingerprint = self.repository.status_fingerprint
+            if (
+                repository_fingerprint is not None
+                and self.operational_workspace.repository_snapshot_sha256
+                != repository_fingerprint
+            ):
+                raise ValueError(
+                    "operational workspace snapshot does not match repository contract"
+                )
+            if (
+                self.project_foundation is not None
+                and self.project_foundation.repository_fingerprint is not None
+                and self.operational_workspace.repository_snapshot_sha256
+                != self.project_foundation.repository_fingerprint
+            ):
+                raise ValueError(
+                    "operational workspace snapshot does not match project foundation"
+                )
+            if (
+                self.selected_task_lifecycle is SelectedTaskLifecycle.COMPLETED
+                and self.operational_workspace.overall_mode
+                is not OperationalWorkspaceMode.ORIENTATION_ONLY
+            ):
+                raise ValueError(
+                    "completed task references may provide orientation only"
+                )
         return self
 
 

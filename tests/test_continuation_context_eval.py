@@ -5,12 +5,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 from app.schemas.continuation_execution import (
     AtomicRequirement,
     ContinuationExecutionContract,
     ExecutionAuthority,
     FilesystemMode,
     HandoffReconciliation,
+    OperationalReadinessDimensions,
+    OperationalReadinessStatus,
+    OperationalWorkspaceMode,
+    OperationalWorkspaceProjection,
     ProjectContextItem,
     ProjectContextKind,
     ProjectContextProvenance,
@@ -134,6 +140,7 @@ def _contract(
     repository_evidence: tuple[RepositoryEvidenceItem, ...] = (),
     read_plan: tuple[ReadPlanItem, ...] = (),
     handoff: StructuredHandoff | None = None,
+    operational_workspace: OperationalWorkspaceProjection | None = None,
 ) -> ContinuationExecutionContract:
     mode = task_mode or infer_task_mode(request_text)
     task = build_authoritative_request(request_text)
@@ -191,6 +198,7 @@ def _contract(
             status_fingerprint=fingerprint,
         ),
         handoff=handoff or StructuredHandoff(),
+        operational_workspace=operational_workspace,
         project_foundation=project_foundation,
         project_context=project_context,
         repository_evidence=repository_evidence,
@@ -242,6 +250,90 @@ def _complete_foundation() -> tuple[ProjectContextItem, ...]:
             ),),
         ))
     return tuple(result)
+
+
+def _operational_eval_projection() -> OperationalWorkspaceProjection:
+    snapshot = "b" * 64
+    return OperationalWorkspaceProjection.from_payload({
+        "overall_mode": OperationalWorkspaceMode.INVESTIGATION_READY,
+        "foundation_schema_version": "workspace_foundation.v2",
+        "foundation_semantic_sha256": "c" * 64,
+        "foundation_artifact_sha256": "d" * 64,
+        "repository_snapshot_sha256": snapshot,
+        "readiness": OperationalReadinessDimensions(
+            task_state=OperationalReadinessStatus.READY,
+            durable_foundation=OperationalReadinessStatus.READY,
+            repository_state=OperationalReadinessStatus.READY,
+            semantic_delta=OperationalReadinessStatus.PARTIAL,
+            change_intent=OperationalReadinessStatus.MISSING,
+            production_flows=OperationalReadinessStatus.PARTIAL,
+            verification=OperationalReadinessStatus.PARTIAL,
+        ),
+        "repository_health": "unknown",
+        "changed_paths": ["app/services/continuation.py"],
+        "changes": [{
+            "path": "app/services/continuation.py",
+            "kind": "modified",
+            "scope": "worktree",
+            "role": "implementation",
+            "semantic_delta": {
+                "observer": "head_vs_worktree_syntax.v1",
+                "status": "partial",
+                "parser_coverage": "line_only",
+                "parser_languages": ["python"],
+                "base": "HEAD",
+                "lines_added": 28,
+                "lines_removed": 3,
+                "complete": False,
+            },
+            "evidence_ref_ids": ["ev.change"],
+        }],
+        "production_flows": [{
+            "id": "flow.continuation",
+            "name": "Prepare continuation",
+            "capability_ids": ["cap.continuation"],
+            "snapshot": snapshot,
+            "entrypoint": {
+                "kind": "entrypoint",
+                "path": "app/api/continuations.py",
+                "symbol": "prepare_continuation",
+                "evidence_ref_ids": ["ev.flow"],
+            },
+            "service": [{
+                "kind": "service",
+                "path": "app/services/continuation.py",
+                "symbol": "ContinuationService.prepare",
+                "evidence_ref_ids": ["ev.flow"],
+            }],
+            "complete": False,
+            "gaps": ["Persistence and output are not proved."],
+            "evidence_ref_ids": ["ev.flow"],
+        }],
+        "verification_runs": [{
+            "id": "run.pytest",
+            "command": "pytest tests/test_continuation_execution_contract.py",
+            "working_directory": ".",
+            "snapshot": snapshot,
+            "exit_code": 0,
+            "result": "passed",
+            "observed_at": datetime(2026, 8, 10, tzinfo=UTC),
+            "output_sha256": "e" * 64,
+            "evidence_ref_ids": ["ev.verify"],
+        }],
+        "gaps": [
+            "No trusted change-intent record is included; do not infer intent from the diff.",
+            "Only partial production flows are included; honor their named gaps.",
+        ],
+    })
+
+
+def test_continuation_ready_label_rejects_partial_operational_lanes() -> None:
+    projection = _operational_eval_projection()
+    payload = projection.model_dump(mode="python", exclude={"package_sha256"})
+    payload["overall_mode"] = OperationalWorkspaceMode.CONTINUATION_READY
+
+    with pytest.raises(ValueError, match="continuation-ready modes require"):
+        OperationalWorkspaceProjection.from_payload(payload)
 
 
 def _first_action(markdown: str) -> str:
@@ -420,6 +512,42 @@ def test_complete_foundation_renders_only_populated_sections() -> None:
     assert _blank_placeholder_count(rendered) == 0
     for heading in PROJECT_FOUNDATION_REQUIRED_HEADINGS[1:5]:
         assert heading in rendered
+
+
+def test_operational_projection_keeps_weak_model_readiness_investigative() -> None:
+    task_state = "Continue the composite package from the current compiler boundary."
+    contract = _contract(
+        "Finish the composite continuation package and verify it.",
+        project_context=_complete_foundation(),
+        operational_workspace=_operational_eval_projection(),
+        handoff=StructuredHandoff(
+            in_progress=(StructuredHandoffItem(
+                id="active-package-work",
+                statement=task_state,
+                truth_state="agent_reported",
+            ),),
+        ),
+    )
+    rendered = render_continuation_staging_context(contract)
+
+    assert "Overall mode: `investigation_ready`" in rendered
+    assert "task=ready" in rendered
+    assert "semantic-delta=partial" in rendered
+    assert "change-intent=missing" in rendered
+    assert "production-flow=partial" in rendered
+    assert "verification=partial" in rendered
+    assert "`app/services/continuation.py`" in rendered
+    assert "Prepare continuation — `partial`" in rendered
+    assert "Persistence and output are not proved." in rendered
+    assert "`passed` — `cd . && pytest tests/test_continuation_execution_contract.py`" in rendered
+    assert "No trusted change-intent record is included" in rendered
+    assert "Overall mode: `continuation_ready`" not in rendered
+    assert "Overall mode: `execution_ready`" not in rendered
+    assert "Task state: authoritative lead/MUST below" in rendered
+    assert task_state not in rendered
+    assert rendered.index("## Operational continuation package") < rendered.index(
+        "### Definition of done"
+    )
 
 
 async def test_license_self_host_lead_has_relevant_paths_and_specific_actions(
