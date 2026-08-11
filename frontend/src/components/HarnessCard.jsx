@@ -16,6 +16,9 @@ import {
 const HARNESS_FAN_POSITIONS = ["left", "center", "right"];
 const HARNESS_FAN_ROTATIONS = [-7, 0, 7];
 const HARNESS_FAN_Z_INDEX = [10, 20, 10];
+const CONTINUATION_CARD_INK = "#171713";
+const CONTINUATION_CARD_GLOW = "rgba(23,23,19,0.14)";
+const CONTINUATION_CARD_READY_LINE = "#10B981";
 const CONTINUATION_ARTWORK_GOLD = "#D4AF37";
 
 
@@ -24,22 +27,30 @@ function HarnessCardFrame({
   type,
   children,
   className = "",
+  accentColor = "",
+  accentLineColor = "",
   artworkClassName = "",
   artworkColor = "",
   artworkContainerClassName = "",
   accentActive = false,
   monochrome = false,
   surface = "light",
+  tinted = true,
   style,
   ...rootProps
 }) {
   const meta = harnessMeta(type);
-  const accent = monochrome ? "#9a9a92" : meta.accent;
+  const accent = accentColor || (monochrome ? "#9a9a92" : meta.accent);
+  const accentLine = accentLineColor || accent;
   const accentSoft = monochrome ? "rgba(154,154,146,0.11)" : meta.accentSoft;
   const glow = monochrome ? "rgba(255,255,255,0.08)" : meta.glow;
   const surfaceClass = surface === "dark"
     ? "bg-[#171715] text-white"
-    : "bg-[#fbfbf6] dark:bg-[#141411]";
+    : surface === "glass"
+      ? "bg-[#fbfbf6]/50 text-[#171713] backdrop-blur-xl backdrop-saturate-150"
+    : surface === "paper"
+      ? "bg-[#fbfbf6] text-[#171713]"
+      : "bg-[#fbfbf6] dark:bg-[#141411]";
   const buttonProps = Root === "button" ? { type: "button" } : {};
   const focusClass = Root === "button"
     ? "focus-visible:ring-2 focus-visible:ring-offset-4 focus-visible:ring-offset-[#f7f7f2] dark:focus-visible:ring-offset-[#0d0d0b]"
@@ -49,21 +60,27 @@ function HarnessCardFrame({
       {...buttonProps}
       data-harness={type}
       data-monochrome={monochrome ? "true" : "false"}
+      data-card-surface={surface}
+      data-card-tone={tinted ? "provider" : "neutral"}
       className={`group relative overflow-hidden border text-left outline-none transition-[transform,border-color,box-shadow,background-color] duration-500 ease-out motion-reduce:transition-none ${focusClass} ${surfaceClass} ${className}`}
       style={{ "--tw-ring-color": accent, ...style }}
       {...rootProps}
     >
+      {tinted ? (
+        <span
+          aria-hidden="true"
+          data-card-tint="provider"
+          className="absolute inset-0"
+          style={{
+            background: `linear-gradient(150deg, ${accentSoft} 0%, transparent 48%), radial-gradient(circle at 92% 8%, ${glow}, transparent 46%)`,
+          }}
+        />
+      ) : null}
       <span
         aria-hidden="true"
-        className="absolute inset-0"
-        style={{
-          background: `linear-gradient(150deg, ${accentSoft} 0%, transparent 48%), radial-gradient(circle at 92% 8%, ${glow}, transparent 46%)`,
-        }}
-      />
-      <span
-        aria-hidden="true"
+        data-card-accent-line="true"
         className="absolute inset-x-0 top-0 h-1 origin-left scale-x-50 transition-transform duration-500 motion-reduce:transition-none group-hover:scale-x-100 group-focus-visible:scale-x-100 group-focus-within:scale-x-100"
-        style={{ backgroundColor: accent, transform: accentActive ? "scaleX(1)" : undefined }}
+        style={{ backgroundColor: accentLine, transform: accentActive ? "scaleX(1)" : undefined }}
       />
       <span
         aria-hidden="true"
@@ -208,12 +225,12 @@ export function HarnessContinuationCard({
     || provider.code === "desktop_account_rate_limited"
   );
   const statusTone = pending || (ready && !accountAttention)
-    ? "border-emerald-800/25 bg-emerald-800/10 text-emerald-950 dark:border-emerald-200/20 dark:bg-emerald-200/10 dark:text-emerald-100"
+    ? "border-emerald-500/60 bg-emerald-200 text-emerald-950 shadow-[0_5px_16px_rgba(16,185,129,0.24)]"
     : accountAttention
-      ? "border-amber-700/20 bg-amber-600/10 text-amber-950 dark:border-amber-200/20 dark:bg-amber-200/10 dark:text-amber-100"
+      ? "border-amber-500/60 bg-amber-200 text-amber-950 shadow-[0_5px_16px_rgba(245,158,11,0.22)]"
     : checking
-      ? "border-white/15 bg-white/[0.06] text-white/70"
-      : "border-amber-200/20 bg-amber-200/10 text-amber-100";
+      ? "border-[#171713]/15 bg-[#171713]/[0.06] text-[#171713]"
+      : "border-amber-500/60 bg-amber-200 text-amber-950 shadow-[0_5px_16px_rgba(245,158,11,0.22)]";
   const message = provider.message || (
     ready
       ? `Request a visible ${meta.name} desktop composer. Nothing is submitted.`
@@ -239,8 +256,7 @@ export function HarnessContinuationCard({
   );
   const active = hovered || pending || handoffRequested;
   const baseRotation = HARNESS_FAN_ROTATIONS[index] || 0;
-  const cardNumber = String(index + 1).padStart(2, "0");
-  const accent = ready ? meta.accent : "#a0a098";
+  const accent = CONTINUATION_CARD_INK;
   const handleContinue = () => {
     onContinue(type);
   };
@@ -263,8 +279,12 @@ export function HarnessContinuationCard({
       onFocusCapture={onHover}
       monochrome={!ready}
       accentActive={pending || handoffRequested}
+      accentColor={CONTINUATION_CARD_INK}
+      accentLineColor={ready ? CONTINUATION_CARD_READY_LINE : CONTINUATION_CARD_INK}
+      surface="glass"
+      tinted={false}
       artworkColor={ready ? CONTINUATION_ARTWORK_GOLD : ""}
-      className={`daemonstate-harness-fan-card daemonstate-provider-card h-[23rem] min-h-[23rem] w-[calc(100vw-4rem)] max-w-[280px] shrink-0 snap-center snap-always rounded-[26px] sm:h-[24rem] sm:min-h-[24rem] sm:w-[280px] sm:rounded-[32px] ${ready ? "border-[#cecec3] text-[#171713] dark:border-[#3a3a33] dark:text-white" : "border-[#bcbcb3] text-[#34342f] dark:border-[#77776f] dark:text-white"} ${workflowPending ? "cursor-wait" : disabled ? "cursor-not-allowed" : ""} ${contextBlocked && ready ? "saturate-[0.72]" : ""}`}
+      className={`daemonstate-harness-fan-card daemonstate-provider-card h-[23rem] min-h-[23rem] w-[calc(100vw-4rem)] max-w-[280px] shrink-0 snap-center snap-always rounded-[26px] text-[#171713] sm:h-[24rem] sm:min-h-[24rem] sm:w-[280px] sm:rounded-[32px] ${ready ? "border-[#cecec3]/70 dark:border-white/50" : "border-[#bcbcb3]/70 dark:border-white/50"} ${workflowPending ? "cursor-wait" : disabled ? "cursor-not-allowed" : ""} ${contextBlocked && ready ? "saturate-[0.72]" : ""}`}
       artworkContainerClassName="-right-[16%] top-[7%] h-[46%] w-[78%]"
       style={{
         zIndex: active ? 40 : HARNESS_FAN_Z_INDEX[index] || 10,
@@ -274,8 +294,8 @@ export function HarnessContinuationCard({
         "--daemonstate-card-scale": active ? 1.035 : 1,
         borderColor: active ? accent : undefined,
         boxShadow: active
-          ? `0 28px 70px ${ready ? meta.glow : "rgba(23,23,19,0.10)"}, 0 16px 34px rgba(0,0,0,0.18)`
-          : "0 16px 34px rgba(0,0,0,0.24)",
+          ? `inset 0 1px 0 rgba(255,255,255,0.90), 0 28px 70px ${CONTINUATION_CARD_GLOW}, 0 16px 34px rgba(0,0,0,0.18)`
+          : "inset 0 1px 0 rgba(255,255,255,0.82), 0 16px 34px rgba(0,0,0,0.24)",
         transitionDelay: hovered ? "0ms" : `${index * 35}ms`,
       }}
     >
@@ -297,23 +317,15 @@ export function HarnessContinuationCard({
         style={{ "--tw-ring-color": accent }}
       >
         <span className="absolute inset-x-0 top-0 flex items-start justify-between px-4 pt-4 sm:px-5 sm:pt-5">
-          <span>
-            <span className="block font-mono text-lg font-black leading-none sm:text-2xl" style={{ color: accent }}>
-              {cardNumber}
-            </span>
-            <span className={`mt-1 block text-xs font-black uppercase tracking-[0.16em] ${ready ? "text-[#68685f] dark:text-[#b8b8af]" : "text-[#68685f] dark:text-white/65"}`}>
-              {meta.company}
-            </span>
+          <span className="block text-xs font-black uppercase tracking-[0.16em] text-[#171713]">
+            {meta.company}
           </span>
           <span className="flex flex-col items-end gap-1.5">
             {sessionOrdinal ? (
               <span
                 title={sessionTitle ? `Selected session ${sessionOrdinal}: ${sessionTitle}` : `Selected session ${sessionOrdinal}`}
-                className="inline-flex min-h-7 items-center gap-1.5 rounded-full border border-[#171713]/15 bg-white/80 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.08em] text-[#171713] shadow-[0_5px_16px_rgba(23,23,19,0.10)] backdrop-blur-md dark:border-white/15 dark:bg-black/35 dark:text-white"
+                className="inline-flex min-h-7 items-center rounded-full border border-[#171713]/15 bg-white/80 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.08em] text-[#171713] shadow-[0_5px_16px_rgba(23,23,19,0.10)] backdrop-blur-md"
               >
-                <span className="grid h-4 min-w-4 place-items-center rounded-full bg-[#171713] px-0.5 font-mono text-[8px] text-white dark:bg-[#d9ff68] dark:text-[#171713]">
-                  {sessionOrdinal}
-                </span>
                 Session
               </span>
             ) : null}
@@ -326,7 +338,7 @@ export function HarnessContinuationCard({
                 {compactionRequirementLabel}
               </span>
             ) : null}
-            <span className={`inline-flex min-h-7 items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.12em] backdrop-blur-md sm:text-xs ${ready ? statusTone : "border-[#c8c8bf] bg-white/65 text-[#5f5f57] dark:border-white/20 dark:bg-white/[0.07] dark:text-white/75"}`}>
+            <span className={`inline-flex min-h-7 items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.12em] backdrop-blur-md sm:text-xs ${ready ? statusTone : "border-[#171713]/20 bg-white/80 text-[#171713]"}`}>
               {pending || checking
                 ? <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
                 : ready && !accountAttention
@@ -337,35 +349,37 @@ export function HarnessContinuationCard({
           </span>
         </span>
 
-        <span className={`absolute inset-x-0 bottom-0 flex min-h-[72%] flex-col justify-end px-4 pb-4 pt-8 sm:px-5 ${ready ? "bg-gradient-to-t from-[#fbfbf6] via-[#fbfbf6]/95 to-[#fbfbf6]/35 dark:from-[#141411] dark:via-[#141411]/95 dark:to-[#141411]/30" : "bg-gradient-to-t from-[#fbfbf6] via-[#fbfbf6]/95 to-[#fbfbf6]/35 dark:from-[#171715] dark:via-[#171715]/95 dark:to-[#171715]/35"}`}>
+        <span
+          data-card-glass-body="true"
+          className="absolute inset-x-0 bottom-0 flex min-h-[72%] flex-col justify-end bg-gradient-to-t from-[#fbfbf6]/55 via-[#fbfbf6]/25 to-transparent px-4 pb-4 pt-8 text-[#171713] sm:px-5"
+        >
           <span className="block text-lg font-black leading-tight tracking-[-0.035em] sm:text-2xl">
             {meta.name}
           </span>
           <span
             id={`continuation-provider-${type}-detail`}
-            className={`mt-1.5 block text-xs font-semibold leading-5 ${ready ? "text-[#68685f] dark:text-[#aaa9a0]" : "text-[#68685f] dark:text-white/75"}`}
+            className="mt-1.5 block text-xs font-semibold leading-5 text-[#171713]"
           >
             <span className={contextBlocked ? "line-clamp-1" : "line-clamp-2"}>{message}</span>
             {taskBlocked ? (
-              <span className="mt-1.5 line-clamp-2 rounded-lg border border-amber-700/20 bg-amber-600/10 px-2 py-1.5 text-amber-950 dark:border-amber-200/20 dark:bg-amber-200/10 dark:text-amber-100">
+              <span className="mt-1.5 line-clamp-2 rounded-lg border border-amber-700/20 bg-amber-600/10 px-2 py-1.5 text-[#171713]">
                 <strong>Task required:</strong> {taskRequirementMessage}
               </span>
             ) : null}
           </span>
           {!ready && provider.action ? (
-            <span className="mt-1.5 line-clamp-2 text-xs font-semibold leading-5 text-[#77776e] dark:text-white/60">
+            <span className="mt-1.5 line-clamp-2 text-xs font-semibold leading-5 text-[#171713]">
               Next: {provider.action}
             </span>
           ) : null}
           <span
             className={`mt-3 flex min-h-11 items-center justify-between border-t pt-2.5 text-xs font-black uppercase tracking-[0.12em] ${
               taskBlocked
-                ? "border-amber-800/20 text-amber-900 dark:border-amber-200/20 dark:text-amber-100"
+                ? "border-amber-800/20 text-[#171713]"
                 : ready
-                  ? "border-[#d8d8cf]/80 dark:border-[#3a3a34]"
-                  : "border-[#d8d8cf]/80 text-[#68685f] dark:border-white/15 dark:text-white/55"
+                  ? "border-[#d8d8cf]/80 text-[#171713]"
+                  : "border-[#d8d8cf]/80 text-[#171713]"
             }`}
-            style={{ color: ready && taskReady ? accent : undefined }}
           >
             {pending
               ? `Requesting ${meta.name}…`
@@ -390,9 +404,6 @@ export function HarnessContinuationCard({
           </span>
         </span>
 
-        <span aria-hidden="true" className="absolute bottom-3 right-3 rotate-180 font-mono text-sm font-black opacity-20 sm:bottom-4 sm:right-4 sm:text-base" style={{ color: accent }}>
-          {cardNumber}
-        </span>
       </button>
     </HarnessCardFrame>
   );
