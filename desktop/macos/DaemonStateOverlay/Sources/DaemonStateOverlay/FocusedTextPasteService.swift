@@ -3,7 +3,7 @@ import ApplicationServices
 
 enum PasteDeliveryOutcome: Equatable {
     case pasted
-    case copiedOnly(String)
+    case notPasted(String)
 }
 
 enum PasteDeliveryError: LocalizedError {
@@ -16,9 +16,9 @@ enum PasteDeliveryError: LocalizedError {
         case .clipboardUnavailable:
             return "The verified context could not be written to the clipboard."
         case .clipboardChanged:
-            return "The clipboard changed before paste. Click the control to try again."
+            return "The clipboard changed before automatic paste. Click the control to try again."
         case .keyboardEventUnavailable:
-            return "The context was copied, but macOS could not create the paste command."
+            return "macOS could not create the automatic paste command."
         }
     }
 }
@@ -26,6 +26,7 @@ enum PasteDeliveryError: LocalizedError {
 @MainActor
 protocol AccessibilityElementClient: AnyObject {
     func isTrusted(prompt: Bool) -> Bool
+    func frontmostProcessIdentifier() -> pid_t?
     func focusedElement() -> AXUIElement?
     func processIdentifier(for element: AXUIElement) -> pid_t?
     func stringAttribute(
@@ -54,6 +55,10 @@ final class SystemAccessibilityElementClient: AccessibilityElementClient {
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         let options = [key: prompt] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
+    }
+
+    func frontmostProcessIdentifier() -> pid_t? {
+        NSWorkspace.shared.frontmostApplication?.processIdentifier
     }
 
     func focusedElement() -> AXUIElement? {
@@ -152,12 +157,17 @@ extension NSPasteboard: TextPasteboard {}
 final class FocusedTextPasteService {
     enum TargetCapture {
         case editable(FocusedTarget)
+        case application(ApplicationTarget)
         case accessibilityUnavailable
         case unavailable(String)
     }
 
     struct FocusedTarget {
         fileprivate let element: AXUIElement
+        fileprivate let processIdentifier: pid_t
+    }
+
+    struct ApplicationTarget {
         fileprivate let processIdentifier: pid_t
     }
 
@@ -185,18 +195,43 @@ final class FocusedTextPasteService {
         guard accessibility.isTrusted(prompt: false) else {
             return .accessibilityUnavailable
         }
-        guard let element = accessibility.focusedElement(),
-              let processIdentifier = accessibility.processIdentifier(for: element),
-              processIdentifier != ProcessInfo.processInfo.processIdentifier,
-              isEditable(element)
-        else {
-            return .unavailable("Copied — focus an editable chat box to paste.")
+        let ownProcessIdentifier = ProcessInfo.processInfo.processIdentifier
+        let frontmostProcessIdentifier = accessibility.frontmostProcessIdentifier()
+        if let element = accessibility.focusedElement(),
+           let processIdentifier = accessibility.processIdentifier(for: element),
+           processIdentifier != ownProcessIdentifier {
+            guard !isProtectedPasteTarget(element) else {
+                return .unavailable(
+                    "Automatic paste is disabled for secure and search fields."
+                )
+            }
+            if isEditable(element) {
+                return .editable(
+                    FocusedTarget(
+                        element: element,
+                        processIdentifier: processIdentifier
+                    )
+                )
+            }
+            if frontmostProcessIdentifier == nil
+                || frontmostProcessIdentifier == processIdentifier
+            {
+                return .application(
+                    ApplicationTarget(processIdentifier: processIdentifier)
+                )
+            }
         }
-        return .editable(
-            FocusedTarget(
-                element: element,
-                processIdentifier: processIdentifier
+
+        if let frontmostProcessIdentifier,
+           frontmostProcessIdentifier != ownProcessIdentifier {
+            return .application(
+                ApplicationTarget(
+                    processIdentifier: frontmostProcessIdentifier
+                )
             )
+        }
+        return .unavailable(
+            "Automatic paste could not find a target chat box."
         )
     }
 
@@ -208,33 +243,60 @@ final class FocusedTextPasteService {
         _ content: String,
         to capture: TargetCapture
     ) async throws -> PasteDeliveryOutcome {
+        switch capture {
+        case .editable(_), .application(_):
+            break
+        case .accessibilityUnavailable:
+            return .notPasted(
+                "Allow Accessibility access to paste automatically."
+            )
+        case let .unavailable(message):
+            return .notPasted(message)
+        }
+
         pasteboard.clearContents()
         guard pasteboard.setString(content, forType: .string) else {
             throw PasteDeliveryError.clipboardUnavailable
         }
         let verifiedChangeCount = pasteboard.changeCount
 
-        let target: FocusedTarget
         switch capture {
         case let .editable(capturedTarget):
-            target = capturedTarget
-        case .accessibilityUnavailable:
-            return .copiedOnly(
-                "Copied — allow Accessibility access to paste automatically."
+            guard targetIsStillFocused(capturedTarget) else {
+                return .notPasted(
+                    "The target chat box changed before automatic paste."
+                )
+            }
+            if await insertAtFocusedSelection(
+                content,
+                target: capturedTarget
+            ) {
+                return .pasted
+            }
+            return try await pasteWithCommandV(
+                content,
+                verifiedChangeCount: verifiedChangeCount,
+                processIdentifier: capturedTarget.processIdentifier,
+                exactTarget: capturedTarget
             )
-        case let .unavailable(message):
-            return .copiedOnly(message)
-        }
-
-        guard targetIsStillFocused(target) else {
-            return .copiedOnly(
-                "Copied — the focused chat box changed before paste."
+        case let .application(applicationTarget):
+            return try await pasteWithCommandV(
+                content,
+                verifiedChangeCount: verifiedChangeCount,
+                processIdentifier: applicationTarget.processIdentifier,
+                exactTarget: nil
             )
+        case .accessibilityUnavailable, .unavailable:
+            preconditionFailure("Unavailable targets return before clipboard delivery")
         }
-        if await insertAtFocusedSelection(content, target: target) {
-            return .pasted
-        }
+    }
 
+    private func pasteWithCommandV(
+        _ content: String,
+        verifiedChangeCount: Int,
+        processIdentifier: pid_t,
+        exactTarget: FocusedTarget?
+    ) async throws -> PasteDeliveryOutcome {
         // Give the pasteboard change a moment to become visible to the target
         // process while the non-activating overlay leaves its focus untouched.
         try? await Task.sleep(for: .milliseconds(45))
@@ -243,17 +305,43 @@ final class FocusedTextPasteService {
               pasteboard.string(forType: .string) == content else {
             throw PasteDeliveryError.clipboardChanged
         }
-        // Keep the exact AX target check as the final operation before
-        // posting, minimizing the remaining same-process focus race.
-        guard targetIsStillFocused(target) else {
-            return .copiedOnly(
-                "Copied — the focused chat box changed before paste."
-            )
+        if let exactTarget {
+            guard targetIsStillFocused(exactTarget) else {
+                return .notPasted(
+                    "The target chat box changed before automatic paste."
+                )
+            }
+        } else {
+            guard applicationTargetIsStillSafe(processIdentifier) else {
+                return .notPasted(
+                    "The target app changed before automatic paste."
+                )
+            }
         }
-        guard postCommandV(target.processIdentifier) else {
+        guard postCommandV(processIdentifier) else {
             throw PasteDeliveryError.keyboardEventUnavailable
         }
         return .pasted
+    }
+
+    private func applicationTargetIsStillSafe(
+        _ processIdentifier: pid_t
+    ) -> Bool {
+        guard accessibility.frontmostProcessIdentifier() == processIdentifier
+        else {
+            return false
+        }
+        guard let current = accessibility.focusedElement() else {
+            // Electron/web chat editors do not always publish an AX-focused
+            // element even while they still own keyboard focus. Command-V to
+            // their verified frontmost PID remains the reliable insertion path.
+            return true
+        }
+        guard accessibility.processIdentifier(for: current) == processIdentifier
+        else {
+            return false
+        }
+        return !isProtectedPasteTarget(current)
     }
 
     private func targetIsStillFocused(_ target: FocusedTarget) -> Bool {
@@ -299,13 +387,7 @@ final class FocusedTextPasteService {
             kAXRoleAttribute as CFString,
             from: element
         )
-        let subrole = accessibility.stringAttribute(
-            kAXSubroleAttribute as CFString,
-            from: element
-        )
-        guard !["AXSecureTextField", "AXSearchField"].contains(subrole) else {
-            return false
-        }
+        guard !isProtectedPasteTarget(element) else { return false }
 
         let allowedRoles: Set<String> = [
             kAXTextAreaRole as String,
@@ -333,6 +415,14 @@ final class FocusedTextPasteService {
             kAXValueAttribute as CFString,
             on: element
         )
+    }
+
+    private func isProtectedPasteTarget(_ element: AXUIElement) -> Bool {
+        let subrole = accessibility.stringAttribute(
+            kAXSubroleAttribute as CFString,
+            from: element
+        )
+        return ["AXSecureTextField", "AXSearchField"].contains(subrole)
     }
 
     private static func postCommandV(to processIdentifier: pid_t) -> Bool {

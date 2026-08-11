@@ -157,6 +157,11 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
         let promptButton = panelController.promptMenuButton
         promptButton.onPress = { [weak self, weak promptButton] in
             guard let self, let promptButton else { return }
+            if self.promptDropdownController.isShown {
+                self.pendingPasteTarget = nil
+            } else {
+                self.capturePasteTarget()
+            }
             self.togglePromptDropdown(relativeTo: promptButton)
         }
         promptDropdownController.onRefresh = { [weak self] in
@@ -290,10 +295,11 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
                         relativeTo: panel,
                         dismissAfter: 1.8
                     )
-                case let .copiedOnly(message):
-                    self.setVisualState(.success, resetAfter: 1.1)
+                case let .notPasted(message):
+                    self.setVisualState(.failure, resetAfter: 1.35)
                     self.statusController.show(
                         message,
+                        tone: .failure,
                         relativeTo: panel,
                         dismissAfter: 3.2
                     )
@@ -310,7 +316,9 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func insertSelectedPrompts() {
+    private func insertSelectedPrompts(
+        clearSelectionAfterPaste: Bool = false
+    ) {
         guard !busy,
               let target = pendingPasteTarget,
               let api,
@@ -337,7 +345,13 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
 
         Task { [weak self] in
             guard let self else { return }
-            defer { self.busy = false }
+            defer {
+                self.busy = false
+                if clearSelectionAfterPaste {
+                    self.promptSelection.clear()
+                    self.applyPromptSelectionVisuals()
+                }
+            }
             do {
                 let outcome = try await self.pasteService.deliver(
                     selection.combinedContent,
@@ -362,9 +376,11 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
                         relativeTo: panel,
                         dismissAfter: 1.8
                     )
-                case let .copiedOnly(message):
+                case let .notPasted(message):
+                    self.setVisualState(.failure, resetAfter: 1.35)
                     self.statusController.show(
                         message,
+                        tone: .failure,
                         relativeTo: panel,
                         dismissAfter: 3.2
                     )
@@ -382,7 +398,6 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func togglePromptDropdown(relativeTo button: NSView) {
-        pendingPasteTarget = nil
         guard !busy else {
             if let panel = panelController?.window {
                 statusController.show(
@@ -425,30 +440,14 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func togglePrompt(_ prompt: PromptSnippet) {
+        guard !busy else { return }
         if preferredWorkspaceID != prompt.workspaceID {
             selectWorkspace(prompt.workspaceID)
         }
-        let selected = promptSelection.toggle(prompt)
+        promptSelection.clear()
+        _ = promptSelection.toggle(prompt)
         applyPromptSelectionVisuals()
-        guard let panel = panelController?.window else { return }
-        if promptSelection.isActive {
-            let count = promptSelection.count
-            let noun = count == 1 ? "prompt" : "prompts"
-            statusController.show(
-                selected
-                    ? "\(count) \(noun) ready to paste"
-                    : "\(count) \(noun) still selected",
-                tone: .success,
-                relativeTo: panel,
-                dismissAfter: 1.7
-            )
-        } else {
-            statusController.show(
-                "Prompt mode off — context mode restored",
-                relativeTo: panel,
-                dismissAfter: 1.9
-            )
-        }
+        insertSelectedPrompts(clearSelectionAfterPaste: true)
     }
 
     private func applyPromptSelectionVisuals() {

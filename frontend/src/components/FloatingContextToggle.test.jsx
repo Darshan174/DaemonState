@@ -181,11 +181,46 @@ describe("FloatingContextToggle", () => {
       />,
     );
 
-    expect(screen.getByLabelText("2 custom sessions synced")).toBeInTheDocument();
+    const syncedSessions = screen.getByLabelText("2 custom sessions synced");
+    expect(syncedSessions).toBeInTheDocument();
+    expect(syncedSessions.querySelector('[data-harness-logo="codex"]')).toHaveAttribute(
+      "data-harness-logo-treatment",
+      "soft",
+    );
+    expect(syncedSessions.querySelector('[data-harness-logo="claude"]')).toHaveAttribute(
+      "data-harness-logo-treatment",
+      "anthropic-filled",
+    );
     fireEvent.click(screen.getByRole("switch", {
       name: "Floating context control",
     }));
 
+    expect(mocks.visibility.mutate).toHaveBeenCalledWith({
+      visible: true,
+      workspaceId: "workspace-1",
+      selectedSessions,
+    });
+  });
+
+  it("can hide the duplicate session summary while retaining the synced payload", () => {
+    const selectedSessions = [{
+      provider: "codex",
+      session_id: "session-one",
+      title: "Release task",
+      ordinal: 1,
+    }];
+    render(
+      <FloatingContextToggle
+        workspaceId="workspace-1"
+        selectedSessions={selectedSessions}
+        showSessionSummary={false}
+      />,
+    );
+
+    expect(screen.queryByLabelText("1 custom session synced")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("switch", {
+      name: "Floating context control",
+    }));
     expect(mocks.visibility.mutate).toHaveBeenCalledWith({
       visible: true,
       workspaceId: "workspace-1",
@@ -279,5 +314,37 @@ describe("FloatingContextToggle", () => {
     );
 
     expect(mocks.visibility.mutate).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not keep showing an error from a superseded session selection", () => {
+    mocks.status.data = {
+      available: true,
+      visible: true,
+      workspace_id: "workspace-1",
+      selected_sessions: [],
+    };
+    mocks.visibility.variables = {
+      visible: true,
+      workspaceId: "workspace-1",
+      selectedSessions: [{
+        provider: "codex",
+        session_id: "stale-session",
+        title: "Stale session",
+        ordinal: 1,
+      }],
+    };
+    mocks.visibility.error = new Error(
+      "A selected session is not available in the requested workspace's session library.",
+    );
+
+    render(
+      <FloatingContextToggle
+        workspaceId="workspace-1"
+        selectedSessions={[]}
+      />,
+    );
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText("On")).toBeInTheDocument();
   });
 });
