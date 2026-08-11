@@ -9,17 +9,15 @@ understand a displayed claim or an explicit unknown.
 
 ## v2 first-class record contract
 
-`workspace_foundation.v2` is the current schema and its integrity validators
-include the first-class fields described below. The default compiler and
-renderer in this checkout do not yet populate or project these four new lanes;
-they continue to emit the existing typed command, implementation-trace,
-repository-change, and durable-knowledge lanes. The records in this section are
-therefore normative admission requirements for completing v2 population, not a
-claim that a non-empty `verification_runs`, `production_flows`,
-`change_intents`, or `durable_facts` collection is already produced. A command
-result, implementation trace, changed-file annotation, or durable-knowledge
-item does not become its first-class counterpart merely because the fields look
-similar; it must pass the admission rules below.
+`workspace_foundation.v2` is the current schema. The default compiler now
+projects admitted command executions, entrypoint-backed code traces, dirty
+change groups, and promoted Project Foundation knowledge into the first-class
+`verification_runs`, `production_flows`, `change_intents`, and `durable_facts`
+lanes. Empty lanes remain explicit. Projection is not semantic promotion: a
+partial code trace stays partial, a dirty group has unknown intent until a
+trusted task/plan source supplies it, and an unverified command never becomes a
+run. Payload validation binds every operational record to the same repository
+snapshot and enforces field-level evidence tiers.
 
 ### `verification_run`
 
@@ -29,8 +27,8 @@ The minimum semantic record is:
 verification_run:
   command: string
   snapshot: repository_snapshot_fingerprint
-  exit_code: integer | null
-  result: passed | failed | blocked | timed_out
+  exit_code: integer
+  result: passed | failed | blocked
   failures: [bounded_structured_failure]
 ```
 
@@ -44,15 +42,13 @@ verification observation agrees with a complete local-harness outcome and that
 repository-after state exactly matches the frame being compiled. A caller may
 not bypass this boundary by constructing a result-shaped object.
 
-`result` is derived from the persisted timeout state and exit result, never
-copied from prose. `passed` requires a completed command with exit code zero
-and no reported failures. A non-zero exit, timeout, or missing process result
-cannot be represented as `passed`. `exit_code` is null only when the process did
-not produce one. `failures` contains bounded, structured failure identifiers or
-safe summaries supplied by the execution contract; raw stdout and stderr are
-not copied into Workspace Context. An empty `failures` list on a failed or
-blocked run means that no safe structured detail was available, not that the
-command succeeded. Output and payload digests remain available for audit.
+`result` is derived from the persisted exit result, never copied from prose.
+`passed` requires a completed command with exit code zero and no failures.
+Timeouts and missing process results remain representable in the lower-level
+command observation but are not admitted as first-class current runs until an
+exit result exists. Failed and blocked runs require bounded safe failure detail;
+raw stdout and stderr are not copied into Workspace Context. Output and payload
+digests remain available for audit.
 
 Root, branch, HEAD, dirty-state, status-entry, path, content-digest, outcome,
 row, or observation-index disagreement rejects the run. Truncated scans,
@@ -80,7 +76,7 @@ production_flow:
   persistence: typed_endpoint
   compiler: typed_endpoint
   output: typed_endpoint
-  proof: static | execution_verified
+  proof: code_observed | test_verified | runtime_verified
 ```
 
 Each stage names an exact repository path and symbol, route, datastore
@@ -92,12 +88,13 @@ through service orchestration, a proved persistence read or write, the exact
 compiler call, and the returned or rendered output. Calling a function and
 discarding its value does not establish request-to-output continuity.
 
-`proof=static` means the current hash-bound source proves the call, data, and
+`proof=code_observed` means the current hash-bound source proves the call, data, and
 return relationships. It does not mean the path ran, a branch was selected, or
-an external effect succeeded. `proof=execution_verified` additionally requires
-a current snapshot-bound integration or runtime observation tied to the same
-flow endpoints. Test-file presence, a test edge, a unit-test pass, or an
-unscoped broad-suite pass cannot perform that upgrade.
+an external effect succeeded. `proof=test_verified` or `proof=runtime_verified`
+additionally requires a current snapshot-bound integration or runtime
+observation tied to the same flow endpoints. Test-file presence, a test edge,
+an unrelated unit-test pass, or an unscoped broad-suite pass cannot perform
+that upgrade.
 
 If persistence, compiler, output, or any connecting hop is absent, ambiguous,
 unsupported, or truncated, the record remains partial and names the exact gap;
@@ -174,7 +171,7 @@ pass one of these promotion gates; documentation placement by itself does not
 make a durable workspace fact. Exclusions retain bounded reason counts so an
 empty durable lane is distinguishable from an unattempted scan.
 
-## Planned v2 projection policy
+## Default v2 projection policy
 
 The machine-readable artifact may retain generic imports, import-only
 dependency traces, generic module relationships, test-path edges, and
@@ -199,7 +196,7 @@ The diagnostic option changes presentation only; it does not promote evidence
 or alter quality and health results. This v2 policy supersedes v1's generic
 edge and omission-detail behavior for the v2 default projection.
 
-## Planned v2 score gates and noise invariance
+## v2 score gates and noise invariance
 
 Semantic coverage continues to measure evidence coverage, not whether the
 repository is healthy. A fully evidenced failing check may improve coverage
@@ -248,12 +245,20 @@ repository bytes change.
    capability workflows, explicit system/data flows, architecture roles, stack
    declarations, and repository-declared commands from the captured
    `RepoFrame`. Architecture/design documents are read only from a small,
-   hash-matched candidate set already present in that frame.
+   hash-matched candidate set already present in that frame. An HTTP endpoint
+   written inside a capability-named documentation section may bind that
+   capability to code only when it resolves to one unique indexed route; the
+   surface retains both the documentation statement and code-route evidence.
+   A documented public `/api/...` path may normalize to the repository's
+   uniquely matching router-local path, but arbitrary route prefixes are never
+   inferred.
 3. The edge observer derives exact local-import, route-owner, binding-resolved
    local-call, static HTTP-route, test-path, and test-symbol links. Unknown,
-   shadowed, reassigned, or ambiguous bindings produce no edge; route prefixes
-   are never guessed. Test edges remain a verification lane and never stand in
-   for production architecture.
+   shadowed, reassigned, or ambiguous bindings produce no edge. Python call
+   resolution includes unconditionally bound imported-class instances and
+   same-class `self.method()` calls; conditional or reassigned receivers fail
+   closed. Test edges remain a verification lane and never stand in for
+   production architecture.
 4. The compiler constructs distinct mental models:
 
    - repository-stated system and user flows, which remain documentation claims;
@@ -327,13 +332,13 @@ repository bytes change.
      Individual passing commands remain visible but cannot establish whole-repository
      health until an explicit required-check policy defines complete coverage.
 
-11. The renderer orders information as product contract, system mental model,
-   capability-to-code map, production architecture, verification, current
-   changes, source-scoped notes, promoted durable knowledge, known gaps, and
-   snapshot identity. Production edge endpoints are retained first; remaining
-   architecture slots prefer distinct layers and non-overlapping paths. Bounded
-   omissions name representative omitted records and explicitly prohibit
-   inferred completeness.
+11. The renderer puts active change groups, critical production paths,
+   snapshot-bound runs, and promoted durable facts before broad product and
+   architecture inventory. Dirty components reserve architecture slots.
+   Import-only traces, generic test edges, and generic architecture omission
+   counts remain in the machine artifact but are suppressed from the default
+   projection. The header labels Workspace Context `orientation_only` because
+   its objective-independent contract intentionally excludes current-task state.
 
 Compilation never accepts a task objective, selected session, or prompt-ranking
 term as Workspace Foundation evidence, and it never executes repository
@@ -424,8 +429,8 @@ implementation, no inferred change intent, production edges before test edges,
 field-level provenance, explicit unsupported gaps, self-contained Markdown, and
 fail-closed delivery.
 
-Completing v2 population adds one end-to-end golden fixture and independent
-negative fixtures. The golden fixture must exercise persisted harness outcome
+The v2 operational acceptance target requires an end-to-end golden fixture and
+independent negative fixtures. The golden fixture exercises persisted harness outcome
 through admission and rendering; an exact request-to-output production flow;
 capability-grouped, source-backed change intent; and promoted durable facts
 covering the eligible fact kinds present in the fixture. It must qualify for a
@@ -441,3 +446,21 @@ and substantive default projection must remain unchanged. A separate explicit
 diagnostic projection test confirms that the same bounded noise remains
 available for audit without changing evidence promotion, semantic coverage, or
 repository health.
+
+Workspace Foundation alone is not the continuity product. Task-mode compilation
+embeds the same-scan foundation in a hash-bound Continuation Package together
+with authoritative lead, checkpoint task state, preservation scope, exact next
+action, and done checks. Its readiness modes are `orientation_only`,
+`investigation_ready`, `continuation_ready`, and `execution_ready`; copy safety
+cannot promote any of them.
+
+The behavioral product SLO is same-model continuity parity, not a claim that an
+arbitrarily incapable model can perform work beyond its underlying ability. The
+paired evaluator compares the same model, repository snapshot, task, seed, and
+budget under full-history, compiled-package, and blank-context conditions. It
+reports `insufficient_evidence` before 30 valid paired trials and may report only
+`directional` after all gates pass: compiled solve rate within five percentage
+points of full history, zero authority or preservation regressions, at least 80%
+correct first useful actions, at least 30% fewer rediscovery steps than blank,
+and under 10% repeated failed approaches. Lost or never-captured intent remains
+unknown rather than reconstructed.

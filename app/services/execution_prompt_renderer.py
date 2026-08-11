@@ -38,6 +38,12 @@ EXECUTION_RENDERED_READ_PLAN_LIMIT = 6
 EXECUTION_RENDERED_REPOSITORY_CHANGE_LIMIT = 6
 EXECUTION_RENDERED_HANDOFF_ITEM_LIMIT = 2
 EXECUTION_RENDERED_HANDOFF_STATEMENT_CHARS = 360
+OPERATIONAL_RENDERED_CHANGE_LIMIT = 8
+OPERATIONAL_RENDERED_INTENT_LIMIT = 4
+OPERATIONAL_RENDERED_FLOW_LIMIT = 4
+OPERATIONAL_RENDERED_VERIFICATION_LIMIT = 6
+OPERATIONAL_RENDERED_GAP_LIMIT = 8
+STAGING_RENDERED_BASELINE_PATH_LIMIT = 64
 _STAGING_IMAGE_TAG_RE = re.compile(
     r"(?is)<image\b[^>]*>.*?</image\s*>|<image\b[^>]*/\s*>|"
     r"<image\b[^>]*>|</image\s*>|<image\b[^\n>]*\Z"
@@ -149,6 +155,13 @@ def render_continuation_staging_context(
             f"{'' if len(preexisting_changes) == 1 else 's'}; preserve "
             "regardless of authorship."
         ),
+    ])
+    _append_compact_repository_manifest(
+        lines,
+        preexisting_changes,
+        limit=STAGING_RENDERED_BASELINE_PATH_LIMIT,
+    )
+    lines.extend([
         "",
         "### Reconciliation and unresolved state",
         "",
@@ -177,6 +190,13 @@ def render_continuation_staging_context(
             )
         lines.append(f"- MUST status: {status_summary}.")
 
+    _append_operational_workspace(
+        lines,
+        contract.operational_workspace,
+        handoff=contract.handoff,
+        include_session_task_state=False,
+        compact=True,
+    )
     _append_staging_reported_scope(lines, contract, statuses)
     _append_staging_supporting_context(lines, contract.supporting_context)
     _append_staging_project_context(lines, contract.project_context)
@@ -330,6 +350,13 @@ def render_continuation_execution_prompt(
             "",
             execution_focus,
         ])
+    _append_operational_workspace(
+        lines,
+        contract.operational_workspace,
+        handoff=contract.handoff,
+        include_session_task_state=True,
+        compact=False,
+    )
     lines.extend([
         "",
         "## Mandatory requirements",
@@ -481,6 +508,293 @@ def render_continuation_execution_prompt(
 
 def execution_prompt_sha256(prompt_markdown: str) -> str:
     return hashlib.sha256(prompt_markdown.encode("utf-8")).hexdigest()
+
+
+def _append_operational_workspace(
+    lines: list[str],
+    projection: Any,
+    *,
+    handoff: Any,
+    include_session_task_state: bool,
+    compact: bool,
+) -> None:
+    if projection is None:
+        return
+    readiness = _field(projection, "readiness", None)
+    dimensions = (
+        ("task", "task_state"),
+        ("foundation", "durable_foundation"),
+        ("repository", "repository_state"),
+        ("semantic-delta", "semantic_delta"),
+        ("change-intent", "change_intent"),
+        ("production-flow", "production_flows"),
+        ("verification", "verification"),
+    )
+    readiness_summary = "; ".join(
+        f"{label}={_enum_text(_field(readiness, field_name, 'missing'))}"
+        for label, field_name in dimensions
+    )
+    lines.extend(["", "## Operational continuation package", ""])
+    mode = _enum_text(_field(projection, "overall_mode", "orientation_only"))
+    if compact:
+        lines.append(f"- Overall mode: `{mode}`.")
+    else:
+        lines.append(
+            f"- Overall mode: `{mode}`. This is a readiness boundary, not proof "
+            "that the requested work is complete."
+        )
+    lines.append(f"- Readiness dimensions: {readiness_summary}.")
+    if compact:
+        lines.append(
+            "- Task state: authoritative lead/MUST below; prior-agent claims isolated."
+        )
+    else:
+        lines.extend([
+            (
+                "- Identity: foundation semantic sha256 "
+                f"`{_short_hash(_field(projection, 'foundation_semantic_sha256', ''))}`; "
+                "foundation artifact sha256 "
+                f"`{_short_hash(_field(projection, 'foundation_artifact_sha256', ''))}`; "
+                "package sha256 "
+                f"`{_short_hash(_field(projection, 'package_sha256', ''))}`."
+            ),
+            "",
+            "### Current task state",
+            "",
+        ])
+    task_state_items: list[tuple[str, Any]] = []
+    if include_session_task_state:
+        for label, field_name in (
+            ("In progress", "in_progress"),
+            ("Remaining", "remaining"),
+            ("Blocker", "blockers"),
+            ("Unknown", "unknowns"),
+            ("Reported complete", "completed"),
+        ):
+            task_state_items.extend(
+                (label, item)
+                for item in _iterable(_field(handoff, field_name, ()))
+            )
+    displayed_task_state = task_state_items[:8]
+    if not include_session_task_state and not compact:
+        lines.append(
+            "- Staging boundary: use the authoritative lead and MUST status below; "
+            "prior-agent task claims remain isolated in the structured package and "
+            "execution prompt."
+        )
+    elif not displayed_task_state:
+        lines.append(
+            "- No checkpoint task-state item is included; use the authoritative request "
+            "and mandatory requirements as the current task boundary."
+        )
+    for label, item in displayed_task_state:
+        truth_state = _enum_text(_field(item, "truth_state", "unknown"))
+        statement_lines = (
+            str(_field(item, "statement", "")).strip().splitlines() or [""]
+        )
+        lines.append(f"> [{truth_state}] {label}: {statement_lines[0]}")
+        lines.extend(f"> {line}" if line else ">" for line in statement_lines[1:])
+    if len(task_state_items) > len(displayed_task_state):
+        lines.append(
+            f"- {len(task_state_items) - len(displayed_task_state)} additional task-state "
+            "item(s) remain in the structured package."
+        )
+    lines.extend([
+        "",
+        (
+            "### Changed paths and semantic delta"
+            if compact
+            else "### Current changed paths and semantic delta"
+        ),
+        "",
+    ])
+
+    changes = tuple(_iterable(_field(projection, "changes", ())))
+    displayed_changes = changes[:OPERATIONAL_RENDERED_CHANGE_LIMIT]
+    if not displayed_changes:
+        lines.append("- No changed path is present in the bounded operational projection.")
+    for change in displayed_changes:
+        path = str(_field(change, "path", "unknown"))
+        kind = _enum_text(_field(change, "kind", "unknown"))
+        role = _enum_text(_field(change, "role", "other"))
+        delta = _field(change, "semantic_delta", None)
+        if delta is None:
+            if compact:
+                lines.append(
+                    f"- {_inline_code(path)} — semantic delta unavailable."
+                )
+            else:
+                lines.append(
+                    f"- {_inline_code(path)} — `{kind}`; role `{role}`; "
+                    "semantic delta not included."
+                )
+            continue
+        delta_status = _enum_text(_field(delta, "status", "not_observed"))
+        details: list[str] = []
+        added = _field(delta, "lines_added", None)
+        removed = _field(delta, "lines_removed", None)
+        if added is not None or removed is not None:
+            details.append(f"lines +{added if added is not None else '?'}"
+                           f"/-{removed if removed is not None else '?'}")
+        for label, field_name in (
+            ("symbols added", "symbols_added"),
+            ("symbols modified", "symbols_modified"),
+            ("symbols removed", "symbols_removed"),
+            ("routes added", "routes_added"),
+            ("routes removed", "routes_removed"),
+        ):
+            values = [str(item) for item in _iterable(_field(delta, field_name, ()))][:4]
+            if values:
+                details.append(f"{label}: {', '.join(values)}")
+        suffix = "; ".join(details) if details else "no bounded syntax item"
+        lines.append(
+            f"- {_inline_code(path)} — `{kind}`; role `{role}`; "
+            f"semantic delta `{delta_status}` ({suffix})."
+        )
+    if len(changes) > len(displayed_changes):
+        lines.append(
+            f"- {len(changes) - len(displayed_changes)} additional changed path(s) "
+            "remain in the structured package."
+        )
+
+    lines.extend([
+        "",
+        "### Trusted change intent" if compact else "### Change scope and trusted intent",
+        "",
+    ])
+    intents = tuple(_iterable(_field(projection, "change_intents", ())))
+    if not intents:
+        lines.append(
+            "- No trusted change-intent record is included. Do not infer intent, "
+            "completion, or remaining work from the diff."
+        )
+    trusted_intent_fields_present = any(
+        _field(intent, "before_behavior", None) is not None
+        or _field(intent, "after_behavior", None) is not None
+        or _enum_text(_field(intent, "completed", "unknown")) != "unknown"
+        or bool(tuple(_iterable(_field(intent, "remaining", ()))))
+        for intent in intents[:OPERATIONAL_RENDERED_INTENT_LIMIT]
+    )
+    displayed_intents = (
+        () if compact and intents and not trusted_intent_fields_present
+        else intents[:OPERATIONAL_RENDERED_INTENT_LIMIT]
+    )
+    for intent in displayed_intents:
+        capability = str(_field(intent, "capability", "unknown")).strip()
+        if compact:
+            lines.append(
+                f"- Capability: {capability}; changed paths are listed above and do not "
+                "by themselves prove intent or completion."
+            )
+        else:
+            lines.append(
+                "- Changed scope (not itself behavior or completion intent). Capability: "
+                f"{capability}. Changed paths: "
+                + ", ".join(
+                    _inline_code(path)
+                    for path in _iterable(_field(intent, "changed_paths", ()))
+                )
+                + "."
+            )
+        for label, field_name in (
+            ("Before", "before_behavior"),
+            ("After", "after_behavior"),
+        ):
+            statement = _field(intent, field_name, None)
+            if statement is not None:
+                _append_operational_statement(lines, label, statement)
+        completion = _enum_text(_field(intent, "completed", "unknown"))
+        if completion != "unknown":
+            lines.append(f"  - Explicit completion state: `{completion}`.")
+        for statement in _iterable(_field(intent, "remaining", ())):
+            _append_operational_statement(lines, "Remaining", statement, indent="  ")
+    if intents and not trusted_intent_fields_present:
+        if compact:
+            lines.append(
+                "- Trusted intent unavailable; do not infer it from changed paths."
+            )
+        else:
+            lines.append(
+                "- No trusted before/after behavior, completion state, or remaining-work "
+                "statement is included. Do not infer them from changed scope."
+            )
+
+    flows = tuple(_iterable(_field(projection, "production_flows", ())))
+    if flows or not compact:
+        lines.extend(["", "### Critical production flows", ""])
+    if not flows and not compact:
+        lines.append("- No evidence-backed production flow is included.")
+    for flow in flows[:OPERATIONAL_RENDERED_FLOW_LIMIT]:
+        completeness = "complete" if bool(_field(flow, "complete", False)) else "partial"
+        proof = _enum_text(_field(flow, "proof", "code_observed"))
+        stages: list[str] = []
+        entrypoint = _field(flow, "entrypoint", None)
+        if entrypoint is not None:
+            stages.append("entrypoint " + _operational_stage(entrypoint))
+        for label in ("service", "persistence", "compiler"):
+            for stage in tuple(_iterable(_field(flow, label, ())))[:2]:
+                stages.append(f"{label} " + _operational_stage(stage))
+        output = _field(flow, "output", None)
+        if output is not None:
+            stages.append("output " + _operational_stage(output))
+        lines.append(
+            f"- {str(_field(flow, 'name', 'Unnamed flow')).strip()} — "
+            f"`{completeness}`; proof `{proof}`: " + " → ".join(stages) + "."
+        )
+        for gap in tuple(_iterable(_field(flow, "gaps", ())))[:4]:
+            lines.append(f"  - Gap: {str(gap).strip()}")
+
+    runs = tuple(_iterable(_field(projection, "verification_runs", ())))
+    if runs or not compact:
+        lines.extend(["", "### Snapshot-bound verification", ""])
+    if not runs and not compact:
+        lines.append(
+            "- No snapshot-bound verification result is included. Test presence or a "
+            "suggested command is not a passing result."
+        )
+    for run in runs[:OPERATIONAL_RENDERED_VERIFICATION_LIMIT]:
+        result = _enum_text(_field(run, "result", "blocked"))
+        command = str(_field(run, "command", "")).strip()
+        cwd = str(_field(run, "working_directory", ".")).strip()
+        exit_code = _field(run, "exit_code", None)
+        lines.append(
+            f"- `{result}` — {_inline_code(f'cd {cwd} && {command}')}; "
+            f"exit code `{exit_code if exit_code is not None else 'none'}`."
+        )
+        for failure in tuple(_iterable(_field(run, "failures", ())))[:3]:
+            lines.append(f"  - Failure: {str(failure).strip()}")
+
+    gaps = tuple(_iterable(_field(projection, "gaps", ())))
+    if gaps and not compact:
+        lines.extend(["", "### Operational gaps", ""])
+        lines.extend(
+            f"- {str(gap).strip()}"
+            for gap in gaps[:OPERATIONAL_RENDERED_GAP_LIMIT]
+        )
+
+
+def _append_operational_statement(
+    lines: list[str],
+    label: str,
+    statement: Any,
+    *,
+    indent: str = "  ",
+) -> None:
+    statement_lines = (
+        str(_field(statement, "statement", "")).strip().splitlines() or [""]
+    )
+    lines.append(f"{indent}> {label}: {statement_lines[0]}")
+    lines.extend(f"{indent}> {line}" if line else f"{indent}>" for line in statement_lines[1:])
+
+
+def _operational_stage(stage: Any) -> str:
+    path = _inline_code(str(_field(stage, "path", "unknown")))
+    symbol = str(_field(stage, "symbol", "") or "").strip()
+    return f"{path}:{_inline_code(symbol)}" if symbol else path
+
+
+def _enum_text(value: Any) -> str:
+    return str(getattr(value, "value", value)).strip()
 
 
 def _append_project_foundation(
@@ -2057,6 +2371,37 @@ def _append_repository_changes(
         lines.append(
             f"  - … {omitted} additional pre-existing paths are retained in the "
             "hash-bound contract. Re-run `git status --short` before editing."
+        )
+
+
+def _append_compact_repository_manifest(
+    lines: list[str],
+    changes: tuple[Any, ...],
+    *,
+    limit: int,
+) -> None:
+    """Render the protected baseline paths compactly for text-only receivers."""
+
+    if not changes:
+        lines.append("- Protected baseline paths: none observed.")
+        return
+    displayed = changes[:limit]
+    entries: list[str] = []
+    for change in displayed:
+        status = str(_field(change, "status", "modified")).strip()
+        xy = str(_field(change, "xy", "") or "").strip("\n\r")
+        kind = str(_field(change, "change_kind", "") or "").strip()
+        kind = kind or _rendered_git_change_kind(xy or status)
+        path = str(_field(change, "path", "")).strip()
+        entries.append(f"{kind}:{_inline_code(path)}")
+    for index in range(0, len(entries), 4):
+        prefix = "- Protected paths: " if index == 0 else "- "
+        lines.append(prefix + "; ".join(entries[index : index + 4]) + ".")
+    omitted = len(changes) - len(displayed)
+    if omitted:
+        lines.append(
+            f"- {omitted} additional protected path(s) exceed the text projection; "
+            "inspect the hash-bound contract and `git status --short` before editing."
         )
 
 

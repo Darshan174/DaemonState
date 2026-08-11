@@ -30,20 +30,23 @@ from app.schemas.workspace_foundation import (
 )
 
 
-MAX_RENDERED_CAPABILITIES = 6
+MAX_RENDERED_CAPABILITIES = 4
 MAX_RENDERED_SURFACES_PER_CAPABILITY = 2
 MAX_RENDERED_WORKFLOWS = 4
 MAX_RENDERED_STEPS_PER_FLOW = 8
 MAX_RENDERED_TRACES = 4
-MAX_RENDERED_COMPONENTS = 6
-MAX_RENDERED_EDGES = 4
+MAX_RENDERED_COMPONENTS = 5
+MAX_RENDERED_EDGES = 3
 MAX_RENDERED_TEST_EDGES = 4
-MAX_RENDERED_COMMANDS = 6
+MAX_RENDERED_COMMANDS = 4
 MAX_RENDERED_CHANGES = 8
 MAX_RENDERED_REMAINING_WORK_PER_CHANGE = 3
-MAX_RENDERED_REPOSITORY_ENGINEERING_FACTS = 6
+MAX_RENDERED_REPOSITORY_ENGINEERING_FACTS = 3
 MAX_RENDERED_DURABLE_FACTS = 5
 MAX_RENDERED_QUALITY_ISSUES = 5
+MAX_RENDERED_OPERATIONAL_FLOWS = 4
+MAX_RENDERED_CHANGE_INTENTS = 6
+MAX_RENDERED_VERIFICATION_RUNS = 6
 MAX_OMITTED_NAMES = 4
 WORKSPACE_FOUNDATION_RENDERER_VERSION = "workspace_foundation_renderer.v2"
 
@@ -86,10 +89,14 @@ def render_workspace_foundation_markdown(
         f"{_citations(policy.evidence_ref_ids, evidence, limit=2)}".rstrip(),
         "> Distinct evidence lanes: docs, code, test presence, executed tests, runtime "
         "checks.",
-        "",
-        "## Product and boundaries",
+        "> Operational use: `orientation_only`; no authoritative current task, task "
+        "state, next action, preservation rules, or done conditions. Continue only from "
+        "a hash-bound Continuation Package.",
         "",
     ]
+
+    _render_operational_evidence(lines, artifact, capabilities, evidence)
+    lines.extend(["", "## Product and boundaries", ""])
 
     profile = artifact.product_profile
     purpose_refs = (
@@ -196,7 +203,12 @@ def render_workspace_foundation_markdown(
             omitted_names=(item.name for item in artifact.concepts[len(displayed_concepts) :]),
         )
 
-    _render_system_mental_model(lines, artifact, capabilities, evidence)
+    if (
+        artifact.documented_system_flows
+        or any(capability.workflow for capability in artifact.capabilities)
+        or (artifact.implementation_traces and not artifact.production_flows)
+    ):
+        _render_system_mental_model(lines, artifact, capabilities, evidence)
 
     lines.extend(["", "## Workflows and capability-to-code map", ""])
     lines.append(
@@ -222,6 +234,17 @@ def render_workspace_foundation_markdown(
         _select_production_architecture(artifact, components)
     )
     lines.extend(["", "## Architecture and system map", ""])
+    hotspot_components = _active_change_hotspots(artifact, components)
+    if hotspot_components:
+        lines.append(
+            "- Active change hotspots (reserved ahead of unchanged architecture): "
+            + ", ".join(
+                f"`{_code(component.name)}` ({count} changed path"
+                f"{'s' if count != 1 else ''})"
+                for component, count in hotspot_components[:3]
+            )
+            + "."
+        )
     stack_signals = tuple(
         dict.fromkeys(
             technology
@@ -256,28 +279,6 @@ def render_workspace_foundation_markdown(
             "- Unknown: no exact cross-component production edge was established; "
             "do not infer calls or data flow from directory proximity."
         )
-    displayed_component_ids = {item.id for item in selected_components}
-    _append_omission(
-        lines,
-        displayed=len(selected_components),
-        total=len(production_components),
-        label="production component(s)",
-        omitted_names=(
-            item.name for item in production_components if item.id not in displayed_component_ids
-        ),
-    )
-    selected_edge_ids = {item.id for item in selected_edges}
-    _append_omission(
-        lines,
-        displayed=len(selected_edges),
-        total=len(production_edges),
-        label="production structural edge(s)",
-        omitted_names=(
-            _edge_name(item, components)
-            for item in production_edges
-            if item.id not in selected_edge_ids
-        ),
-    )
     supporting_components = [
         item
         for item in artifact.architecture_components
@@ -340,38 +341,6 @@ def render_workspace_foundation_markdown(
         ),
     )
 
-    lines.extend(
-        [
-            "",
-            "## Promoted durable workspace knowledge",
-            "",
-            "Only current facts that passed the Project Foundation promotion boundary appear here.",
-        ]
-    )
-    displayed_facts = artifact.durable_knowledge[:MAX_RENDERED_DURABLE_FACTS]
-    if not displayed_facts:
-        lines.append("- No durable fact met the promotion boundary; none was invented.")
-    for fact in displayed_facts:
-        lines.append(
-            f"- **{_plain(fact.title, 160)}:** {_plain(fact.statement, 420)} "
-            f"({fact.kind.value.replace('_', ' ')}; "
-            f"{fact.evidence_tier.value.replace('_', ' ')}) "
-            f"{_citations(fact.evidence_ref_ids, evidence)}"
-        )
-    lines.append(
-        "- Promotion exclusions: "
-        f"`{quality.excluded_historical_provisional_fact_count}` historical/provisional; "
-        f"`{quality.excluded_conflicting_superseded_fact_count}` conflicting/superseded. "
-        "Excluded records are not presented as current workspace facts."
-    )
-    _append_omission(
-        lines,
-        displayed=len(displayed_facts),
-        total=len(artifact.durable_knowledge),
-        label="durable fact(s)",
-        omitted_names=(item.title for item in artifact.durable_knowledge[len(displayed_facts) :]),
-    )
-
     material_issues = sorted(
         quality.issues,
         key=lambda item: (
@@ -408,6 +377,205 @@ def render_workspace_foundation_markdown(
         ]
     )
     return "\n".join(line.rstrip() for line in lines).strip() + "\n"
+
+
+def _render_operational_evidence(
+    lines: list[str],
+    artifact: WorkspaceFoundationArtifact,
+    capabilities: Mapping[str, Capability],
+    evidence: Mapping[str, EvidenceReference],
+) -> None:
+    """Put continuation-relevant proof before broad repository inventory."""
+
+    state = artifact.repository_state
+    quality = artifact.quality_report
+
+    lines.extend(["## Active change intent", ""])
+    displayed_intents = artifact.change_intents[:MAX_RENDERED_CHANGE_INTENTS]
+    if not state.dirty:
+        lines.append("- No dirty paths in the captured snapshot.")
+    elif not displayed_intents:
+        lines.append(
+            "- Unknown: dirty paths exist without source-backed intent or completion."
+        )
+    for intent in displayed_intents:
+        paths = ", ".join(f"`{_code(path)}`" for path in intent.changed_paths[:8])
+        lines.append(
+            f"- **{_plain(intent.capability, 160)}** — snapshot "
+            f"`{intent.snapshot}`; paths: {paths}. "
+            f"{_citations(intent.evidence_ref_ids, evidence, limit=2)}"
+        )
+        has_trusted_semantics = bool(
+            intent.before_behavior is not None
+            or intent.after_behavior is not None
+            or intent.completed is not RepositoryChangeCompletionStatus.UNKNOWN
+            or intent.remaining_status
+            is not RepositoryChangeRemainingWorkStatus.UNKNOWN
+        )
+        if not has_trusted_semantics:
+            lines.append(
+                "  - Behavior, completion, and remaining work: `unknown`; changed "
+                "scope and linked tests do not establish intent."
+            )
+            if intent.affected_tests:
+                lines.append(
+                    "  - Affected test candidates (presence only): "
+                    + ", ".join(
+                        f"`{_code(path)}`" for path in intent.affected_tests[:3]
+                    )
+                    + "."
+                )
+            continue
+        if intent.before_behavior is None:
+            lines.append("  - Before behavior: unknown; no trusted declaration was captured.")
+        else:
+            lines.append(
+                f"  - Before behavior: {_plain(intent.before_behavior.statement, 360)} "
+                f"{_citations(intent.before_behavior.evidence_ref_ids, evidence)}"
+            )
+        if intent.after_behavior is None:
+            lines.append("  - Intended after behavior: unknown; diff shape is not intent.")
+        else:
+            lines.append(
+                f"  - Intended after behavior: {_plain(intent.after_behavior.statement, 360)} "
+                f"{_citations(intent.after_behavior.evidence_ref_ids, evidence)}"
+            )
+        completion_refs = _citations(intent.completion_evidence_ref_ids, evidence)
+        lines.append(
+            f"  - Completion: `{intent.completed.value}`"
+            + (f" {completion_refs}" if completion_refs else "; no trusted status evidence.")
+        )
+        if intent.remaining_status is RepositoryChangeRemainingWorkStatus.IDENTIFIED:
+            remaining = "; ".join(
+                _plain(item.statement, 280) for item in intent.remaining[:3]
+            )
+            lines.append(
+                f"  - Remaining: `{intent.remaining_status.value}` — {remaining} "
+                f"{_citations(intent.remaining_evidence_ref_ids, evidence)}"
+            )
+        else:
+            remaining_refs = _citations(intent.remaining_evidence_ref_ids, evidence)
+            lines.append(
+                f"  - Remaining: `{intent.remaining_status.value}`"
+                + (f" {remaining_refs}" if remaining_refs else "; no trusted status evidence.")
+            )
+        if intent.affected_tests:
+            lines.append(
+                "  - Affected test candidates (presence only): "
+                + ", ".join(f"`{_code(path)}`" for path in intent.affected_tests[:6])
+                + "."
+            )
+    _append_omission(
+        lines,
+        displayed=len(displayed_intents),
+        total=len(artifact.change_intents),
+        label="change-intent group(s)",
+        omitted_names=(item.capability for item in artifact.change_intents[len(displayed_intents) :]),
+    )
+
+    lines.extend(["", "## Critical production paths", ""])
+    displayed_flows = artifact.production_flows[:MAX_RENDERED_OPERATIONAL_FLOWS]
+    if not displayed_flows:
+        lines.append(
+            "- None established; generic imports do not prove request-to-output flow."
+        )
+    for flow in displayed_flows:
+        ordered_stages = [
+            flow.entrypoint,
+            *flow.service,
+            *flow.persistence,
+            *flow.compiler,
+            *((flow.output,) if flow.output is not None else ()),
+        ]
+        chain = " → ".join(
+            f"{stage.kind.value}:`{_code(stage.path)}"
+            + (f"#{_code(stage.symbol)}`" if stage.symbol else "`")
+            for stage in ordered_stages
+        )
+        capability_names = [
+            capabilities[item].name for item in flow.capability_ids if item in capabilities
+        ]
+        lines.append(
+            f"- **{_plain(flow.name, 160)}** — `{flow.proof.value}` / "
+            f"`{'complete' if flow.complete else 'partial'}`; capability: "
+            f"{', '.join(_plain(item, 100) for item in capability_names) or 'unknown'}. "
+            f"{chain} {_citations(flow.evidence_ref_ids, evidence, limit=2)}"
+        )
+        if flow.gaps:
+            lines.append(
+                "  - Missing proof/stages: "
+                + "; ".join(_plain(gap, 260) for gap in flow.gaps[:4])
+            )
+    _append_omission(
+        lines,
+        displayed=len(displayed_flows),
+        total=len(artifact.production_flows),
+        label="production flow(s)",
+        omitted_names=(item.name for item in artifact.production_flows[len(displayed_flows) :]),
+    )
+
+    lines.extend(["", "## Snapshot-bound verification runs", ""])
+    displayed_runs = artifact.verification_runs[:MAX_RENDERED_VERIFICATION_RUNS]
+    if not displayed_runs:
+        lines.append(
+            "- None admitted for this snapshot; repository health is unknown."
+        )
+    for run in displayed_runs:
+        detail = (
+            f"`{run.result.value}`; exit `{run.exit_code}`; cwd "
+            f"`{_code(run.working_directory)}`; observed `{run.observed_at.isoformat()}`; "
+            f"snapshot `{run.snapshot}`; output `{run.output_sha256}`"
+        )
+        lines.append(
+            f"- `{_code(run.command)}` — {detail}. "
+            f"{_citations(run.evidence_ref_ids, evidence, limit=2)}"
+        )
+        if run.failures:
+            lines.append(
+                "  - Failure/block detail: "
+                + "; ".join(_plain(item, 300) for item in run.failures[:4])
+            )
+    _append_omission(
+        lines,
+        displayed=len(displayed_runs),
+        total=len(artifact.verification_runs),
+        label="verification run(s)",
+        omitted_names=(item.command for item in artifact.verification_runs[len(displayed_runs) :]),
+    )
+
+    lines.extend(
+        [
+            "",
+            "## Promoted durable workspace knowledge",
+            "",
+            "Only facts that passed the durable promotion boundary appear here.",
+        ]
+    )
+    durable_facts = artifact.durable_facts or artifact.durable_knowledge
+    displayed_facts = durable_facts[:MAX_RENDERED_DURABLE_FACTS]
+    if not displayed_facts:
+        lines.append("- None promoted; none invented.")
+    for fact in displayed_facts:
+        lines.append(
+            f"- **{_plain(fact.title, 160)}:** {_plain(fact.statement, 420)} "
+            f"({fact.kind.value.replace('_', ' ')}; "
+            f"{fact.evidence_tier.value.replace('_', ' ')}; promotion "
+            f"`{fact.promotion_reason.value}`) "
+            f"{_citations(fact.evidence_ref_ids, evidence)}"
+        )
+    lines.append(
+        "- Promotion exclusions: "
+        f"`{quality.excluded_historical_provisional_fact_count}` historical/provisional; "
+        f"`{quality.excluded_conflicting_superseded_fact_count}` conflicting/superseded. "
+        "Excluded records are not current facts."
+    )
+    _append_omission(
+        lines,
+        displayed=len(displayed_facts),
+        total=len(durable_facts),
+        label="durable fact(s)",
+        omitted_names=(item.title for item in durable_facts[len(displayed_facts) :]),
+    )
 
 
 def _render_system_mental_model(
@@ -493,6 +661,11 @@ def _render_system_mental_model(
         omitted_names=(item.name for item in workflows[len(displayed_workflows) :]),
     )
 
+    if artifact.production_flows:
+        # The normalized first-class lane is rendered before inventory. Repeating
+        # its source traces here makes generic syntax chains crowd out active work.
+        return
+
     lines.extend(["", "### Code-observed production call flows", ""])
     capability_rank = {capability_id: rank for rank, capability_id in enumerate(capabilities)}
     traces = sorted(
@@ -520,9 +693,6 @@ def _render_system_mental_model(
     ]
     internal_chains = [
         item for item in traces if item.kind is ImplementationTraceKind.INTERNAL_CALL_CHAIN
-    ]
-    dependency_traces = [
-        item for item in traces if item.kind is ImplementationTraceKind.STRUCTURAL_DEPENDENCY
     ]
     displayed_call_flows = call_flows[:MAX_RENDERED_TRACES]
     if not displayed_call_flows:
@@ -572,27 +742,6 @@ def _render_system_mental_model(
             omitted_names=(item.name for item in internal_chains[len(displayed_internal) :]),
         )
 
-    remaining_slots = max(0, remaining_slots - len(displayed_internal))
-    displayed_dependencies = dependency_traces[:remaining_slots]
-    lines.extend(["", "### Structural dependency traces", ""])
-    lines.append(
-        "- Dependency meaning: exact local imports only. These records describe code "
-        "structure, not handler calls, runtime order, or data movement."
-    )
-    if not displayed_dependencies:
-        lines.append(
-            "- No import-only fallback trace is displayed; this does not establish that "
-            "all production flow is known."
-        )
-    for trace in displayed_dependencies:
-        _render_trace(lines, trace, capabilities, evidence)
-    _append_omission(
-        lines,
-        displayed=len(displayed_dependencies),
-        total=len(dependency_traces),
-        label="structural dependency trace(s)",
-        omitted_names=(item.name for item in dependency_traces[len(displayed_dependencies) :]),
-    )
 
 
 def _render_trace(
@@ -794,6 +943,11 @@ def _select_production_architecture(
         key=_component_sort_key,
     )
     production_ids = {item.id for item in production_components}
+    hotspot_ids = {
+        component.id
+        for component, _count in _active_change_hotspots(artifact, components)[:2]
+        if component.id in production_ids
+    }
     production_edges = sorted(
         (
             edge
@@ -805,7 +959,9 @@ def _select_production_architecture(
         key=lambda item: _edge_sort_key(item, components),
     )
     selected_edges: list[StructuralEdge] = []
-    endpoint_ids: set[str] = set()
+    # Dirty components are guaranteed renderer slots. This keeps the active work
+    # surface visible even when generic unchanged components have more graph edges.
+    endpoint_ids: set[str] = set(hotspot_ids)
     selected_pairs: set[frozenset[str]] = set()
     remaining_edges = list(production_edges)
     while remaining_edges and len(selected_edges) < MAX_RENDERED_EDGES:
@@ -827,6 +983,7 @@ def _select_production_architecture(
             key=lambda item: _architecture_edge_selection_key(
                 item,
                 selected_ids=endpoint_ids,
+                hotspot_ids=hotspot_ids,
                 components=components,
             ),
         )
@@ -852,8 +1009,9 @@ def _architecture_edge_selection_key(
     edge: StructuralEdge,
     *,
     selected_ids: set[str],
+    hotspot_ids: set[str],
     components: Mapping[str, ArchitectureComponent],
-) -> tuple[int, int, int, int, tuple[int, int, int, str, str, str]]:
+) -> tuple[int, int, int, int, int, tuple[int, int, int, str, str, str]]:
     endpoints = tuple(
         component
         for component_id in (edge.source_component_id, edge.target_component_id)
@@ -871,11 +1029,31 @@ def _architecture_edge_selection_key(
         for item in new_endpoints
     )
     return (
+        0
+        if {edge.source_component_id, edge.target_component_id} & hotspot_ids
+        else 1,
         0 if edge.capability_ids else 1,
         generic_penalty,
         overlap_penalty,
         len(new_endpoints),
         _edge_sort_key(edge, components),
+    )
+
+
+def _active_change_hotspots(
+    artifact: WorkspaceFoundationArtifact | Any,
+    components: Mapping[str, ArchitectureComponent],
+) -> list[tuple[ArchitectureComponent, int]]:
+    state = getattr(artifact, "repository_state", None)
+    changes = getattr(state, "changes", ()) if state is not None else ()
+    counts: dict[str, int] = {}
+    for change in changes:
+        for component_id in dict.fromkeys(change.component_ids):
+            if component_id in components:
+                counts[component_id] = counts.get(component_id, 0) + 1
+    return sorted(
+        ((components[component_id], count) for component_id, count in counts.items()),
+        key=lambda item: (-item[1], _component_sort_key(item[0])),
     )
 
 
@@ -1077,70 +1255,6 @@ def _render_development_and_verification(
         ),
     )
 
-    lines.extend(["", "### Exact test links", ""])
-    test_edges = sorted(
-        (
-            edge
-            for edge in artifact.structural_edges
-            if edge.relation is StructuralRelation.TESTS
-            or (
-                components.get(edge.source_component_id) is not None
-                and components[edge.source_component_id].kind
-                is ArchitectureComponentKind.TEST_SUITE
-            )
-            or (
-                components.get(edge.target_component_id) is not None
-                and components[edge.target_component_id].kind
-                is ArchitectureComponentKind.TEST_SUITE
-            )
-        ),
-        key=lambda item: _edge_sort_key(item, components),
-    )
-    displayed_test_edges = test_edges[:MAX_RENDERED_TEST_EDGES]
-    if not displayed_test_edges:
-        lines.append(
-            "- No exact cross-component test edge was established. Linked test-file "
-            "surfaces, when present, are listed per capability."
-        )
-    else:
-        endpoint_ids = {
-            component_id
-            for edge in displayed_test_edges
-            for component_id in (edge.source_component_id, edge.target_component_id)
-            if component_id in components
-        }
-        endpoint_names = ", ".join(
-            f"`{_code(components[component_id].name)}`"
-            for component_id in sorted(
-                endpoint_ids,
-                key=lambda item: _component_sort_key(components[item]),
-            )
-        )
-        lines.append(f"- Displayed test-link endpoints: {endpoint_names}.")
-        lines.append(
-            "- Meaning: an exact structural association involving a test component "
-            "exists; this does not mean the test ran or passed."
-        )
-        for edge in displayed_test_edges:
-            source = components.get(edge.source_component_id)
-            target = components.get(edge.target_component_id)
-            if source is None or target is None:
-                continue
-            lines.append(
-                f"  - `{_code(source.name)}` "
-                f"**{edge.relation.value.replace('_', ' ')}** "
-                f"`{_code(target.name)}` "
-                f"{_citations(edge.evidence_ref_ids, evidence)}"
-            )
-    _append_omission(
-        lines,
-        displayed=len(displayed_test_edges),
-        total=len(test_edges),
-        label="exact test edge(s)",
-        omitted_names=(
-            _edge_name(item, components) for item in test_edges[len(displayed_test_edges) :]
-        ),
-    )
 
 
 def _render_repository_state(
@@ -1163,9 +1277,9 @@ def _render_repository_state(
     )
     if state.dirty:
         lines.append(
-            "- Git status establishes changed paths. Bounded semantic deltas below compare "
-            "HEAD with current file syntax where available; capability/component labels are "
-            "structural associations only."
+            "- Git status establishes changed paths. Bounded text semantic deltas or "
+            "hash-bound binary asset metadata below compare HEAD with the current file "
+            "where available; capability/component labels are structural associations only."
         )
         lines.append(
             "- Change intent, authorship, behavioral effect, completion, and remaining work "
@@ -1204,12 +1318,23 @@ def _render_repository_state(
                     f"{component_detail}. "
                     f"{_citations(change.evidence_ref_ids, evidence, limit=2)}"
                 )
-                _render_change_purpose_contract(lines, change, evidence)
-                _render_semantic_delta(lines, change)
+                if (
+                    change.intended_behavior is not None
+                    or change.completion_status
+                    is not RepositoryChangeCompletionStatus.UNKNOWN
+                    or change.remaining_work_status
+                    is not RepositoryChangeRemainingWorkStatus.UNKNOWN
+                    or not artifact.change_intents
+                ):
+                    _render_change_purpose_contract(lines, change, evidence)
+                if change.binary_asset is not None:
+                    _render_binary_asset(lines, change)
+                else:
+                    _render_semantic_delta(lines, change)
                 if change.related_test_paths:
                     lines.append(
                         "  - Exact linked test path(s), presence only: "
-                        + ", ".join(f"`{_code(path)}`" for path in change.related_test_paths[:4])
+                        + ", ".join(f"`{_code(path)}`" for path in change.related_test_paths[:2])
                         + ". No execution result is implied."
                     )
     elif state.changed_path_count:
@@ -1359,9 +1484,11 @@ def _render_semantic_delta(lines: list[str], change: Any) -> None:
         if values:
             signals.append(
                 f"{label}: "
-                + ", ".join(f"`{_code(item)}`" for item in values[:4])
-                + (f" (+{len(values) - 4} more)" if len(values) > 4 else "")
+                + ", ".join(f"`{_code(item)}`" for item in values[:2])
+                + (f" (+{len(values) - 2} more)" if len(values) > 2 else "")
             )
+        if len(signals) >= 3:
+            break
     if signals:
         detail = "; ".join(signals)
     elif delta.parser_coverage is RepositorySemanticParserCoverage.LINE_ONLY:
@@ -1372,8 +1499,61 @@ def _render_semantic_delta(lines: list[str], change: Any) -> None:
     lines.append(
         f"  - Semantic delta vs `{_code(delta.base or 'unknown base')}` "
         f"(`{completeness}`): {line_counts}; {detail}{truncation}. This is source "
-        "difference evidence, not behavioral or completion evidence."
+        "difference evidence; behavior and completion remain unknown."
     )
+
+
+def _render_binary_asset(lines: list[str], change: Any) -> None:
+    asset = change.binary_asset
+    completeness = "complete" if asset.complete else "partial"
+    lines.append(
+        f"  - Binary asset metadata vs `{_code(asset.base)}` (`{completeness}`; "
+        "bytes were not decoded as text):"
+    )
+    for label, version in (("Current", asset.current), ("HEAD", asset.head)):
+        if version is None:
+            lines.append(f"    - {label}: not present in the observed version.")
+            continue
+        dimensions = (
+            f"; dimensions: `{version.width_px}×{version.height_px} px`"
+            if version.width_px is not None and version.height_px is not None
+            else ""
+        )
+        lines.append(
+            f"    - {label}: format `{_code(version.format)}`; MIME "
+            f"`{_code(version.mime_type)}`; `{version.byte_size}` bytes{dimensions}; "
+            f"sha256 `{version.content_sha256}`."
+        )
+    if asset.import_references:
+        lines.append("  - Exact hash-bound code import reference(s):")
+        displayed = asset.import_references[:4]
+        for reference in displayed:
+            line_range = (
+                str(reference.start_line)
+                if reference.start_line == reference.end_line
+                else f"{reference.start_line}-{reference.end_line}"
+            )
+            lines.append(
+                f"    - `{_code(reference.source_path)}:{line_range}` imports "
+                f"`{_code(reference.specifier)}`; source sha256 "
+                f"`{reference.source_sha256}`."
+            )
+        omitted = len(asset.import_references) - len(displayed)
+        if omitted:
+            lines.append(
+                f"    - {omitted} additional exact import reference(s) omitted by "
+                "the renderer bound."
+            )
+        if asset.import_references_truncated:
+            lines.append(
+                "    - Additional exact import references were truncated by the scanner "
+                "bound; do not infer their paths."
+            )
+    else:
+        lines.append(
+            "  - Exact code import references: none observed in indexed source; "
+            "absence does not prove the asset is unused."
+        )
 
 
 def _required_check_status_counts(
@@ -1479,7 +1659,7 @@ def _select_repository_changes(
     *,
     limit: int,
 ) -> list[Any]:
-    """Keep role diversity while preferring richer observed semantic deltas."""
+    """Keep role diversity while preferring richer typed change observations."""
 
     ordered = sorted(
         changes,
@@ -1489,6 +1669,7 @@ def _select_repository_changes(
         RepositoryChangeRole.MIGRATION,
         RepositoryChangeRole.SCHEMA,
         RepositoryChangeRole.IMPLEMENTATION,
+        RepositoryChangeRole.ASSET,
         RepositoryChangeRole.TEST,
         RepositoryChangeRole.CONFIGURATION,
         RepositoryChangeRole.OPERATIONS,
@@ -1519,6 +1700,16 @@ def _select_repository_changes(
 
 
 def _repository_change_priority(change: Any) -> tuple[int, int, int, int, str]:
+    binary_asset = getattr(change, "binary_asset", None)
+    if binary_asset is not None:
+        reference_count = len(binary_asset.import_references)
+        return (
+            0,
+            0,
+            -reference_count,
+            0 if change.capability_ids else 1,
+            change.path.casefold(),
+        )
     delta = change.semantic_delta
     if delta is None:
         return (2, 0, 0, 0 if change.capability_ids else 1, change.path.casefold())

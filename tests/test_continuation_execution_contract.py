@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -27,6 +28,8 @@ from app.schemas.continuation_execution import (
     ContinuationExecutionContract,
     FilesystemMode,
     HandoffTruthState,
+    OperationalReadinessStatus,
+    OperationalWorkspaceMode,
     ProjectEvidenceLevel,
     RequirementPriority,
     SelectedTaskLifecycle,
@@ -36,6 +39,7 @@ from app.schemas.continuation_execution import (
     compile_request_requirements,
     infer_task_mode,
 )
+from app.schemas.workspace_foundation import WorkspaceFoundationArtifact
 from app.services.access import AccessScope
 from app.services.context_compiler import _restored_checkpoint_candidate
 from app.services.continuation_execution import (
@@ -74,6 +78,8 @@ async def _compile(
     current_changed_files: list[dict] | None = None,
     manifest_changed_files: list[dict] | None = None,
     foundation_facts: list[dict] | None = None,
+    workspace_foundation: dict | None = None,
+    repository_fingerprint: str | None = None,
 ):
     workspace = Workspace(
         name=f"Contract {uuid4().hex[:8]}",
@@ -96,7 +102,7 @@ async def _compile(
     )
     db_session.add(pack)
     await db_session.flush()
-    fingerprint = hashlib.sha256(
+    fingerprint = repository_fingerprint or hashlib.sha256(
         f"{workspace.id}:{request}".encode("utf-8")
     ).hexdigest()
     manifest = {
@@ -113,6 +119,8 @@ async def _compile(
     }
     if continuation is not None:
         manifest["continuation"] = continuation
+    if workspace_foundation is not None:
+        manifest["workspace_foundation"] = workspace_foundation
     if repository_evidence is not None:
         manifest["repository_evidence"] = repository_evidence
         manifest["repo_state"]["snapshot_fingerprint"] = (
@@ -265,6 +273,132 @@ _COMPLETE_FOUNDATION = [
 ]
 
 
+def _operational_workspace_artifact(snapshot: str) -> WorkspaceFoundationArtifact:
+    observed_at = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    return WorkspaceFoundationArtifact.from_payload({
+        "compiled_at": observed_at,
+        "compiler_version": "workspace_foundation_compiler.test",
+        "product_profile": {
+            "name": "DaemonState",
+            "summary": "DaemonState compiles repository context for agent continuation.",
+            "evidence_ref_ids": ["ev.product"],
+        },
+        "evidence_references": [
+            {
+                "id": "ev.product",
+                "tier": "documentation_stated",
+                "source_sha256": "1" * 64,
+                "path": "README.md",
+            },
+            {
+                "id": "ev.change",
+                "tier": "code_observed",
+                "source_sha256": "2" * 64,
+                "path": "app/services/continuation.py",
+                "rule": "git_status_entry.v1",
+            },
+            {
+                "id": "ev.flow",
+                "tier": "code_observed",
+                "source_sha256": "3" * 64,
+                "path": "app/api/continuations.py",
+                "rule": "local_symbol_call.v1",
+            },
+            {
+                "id": "ev.verify",
+                "tier": "test_verified",
+                "source_sha256": "4" * 64,
+                "rule": "local_harness_verification_observation.v1",
+            },
+        ],
+        "capabilities": [{
+            "id": "cap.continuation",
+            "name": "Continuation",
+            "summary": "Compiles and stages a continuation package.",
+            "state": "documented_only",
+            "assessment": {
+                "declaration_status": "declared",
+                "implementation_coverage": "none",
+                "verification_status": "absent",
+            },
+            "evidence_ref_ids": ["ev.product"],
+        }],
+        "production_flows": [{
+            "id": "flow.continuation",
+            "name": "Prepare continuation",
+            "capability_ids": ["cap.continuation"],
+            "snapshot": snapshot,
+            "entrypoint": {
+                "kind": "entrypoint",
+                "path": "app/api/continuations.py",
+                "symbol": "prepare_continuation",
+                "evidence_ref_ids": ["ev.flow"],
+            },
+            "service": [{
+                "kind": "service",
+                "path": "app/services/continuation.py",
+                "symbol": "ContinuationService.prepare",
+                "evidence_ref_ids": ["ev.flow"],
+            }],
+            "proof": "code_observed",
+            "complete": False,
+            "gaps": [
+                "Persistence, compiler result propagation, and output are not proved."
+            ],
+            "evidence_ref_ids": ["ev.flow"],
+        }],
+        "verification_runs": [{
+            "id": "run.pytest",
+            "command": "pytest tests/test_continuation_execution_contract.py",
+            "working_directory": ".",
+            "snapshot": snapshot,
+            "exit_code": 0,
+            "result": "passed",
+            "failures": [],
+            "observed_at": observed_at,
+            "output_sha256": "5" * 64,
+            "evidence_ref_ids": ["ev.verify"],
+        }],
+        "repository_state": {
+            "repository_name": "context-engine",
+            "branch": "main",
+            "head_commit": "a" * 40,
+            "dirty": True,
+            "captured_at": observed_at,
+            "snapshot_fingerprint": snapshot,
+            "changed_path_count": 1,
+            "changes": [{
+                "path": "app/services/continuation.py",
+                "kind": "modified",
+                "scope": "worktree",
+                "content_sha256": "6" * 64,
+                "role": "implementation",
+                "capability_ids": ["cap.continuation"],
+                "semantic_delta": {
+                    "observer": "head_vs_worktree_syntax.v1",
+                    "status": "partial",
+                    "parser_coverage": "line_only",
+                    "parser_languages": ["python"],
+                    "base": "HEAD",
+                    "lines_added": 28,
+                    "lines_removed": 3,
+                    "complete": False,
+                },
+                "evidence_ref_ids": ["ev.change"],
+            }],
+            "evidence_ref_ids": ["ev.change"],
+        },
+        "quality_report": {
+            "status": "warning",
+            "publishable": True,
+            "copy_ready": True,
+            "score": 72,
+            "semantic_coverage_score": 72,
+            "repository_health": "unknown",
+        },
+    })
+
+
 @pytest.mark.parametrize(
     ("title", "statement", "expected"),
     (
@@ -289,6 +423,95 @@ def test_project_foundation_bucketing_prefers_specific_semantics(
         "title": title,
         "statement": statement,
     }) == expected
+
+
+async def test_composite_continuation_package_preserves_operational_evidence(
+    db_session,
+    tmp_path,
+) -> None:
+    snapshot = "f" * 64
+    artifact = _operational_workspace_artifact(snapshot)
+    task_state = "Composite package wiring remains in progress."
+    compiled = await _compile(
+        db_session,
+        tmp_path,
+        request="Finish the composite continuation package and verify it.",
+        repository_fingerprint=snapshot,
+        workspace_foundation=artifact.model_dump(mode="json"),
+        current_changed_files=[{
+            "status": "modified",
+            "path": "app/services/continuation.py",
+            "sha256": "6" * 64,
+        }],
+        restored_checkpoint={
+            "checkpoint": {
+                "id": "checkpoint-operational-package",
+                "sections": {
+                    "progress": [{
+                        "id": "progress-operational-package",
+                        "statement": task_state,
+                        "state": "active",
+                        "truth_state": "reported",
+                    }],
+                },
+            },
+        },
+        foundation_facts=_COMPLETE_FOUNDATION,
+    )
+
+    projection = compiled.contract.operational_workspace
+    assert projection is not None
+    assert projection.overall_mode is OperationalWorkspaceMode.INVESTIGATION_READY
+    assert projection.readiness.task_state is OperationalReadinessStatus.READY
+    assert projection.readiness.semantic_delta is OperationalReadinessStatus.PARTIAL
+    assert projection.readiness.change_intent is OperationalReadinessStatus.MISSING
+    assert projection.readiness.production_flows is OperationalReadinessStatus.PARTIAL
+    assert projection.readiness.verification is OperationalReadinessStatus.PARTIAL
+    assert projection.changed_paths == ("app/services/continuation.py",)
+    assert projection.changes[0].semantic_delta is not None
+    assert projection.changes[0].semantic_delta.lines_added == 28
+    assert projection.production_flows[0].complete is False
+    assert projection.production_flows[0].gaps == (
+        "Persistence, compiler result propagation, and output are not proved.",
+    )
+    assert projection.verification_runs[0].result.value == "passed"
+    assert projection.verification_runs[0].command == (
+        "pytest tests/test_continuation_execution_contract.py"
+    )
+    assert projection.change_intents == ()
+    assert compiled.contract.handoff.in_progress[0].statement == task_state
+
+    persisted = ContinuationExecutionContract.model_validate_json(
+        compiled.execution.contract_json
+    )
+    assert persisted.operational_workspace is not None
+    assert persisted.operational_workspace.package_sha256 == projection.package_sha256
+    assert persisted.operational_workspace.foundation_semantic_sha256 == (
+        artifact.semantic_sha256
+    )
+    assert persisted.operational_workspace.foundation_artifact_sha256 == (
+        artifact.artifact_sha256
+    )
+    tampered_projection = projection.model_dump(mode="json")
+    tampered_projection["gaps"].append("Unhashed package mutation.")
+    with pytest.raises(ValueError, match="package SHA-256"):
+        type(projection).model_validate(tampered_projection)
+
+    staging = render_continuation_staging_context(compiled.contract)
+    execution = compiled.prompt_markdown
+    for rendered in (staging, execution):
+        assert "Overall mode: `investigation_ready`" in rendered
+        assert "`app/services/continuation.py`" in rendered
+        assert "semantic delta `partial` (lines +28/-3)" in rendered
+        assert "Prepare continuation — `partial`" in rendered
+        assert "Persistence, compiler result propagation, and output are not proved." in rendered
+        assert "`passed` — `cd . && pytest tests/test_continuation_execution_contract.py`" in rendered
+        assert "No trusted change-intent record is included" in rendered
+        assert "Overall mode: `continuation_ready`" not in rendered
+        assert "Overall mode: `execution_ready`" not in rendered
+    assert "Task state: authoritative lead/MUST below" in staging
+    assert task_state not in staging
+    assert task_state in execution
 
 
 async def test_multiline_request_is_lossless_through_api_contract_and_storage(
@@ -2887,7 +3110,7 @@ async def test_repository_contract_preserves_deleted_xy_and_renders_kind(
     staged = render_continuation_staging_context(compiled.contract)
     assert "Protected baseline: 1 pre-existing change" in staged
     assert "preserve regardless of authorship" in staged
-    assert "app/services/codex_app_server_client.py" not in staged
+    assert "deleted:`app/services/codex_app_server_client.py`" in staged
 
 
 async def test_exact_requirement_command_mapping_is_launchable(

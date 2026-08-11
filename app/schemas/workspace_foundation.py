@@ -24,6 +24,7 @@ LEGACY_WORKSPACE_FOUNDATION_SCHEMA_VERSION = "workspace_foundation.v1"
 WORKSPACE_FOUNDATION_SCHEMA_VERSION = "workspace_foundation.v2"
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+MAX_BINARY_ASSET_BYTES = 9_223_372_036_854_775_807
 
 
 def _repository_path(value: str) -> str:
@@ -556,7 +557,7 @@ class ProductionFlow(_FrozenFoundationModel):
         has_canonical_path = bool(
             self.service and self.persistence and self.compiler and self.output is not None
         )
-        if self.complete != has_canonical_path:
+        if self.complete and not has_canonical_path:
             raise ValueError(
                 "complete production flows require entrypoint, service, persistence, "
                 "compiler, and output stages"
@@ -783,6 +784,7 @@ class RepositoryChangeRole(StrEnum):
     SCHEMA = "schema"
     TEST = "test"
     MIGRATION = "migration"
+    ASSET = "asset"
     DOCUMENTATION = "documentation"
     OPERATIONS = "operations"
     CONFIGURATION = "configuration"
@@ -890,6 +892,86 @@ class RepositorySemanticDelta(_FrozenFoundationModel):
         return self
 
 
+class RepositoryBinaryAssetKind(StrEnum):
+    """Conservative media classification for an opaque changed file."""
+
+    IMAGE = "image"
+    BINARY = "binary"
+
+
+class RepositoryBinaryAssetVersion(_FrozenFoundationModel):
+    """Hash-bound metadata for one exact version of a binary asset."""
+
+    content_sha256: Sha256
+    format: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9.+_-]*$")
+    mime_type: str = Field(
+        min_length=3,
+        max_length=160,
+        pattern=r"^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+_-]*$",
+    )
+    byte_size: int = Field(ge=0, le=MAX_BINARY_ASSET_BYTES)
+    width_px: int | None = Field(default=None, ge=1, le=1_000_000)
+    height_px: int | None = Field(default=None, ge=1, le=1_000_000)
+
+    @model_validator(mode="after")
+    def validate_dimensions(self) -> Self:
+        if (self.width_px is None) != (self.height_px is None):
+            raise ValueError("binary asset dimensions require both width and height")
+        if self.width_px is not None and not self.mime_type.startswith("image/"):
+            raise ValueError("only image assets may carry pixel dimensions")
+        return self
+
+
+class RepositoryBinaryAssetImportReference(_FrozenFoundationModel):
+    """An exact, hash-bound source import that resolves to the asset path."""
+
+    source_path: RepositoryPath
+    source_sha256: Sha256
+    specifier: str = Field(min_length=1, max_length=500)
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def validate_line_range(self) -> Self:
+        if self.end_line < self.start_line:
+            raise ValueError("binary asset import reference line range is reversed")
+        return self
+
+
+class RepositoryBinaryAssetMetadata(_FrozenFoundationModel):
+    """A bounded HEAD-vs-current binary lane with no text interpretation."""
+
+    observer: Literal["head_vs_worktree_binary_asset.v1"]
+    kind: RepositoryBinaryAssetKind
+    base: Literal["HEAD"] = "HEAD"
+    current: RepositoryBinaryAssetVersion | None = None
+    head: RepositoryBinaryAssetVersion | None = None
+    import_references: tuple[RepositoryBinaryAssetImportReference, ...] = Field(
+        default=(), max_length=32
+    )
+    import_references_truncated: bool = False
+    complete: bool = False
+
+    @model_validator(mode="after")
+    def validate_binary_observation(self) -> Self:
+        if self.current is None and self.head is None:
+            raise ValueError("binary asset metadata requires a current or HEAD version")
+        versions = tuple(
+            version for version in (self.current, self.head) if version is not None
+        )
+        if self.kind is RepositoryBinaryAssetKind.IMAGE and not any(
+            version.mime_type.startswith("image/") for version in versions
+        ):
+            raise ValueError("image asset metadata requires an image MIME version")
+        references = [
+            (item.source_path, item.start_line, item.end_line, item.specifier)
+            for item in self.import_references
+        ]
+        if len(references) != len(set(references)):
+            raise ValueError("binary asset metadata contains duplicate import references")
+        return self
+
+
 class RepositoryChange(_FrozenFoundationModel):
     path: RepositoryPath
     kind: RepositoryChangeKind
@@ -901,6 +983,7 @@ class RepositoryChange(_FrozenFoundationModel):
     component_ids: tuple[EntityId, ...] = Field(default=(), max_length=32)
     related_test_paths: tuple[RepositoryPath, ...] = Field(default=(), max_length=32)
     semantic_delta: RepositorySemanticDelta | None = None
+    binary_asset: RepositoryBinaryAssetMetadata | None = None
     intended_behavior: RepositoryChangeStatement | None = None
     completion_status: RepositoryChangeCompletionStatus = RepositoryChangeCompletionStatus.UNKNOWN
     completion_evidence_ref_ids: tuple[EntityId, ...] = Field(default=(), max_length=8)
@@ -919,6 +1002,13 @@ class RepositoryChange(_FrozenFoundationModel):
         }
         if requires_previous != (self.previous_path is not None):
             raise ValueError("only renamed or copied changes require previous_path")
+        if self.binary_asset is not None and self.semantic_delta is not None:
+            raise ValueError("binary assets may not also carry text semantic deltas")
+        if self.binary_asset is not None and self.binary_asset.current is not None:
+            if self.content_sha256 != self.binary_asset.current.content_sha256:
+                raise ValueError(
+                    "current binary asset metadata must match the changed content digest"
+                )
         completion_is_unknown = self.completion_status is RepositoryChangeCompletionStatus.UNKNOWN
         if completion_is_unknown == bool(self.completion_evidence_ref_ids):
             raise ValueError(
@@ -1077,6 +1167,22 @@ class DurableKnowledgeFact(_FrozenFoundationModel):
             }
         ):
             raise ValueError("corroborated durable facts require a corroboration promotion reason")
+        if (
+            self.promotion_reason is DurablePromotionReason.HUMAN_CONFIRMED
+            and self.evidence_tier is not EvidenceTier.HUMAN_CONFIRMED
+        ):
+            raise ValueError("human-confirmed promotion requires human-confirmed evidence")
+        if (
+            self.promotion_reason is DurablePromotionReason.MECHANICALLY_VERIFIED
+            and self.evidence_tier
+            not in {
+                EvidenceTier.RUNTIME_VERIFIED,
+                EvidenceTier.TEST_VERIFIED,
+                EvidenceTier.CODE_OBSERVED,
+                EvidenceTier.SYSTEM_VERIFIED,
+            }
+        ):
+            raise ValueError("mechanical promotion requires mechanically verified evidence")
         return self
 
 
@@ -1535,6 +1641,128 @@ class WorkspaceFoundationPayload(_FrozenFoundationModel):
                         "documentation-stated or human-confirmed evidence: " + ", ".join(inferred)
                     )
 
+        repository_snapshot = self.repository_state.snapshot_fingerprint
+        changed_paths = {change.path for change in self.repository_state.changes}
+        flow_proof_tiers: dict[ProductionFlowProof, frozenset[EvidenceTier]] = {
+            ProductionFlowProof.CODE_OBSERVED: frozenset(
+                {EvidenceTier.CODE_OBSERVED, EvidenceTier.SYSTEM_VERIFIED}
+            ),
+            ProductionFlowProof.TEST_VERIFIED: frozenset({EvidenceTier.TEST_VERIFIED}),
+            ProductionFlowProof.RUNTIME_VERIFIED: frozenset({EvidenceTier.RUNTIME_VERIFIED}),
+        }
+        for flow in self.production_flows:
+            if flow.snapshot != repository_snapshot:
+                raise ValueError(
+                    f"production flow {flow.id} snapshot does not match repository snapshot"
+                )
+            unknown_capabilities = sorted(set(flow.capability_ids) - capability_ids)
+            if unknown_capabilities:
+                raise ValueError(
+                    f"production flow {flow.id} references unknown capabilities: "
+                    + ", ".join(unknown_capabilities)
+                )
+            stages = (
+                flow.entrypoint,
+                *flow.service,
+                *flow.persistence,
+                *flow.compiler,
+                *((flow.output,) if flow.output is not None else ()),
+            )
+            supporting_evidence_ids = {
+                *flow.evidence_ref_ids,
+                *(reference_id for stage in stages for reference_id in stage.evidence_ref_ids),
+            }
+            static_stage_tiers = {
+                EvidenceTier.CODE_OBSERVED,
+                EvidenceTier.SYSTEM_VERIFIED,
+            }
+            for stage in stages:
+                if not any(
+                    evidence_by_id[reference_id].tier in static_stage_tiers
+                    for reference_id in stage.evidence_ref_ids
+                ):
+                    raise ValueError(
+                        f"production flow {flow.id} {stage.kind.value} stage lacks "
+                        "code-observed or system-verified endpoint evidence"
+                    )
+            matching_tiers = flow_proof_tiers[flow.proof]
+            if not any(
+                evidence_by_id[reference_id].tier in matching_tiers
+                for reference_id in supporting_evidence_ids
+            ):
+                expected = " or ".join(sorted(tier.value for tier in matching_tiers))
+                raise ValueError(
+                    f"production flow {flow.id} declares {flow.proof.value} proof "
+                    f"without {expected} supporting evidence"
+                )
+
+        executed_evidence_tiers = {
+            EvidenceTier.TEST_VERIFIED,
+            EvidenceTier.RUNTIME_VERIFIED,
+        }
+        for run in self.verification_runs:
+            if run.snapshot != repository_snapshot:
+                raise ValueError(
+                    f"verification run {run.id} snapshot does not match repository snapshot"
+                )
+            non_executed = sorted(
+                reference_id
+                for reference_id in run.evidence_ref_ids
+                if evidence_by_id[reference_id].tier not in executed_evidence_tiers
+            )
+            if non_executed:
+                raise ValueError(
+                    f"verification run {run.id} requires test-verified or runtime-verified "
+                    "evidence: " + ", ".join(non_executed)
+                )
+
+        for intent in self.change_intents:
+            if intent.snapshot != repository_snapshot:
+                raise ValueError(
+                    f"change intent {intent.id} snapshot does not match repository snapshot"
+                )
+            unknown_capabilities = sorted(set(intent.capability_ids) - capability_ids)
+            if unknown_capabilities:
+                raise ValueError(
+                    f"change intent {intent.id} references unknown capabilities: "
+                    + ", ".join(unknown_capabilities)
+                )
+            unknown_changed_paths = sorted(set(intent.changed_paths) - changed_paths)
+            if unknown_changed_paths:
+                raise ValueError(
+                    f"change intent {intent.id} references paths absent from repository changes: "
+                    + ", ".join(unknown_changed_paths)
+                )
+            declaration_owners = [
+                *(
+                    [("before behavior", intent.before_behavior.evidence_ref_ids)]
+                    if intent.before_behavior is not None
+                    else []
+                ),
+                *(
+                    [("after behavior", intent.after_behavior.evidence_ref_ids)]
+                    if intent.after_behavior is not None
+                    else []
+                ),
+                ("completion status", intent.completion_evidence_ref_ids),
+                ("remaining-work status", intent.remaining_evidence_ref_ids),
+                *(
+                    (f"remaining-work item {index}", item.evidence_ref_ids)
+                    for index, item in enumerate(intent.remaining, start=1)
+                ),
+            ]
+            for label, reference_ids in declaration_owners:
+                inferred = sorted(
+                    reference_id
+                    for reference_id in reference_ids
+                    if evidence_by_id[reference_id].tier not in change_declaration_tiers
+                )
+                if inferred:
+                    raise ValueError(
+                        f"change intent {intent.id} {label} requires documentation-stated "
+                        "or human-confirmed evidence: " + ", ".join(inferred)
+                    )
+
         for concept in self.concepts:
             unknown = sorted(set(concept.distinguished_from) - concept_ids)
             if unknown:
@@ -1630,7 +1858,7 @@ class WorkspaceFoundationPayload(_FrozenFoundationModel):
                     + ", ".join(unknown_components)
                 )
 
-        for fact in self.durable_knowledge:
+        for fact in (*self.durable_knowledge, *self.durable_facts):
             referenced_tiers = {
                 evidence_by_id[reference_id].tier for reference_id in fact.evidence_ref_ids
             }
@@ -1639,6 +1867,15 @@ class WorkspaceFoundationPayload(_FrozenFoundationModel):
                     f"durable fact {fact.id} declares {fact.evidence_tier.value} "
                     "without evidence from that tier"
                 )
+            if fact.evidence_tier is EvidenceTier.CORROBORATED:
+                independent_sources = {
+                    evidence_by_id[reference_id].source_sha256
+                    for reference_id in fact.evidence_ref_ids
+                }
+                if len(independent_sources) < fact.corroboration_count:
+                    raise ValueError(
+                        f"durable fact {fact.id} lacks independent source lineages"
+                    )
 
         for capability in self.capabilities:
             if capability.state is not CapabilityState.VERIFIED:
@@ -1703,6 +1940,61 @@ class WorkspaceFoundationPayload(_FrozenFoundationModel):
                 raise ValueError(
                     "passing repository health requires a passing exact observation for "
                     "every required check: " + ", ".join(not_passing)
+                )
+        if max(
+            self.quality_report.score,
+            self.quality_report.semantic_coverage_score,
+        ) >= 95:
+            required_keys = {
+                (item.key.command, item.key.working_directory)
+                for item in self.verification_policy.required_commands
+            }
+            run_keys = {
+                (item.command, item.working_directory)
+                for item in self.verification_runs
+            }
+            verification_ready = (
+                self.verification_policy.discovery_complete
+                and bool(required_keys)
+                and required_keys <= run_keys
+            )
+            flow_ready = any(
+                flow.complete
+                and flow.proof
+                in {
+                    ProductionFlowProof.TEST_VERIFIED,
+                    ProductionFlowProof.RUNTIME_VERIFIED,
+                }
+                for flow in self.production_flows
+            )
+            intent_paths = {
+                path for intent in self.change_intents for path in intent.changed_paths
+            }
+            intent_ready = not self.repository_state.dirty or (
+                not self.repository_state.changes_truncated
+                and intent_paths
+                == {change.path for change in self.repository_state.changes}
+                and bool(self.change_intents)
+                and all(
+                    intent.before_behavior is not None
+                    and intent.after_behavior is not None
+                    and intent.completed is not RepositoryChangeCompletionStatus.UNKNOWN
+                    and intent.remaining_status
+                    is not RepositoryChangeRemainingWorkStatus.UNKNOWN
+                    for intent in self.change_intents
+                )
+            )
+            gates = {
+                "verification": verification_ready,
+                "production_flow": flow_ready,
+                "change_intent": intent_ready,
+                "durable_fact": bool(self.durable_facts),
+            }
+            missing_gates = [name for name, ready in gates.items() if not ready]
+            if missing_gates:
+                raise ValueError(
+                    "semantic coverage of 95 or higher requires operational gates: "
+                    + ", ".join(missing_gates)
                 )
         return self
 
@@ -1888,6 +2180,10 @@ __all__ = [
     "QualityStatus",
     "RequiredCommandKey",
     "RequiredVerificationCommand",
+    "RepositoryBinaryAssetImportReference",
+    "RepositoryBinaryAssetKind",
+    "RepositoryBinaryAssetMetadata",
+    "RepositoryBinaryAssetVersion",
     "RepositoryChange",
     "RepositoryChangeCompletionStatus",
     "RepositoryChangeKind",

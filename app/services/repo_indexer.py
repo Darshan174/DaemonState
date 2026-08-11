@@ -127,6 +127,7 @@ MAX_INDEXED_CALL_HINTS_PER_FILE = 256
 MAX_INDEXED_HTTP_REFERENCES_PER_FILE = 256
 MAX_SEMANTIC_CHANGE_FILES = 96
 MAX_SEMANTIC_CHANGE_ITEMS = 16
+MAX_BINARY_ASSET_IMPORT_REFERENCES = 32
 ENV_FILE_RE = re.compile(r"(^|/)\.env($|[.\-])|\.env\.example$|config\.(?:py|js|ts|json|ya?ml)$")
 RANKING_VERSION = "objective_file_rank.v5"
 REPOSITORY_EVIDENCE_VERSION = "repository_evidence.v2"
@@ -329,6 +330,7 @@ class IndexedCall:
     binding_kind: str
     start_line: int
     end_line: int
+    target_container: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1285,8 +1287,23 @@ async def inspect_repo(
     )
 
 
+class RepositorySnapshotChanged(RuntimeError):
+    """The repository changed while a bounded frame was being captured."""
+
+
 def _scan_repo(root: Path) -> RepoFrame:
-    git_state = _git_state(root)
+    for _attempt in range(2):
+        git_state = _git_state(root)
+        starting_identity = _git_scan_identity(git_state)
+        frame = _scan_repo_from_state(root, git_state)
+        if _git_scan_identity(_git_state(root)) == starting_identity:
+            return frame
+    raise RepositorySnapshotChanged(
+        "repository changed during two consecutive scan attempts"
+    )
+
+
+def _scan_repo_from_state(root: Path, git_state: dict[str, Any]) -> RepoFrame:
     indexed_files = [_index_file(root, path) for path in _iter_interesting_files(root)]
     indexed_files = [item for item in indexed_files if item is not None]
     git_state["changed_files"] = _annotate_semantic_changes(
@@ -1321,6 +1338,28 @@ def _scan_repo(root: Path) -> RepoFrame:
         env_files=env_files,
         last_indexed_at=utc_now().isoformat(timespec="seconds") + "Z",
         snapshot_fingerprint=snapshot_fingerprint,
+    )
+
+
+def _git_scan_identity(git_state: dict[str, Any]) -> tuple[Any, ...]:
+    """Identity that must remain stable across the filesystem scan."""
+
+    changes = tuple(
+        sorted(
+            (
+                str(item.get("status") or ""),
+                str(item.get("old_path") or ""),
+                str(item.get("path") or ""),
+                str(item.get("sha256") or ""),
+            )
+            for item in git_state.get("changed_files", ())
+        )
+    )
+    return (
+        git_state.get("branch"),
+        git_state.get("head_commit"),
+        bool(git_state.get("dirty")),
+        changes,
     )
 
 
@@ -1771,6 +1810,11 @@ def _index_file_bytes(rel: str, raw: bytes) -> IndexedFile | None:
 
     if len(raw) > MAX_INDEXED_FILE_BYTES:
         return None
+    # Binary assets must never reach text or syntax parsing. In particular,
+    # latin-1 can decode every byte sequence and previously allowed image
+    # chunks to masquerade as source symbols or Markdown headings.
+    if _is_binary_content(raw):
+        return None
     sha = hashlib.sha256(raw).hexdigest()
     path = Path(rel)
     language = _language_for(path)
@@ -1927,12 +1971,13 @@ def _python_symbols(
 
 
 def _python_call_hints(text: str) -> list[IndexedCall]:
-    """Return conservative top-level Python caller-to-symbol references.
+    """Return conservative Python caller-to-symbol references.
 
-    A hint is emitted only for a local top-level declaration, a symbol imported
-    with ``from ... import ...``, or an attribute called through an imported
-    module alias. Calls through parameters, object attributes, star imports,
-    dynamic lookups, and ambiguous nested declarations are intentionally absent.
+    A hint is emitted only for a local top-level declaration, an imported symbol,
+    an attribute called through an imported module alias, an unconditionally
+    bound imported-class instance, or ``self.method()`` inside one top-level
+    class. Calls through arbitrary parameters or attributes, star imports,
+    dynamic lookups, and ambiguous or reassigned bindings are intentionally absent.
     """
 
     try:
@@ -1946,11 +1991,16 @@ def _python_call_hints(text: str) -> list[IndexedCall]:
         for node in module.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
-    callers = [
-        node
-        for node in module.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    ]
+    callers: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str | None]] = []
+    for node in module.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            callers.append((node, None))
+        elif isinstance(node, ast.ClassDef):
+            callers.extend(
+                (child, node.name)
+                for child in node.body
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            )
     for node in module.body:
         if isinstance(node, ast.ImportFrom):
             specifier = "." * int(node.level or 0) + (node.module or "")
@@ -1971,9 +2021,22 @@ def _python_call_hints(text: str) -> list[IndexedCall]:
     hints: list[IndexedCall] = []
 
     class CallVisitor(ast.NodeVisitor):
-        def __init__(self, caller: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        def __init__(
+            self,
+            caller: ast.FunctionDef | ast.AsyncFunctionDef,
+            caller_container: str | None,
+        ) -> None:
             self.caller = caller
+            self.caller_container = caller_container
             self.shadowed_names = _python_callable_bindings(caller)
+            self.store_counts = _python_callable_store_counts(caller)
+            self.instance_bindings = _python_imported_instance_bindings(
+                caller,
+                bindings,
+                module_rebindings,
+                self.shadowed_names,
+                self.store_counts,
+            )
 
         def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
             # Do not attribute calls inside a nested function to its parent.
@@ -1994,6 +2057,7 @@ def _python_call_hints(text: str) -> list[IndexedCall]:
             target_name: str | None = None
             target_specifier: str | None = None
             binding_kind: str | None = None
+            target_container: str | None = None
             if isinstance(node.func, ast.Name):
                 local_name = node.func.id
                 binding = bindings.get(local_name)
@@ -2025,6 +2089,35 @@ def _python_call_hints(text: str) -> list[IndexedCall]:
                 ):
                     binding_kind, target_specifier, _unused = binding
                     target_name = node.func.attr
+                elif local_name in self.instance_bindings:
+                    target_specifier, target_container = self.instance_bindings[local_name]
+                    target_name = node.func.attr
+                    binding_kind = "bound_instance_method"
+                elif (
+                    self.caller_container is not None
+                    and self.caller.args.args
+                    and local_name == self.caller.args.args[0].arg
+                    and self.store_counts.get(local_name, 0) == 0
+                ):
+                    target_name = node.func.attr
+                    target_container = self.caller_container
+                    binding_kind = "self_method"
+            elif (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Call)
+                and isinstance(node.func.value.func, ast.Name)
+            ):
+                constructor_name = node.func.value.func.id
+                binding = bindings.get(constructor_name)
+                if (
+                    binding is not None
+                    and binding[0] == "imported_symbol"
+                    and constructor_name not in self.shadowed_names
+                    and constructor_name not in module_rebindings
+                ):
+                    _kind, target_specifier, target_container = binding
+                    target_name = node.func.attr
+                    binding_kind = "bound_instance_method"
             if target_name and binding_kind:
                 hints.append(IndexedCall(
                     caller_name=self.caller.name,
@@ -2034,11 +2127,12 @@ def _python_call_hints(text: str) -> list[IndexedCall]:
                     binding_kind=binding_kind,
                     start_line=node.lineno,
                     end_line=getattr(node, "end_lineno", node.lineno),
+                    target_container=target_container,
                 ))
             self.generic_visit(node)
 
-    for caller in callers:
-        visitor = CallVisitor(caller)
+    for caller, caller_container in callers:
+        visitor = CallVisitor(caller, caller_container)
         for statement in caller.body:
             if len(hints) >= MAX_INDEXED_CALL_HINTS_PER_FILE:
                 break
@@ -2055,6 +2149,7 @@ def _python_call_hints(text: str) -> list[IndexedCall]:
             hint.binding_kind,
             hint.start_line,
             hint.end_line,
+            hint.target_container,
         ): hint
         for hint in hints
     }
@@ -2067,8 +2162,84 @@ def _python_call_hints(text: str) -> list[IndexedCall]:
             item.caller_name,
             item.target_specifier or "",
             item.target_name,
+            item.target_container or "",
         ),
     )[:MAX_INDEXED_CALL_HINTS_PER_FILE]
+
+
+def _python_imported_instance_bindings(
+    caller: ast.FunctionDef | ast.AsyncFunctionDef,
+    bindings: dict[str, tuple[str, str, str | None]],
+    module_rebindings: set[str],
+    callable_bindings: set[str],
+    store_counts: dict[str, int],
+) -> dict[str, tuple[str, str]]:
+    """Resolve unconditional ``name = ImportedClass(...)`` receiver bindings."""
+
+    candidates: dict[str, tuple[str, str]] = {}
+    for statement in caller.body:
+        raw_targets: list[ast.expr] = []
+        value: ast.AST | None = None
+        if isinstance(statement, ast.Assign):
+            raw_targets = list(statement.targets)
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            raw_targets = [statement.target]
+            value = statement.value
+        targets = [target for target in raw_targets if isinstance(target, ast.Name)]
+        if (
+            len(targets) != 1
+            or not isinstance(value, ast.Call)
+            or not isinstance(value.func, ast.Name)
+        ):
+            continue
+        constructor_name = value.func.id
+        binding = bindings.get(constructor_name)
+        if (
+            binding is None
+            or binding[0] != "imported_symbol"
+            or constructor_name in module_rebindings
+            or constructor_name in callable_bindings
+        ):
+            continue
+        _kind, specifier, imported_name = binding
+        if imported_name:
+            candidates[targets[0].id] = (specifier, imported_name)
+    return {
+        name: target
+        for name, target in candidates.items()
+        if store_counts.get(name) == 1
+    }
+
+
+def _python_callable_store_counts(
+    caller: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> dict[str, int]:
+    """Count stores in one callable, including branches but excluding nested scopes."""
+
+    counts: dict[str, int] = {}
+
+    class StoreVisitor(ast.NodeVisitor):
+        def visit_Name(self, node: ast.Name) -> None:
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                counts[node.id] = counts.get(node.id, 0) + 1
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            return None
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            return None
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return None
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return None
+
+    visitor = StoreVisitor()
+    for statement in caller.body:
+        visitor.visit(statement)
+    return counts
 
 
 def _python_module_rebindings(module: ast.Module) -> set[str]:
@@ -3002,10 +3173,11 @@ def _annotate_semantic_changes(
     *,
     head_commit: str | None,
 ) -> list[dict[str, Any]]:
-    """Attach a bounded HEAD-vs-current syntax delta to dirty paths.
+    """Attach a bounded HEAD-vs-current typed observation to dirty paths.
 
-    These records describe observable source changes only. They never infer the
-    author's intent, whether work is complete, or what remains to be done.
+    Text files receive syntax deltas; binary assets receive opaque, hash-bound
+    metadata and never enter a text parser. Neither lane infers the author's
+    intent, whether work is complete, or what remains to be done.
     """
 
     indexed_by_path = {item.path: item for item in indexed_files}
@@ -3041,6 +3213,50 @@ def _annotate_semantic_changes(
         if not added and head_commit:
             previous_raw = _git_blob(root, head_commit, old_path)
 
+        complete = bool(
+            (added or previous_raw is not None)
+            and (deleted or current_raw is not None)
+        )
+        if _is_binary_content(current_raw) or _is_binary_content(previous_raw):
+            references, references_truncated = _binary_asset_import_references(
+                path,
+                indexed_files,
+            )
+            current_asset = (
+                _binary_asset_version(current_raw)
+                if current_raw is not None
+                else None
+            )
+            head_asset = (
+                _binary_asset_version(previous_raw)
+                if previous_raw is not None
+                else None
+            )
+            versions = tuple(
+                version
+                for version in (current_asset, head_asset)
+                if version is not None
+            )
+            change["binary_asset"] = {
+                "observer": "head_vs_worktree_binary_asset.v1",
+                "kind": (
+                    "image"
+                    if any(
+                        str(version["mime_type"]).startswith("image/")
+                        for version in versions
+                    )
+                    else "binary"
+                ),
+                "base": "HEAD",
+                "current": current_asset,
+                "head": head_asset,
+                "import_references": references,
+                "import_references_truncated": references_truncated,
+                "complete": complete,
+            }
+            annotated.append(change)
+            continue
+
         current_index = indexed_by_path.get(path)
         if current_index is None and current_raw is not None:
             current_index = _index_file_bytes(path, current_raw)
@@ -3055,10 +3271,6 @@ def _annotate_semantic_changes(
         if line_counts is None and deleted and previous_raw is not None:
             line_counts = (0, _line_count(previous_raw))
 
-        complete = bool(
-            (added or previous_raw is not None)
-            and (deleted or current_raw is not None)
-        )
         delta = _semantic_change_delta(
             previous_index,
             current_index,
@@ -3119,8 +3331,16 @@ def _semantic_change_delta(
     current_routes = set(current.route_hints if current else ())
     previous_imports = set(previous.imports if previous else ())
     current_imports = set(current.imports if current else ())
-    previous_headings = _markdown_headings(previous_raw) if previous else set()
-    current_headings = _markdown_headings(current_raw) if current else set()
+    previous_headings = (
+        _markdown_headings(previous_raw)
+        if previous is not None and previous.language == "markdown"
+        else set()
+    )
+    current_headings = (
+        _markdown_headings(current_raw)
+        if current is not None and current.language == "markdown"
+        else set()
+    )
 
     values: dict[str, list[str]] = {
         "symbols_added": [_semantic_symbol_label(item) for item in added_ids],
@@ -3202,13 +3422,12 @@ def _semantic_parser_covers(
         except SyntaxError:
             return False
         return True
-    return indexed.language in {
-        "javascript",
-        "javascript-react",
-        "markdown",
-        "typescript",
-        "typescript-react",
-    }
+    # JS/TS indexing is currently regex-based and declaration spans do not
+    # reliably cover function/component bodies. Treat it as partial until a
+    # real parser can prove body attribution; otherwise body-only edits look
+    # falsely complete. Markdown heading parsing is the only other complete
+    # semantic lane here.
+    return indexed.language == "markdown"
 
 
 def _unique_semantic_symbols(
@@ -3532,7 +3751,240 @@ def _is_test_file(rel: str, text: str) -> bool:
     return False
 
 
+def _is_binary_content(raw: bytes | None) -> bool:
+    """Return whether bytes must stay out of every text parser.
+
+    Known binary formats are signature-based. The fallback is deliberately
+    conservative so legacy latin-1 source files remain indexable while opaque
+    data containing NULs or a high control-byte ratio is treated as binary.
+    """
+
+    if raw is None or not raw:
+        return False
+    if _binary_format(raw) is not None:
+        return True
+    sample = raw[:8_192]
+    if b"\x00" in sample:
+        return True
+    control_count = sum(
+        byte < 32 and byte not in {8, 9, 10, 12, 13}
+        for byte in sample
+    )
+    return control_count / len(sample) > 0.10
+
+
+def _binary_format(raw: bytes) -> tuple[str, str] | None:
+    """Identify common binary and image assets using stable magic bytes."""
+
+    signatures: tuple[tuple[bytes, str, str], ...] = (
+        (b"\x89PNG\r\n\x1a\n", "png", "image/png"),
+        (b"\xff\xd8\xff", "jpeg", "image/jpeg"),
+        (b"GIF87a", "gif", "image/gif"),
+        (b"GIF89a", "gif", "image/gif"),
+        (b"II*\x00", "tiff", "image/tiff"),
+        (b"MM\x00*", "tiff", "image/tiff"),
+        (b"\x00\x00\x01\x00", "ico", "image/x-icon"),
+        (b"%PDF-", "pdf", "application/pdf"),
+        (b"PK\x03\x04", "zip", "application/zip"),
+        (b"PK\x05\x06", "zip", "application/zip"),
+        (b"PK\x07\x08", "zip", "application/zip"),
+        (b"\x1f\x8b", "gzip", "application/gzip"),
+        (b"\x7fELF", "elf", "application/x-elf"),
+        (b"\x00asm", "wasm", "application/wasm"),
+        (b"wOFF", "woff", "font/woff"),
+        (b"wOF2", "woff2", "font/woff2"),
+        (b"OTTO", "otf", "font/otf"),
+        (b"\x00\x01\x00\x00", "ttf", "font/ttf"),
+    )
+    for signature, asset_format, mime_type in signatures:
+        if raw.startswith(signature):
+            if asset_format == "gif" and len(raw) < 10:
+                continue
+            if asset_format == "otf" and len(raw) < 12:
+                continue
+            return asset_format, mime_type
+    if len(raw) >= 26 and raw.startswith(b"BM"):
+        dib_header_size = int.from_bytes(raw[14:18], "little")
+        if dib_header_size in {12, 16, 40, 52, 56, 64, 108, 124}:
+            return "bmp", "image/bmp"
+    if len(raw) >= 12 and raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+        return "webp", "image/webp"
+    if raw[:4] in {
+        b"\xfe\xed\xfa\xce",
+        b"\xfe\xed\xfa\xcf",
+        b"\xce\xfa\xed\xfe",
+        b"\xcf\xfa\xed\xfe",
+        b"\xca\xfe\xba\xbe",
+    }:
+        return "mach-o", "application/x-mach-binary"
+    return None
+
+
+def _binary_asset_version(raw: bytes) -> dict[str, Any]:
+    identified = _binary_format(raw)
+    asset_format, mime_type = identified or ("opaque", "application/octet-stream")
+    width, height = _image_dimensions(asset_format, raw)
+    return {
+        "content_sha256": hashlib.sha256(raw).hexdigest(),
+        "format": asset_format,
+        "mime_type": mime_type,
+        "byte_size": len(raw),
+        **({"width_px": width, "height_px": height} if width and height else {}),
+    }
+
+
+def _image_dimensions(asset_format: str, raw: bytes) -> tuple[int | None, int | None]:
+    """Read dimensions only from bounded, format-defined header fields."""
+
+    dimensions: tuple[int, int] | None = None
+    if (
+        asset_format == "png"
+        and len(raw) >= 24
+        and raw[12:16] == b"IHDR"
+        and int.from_bytes(raw[8:12], "big") == 13
+    ):
+        dimensions = (
+            int.from_bytes(raw[16:20], "big"),
+            int.from_bytes(raw[20:24], "big"),
+        )
+    elif asset_format == "gif" and len(raw) >= 10:
+        dimensions = (
+            int.from_bytes(raw[6:8], "little"),
+            int.from_bytes(raw[8:10], "little"),
+        )
+    elif asset_format == "bmp" and len(raw) >= 26:
+        dimensions = (
+            abs(int.from_bytes(raw[18:22], "little", signed=True)),
+            abs(int.from_bytes(raw[22:26], "little", signed=True)),
+        )
+    elif asset_format == "ico" and len(raw) >= 8:
+        dimensions = (raw[6] or 256, raw[7] or 256)
+    elif asset_format == "jpeg":
+        dimensions = _jpeg_dimensions(raw)
+    elif asset_format == "webp":
+        dimensions = _webp_dimensions(raw)
+    if dimensions is None:
+        return None, None
+    width, height = dimensions
+    if not (0 < width <= 1_000_000 and 0 < height <= 1_000_000):
+        return None, None
+    return width, height
+
+
+def _jpeg_dimensions(raw: bytes) -> tuple[int, int] | None:
+    offset = 2
+    start_of_frame = {
+        0xC0, 0xC1, 0xC2, 0xC3,
+        0xC5, 0xC6, 0xC7,
+        0xC9, 0xCA, 0xCB,
+        0xCD, 0xCE, 0xCF,
+    }
+    while offset < len(raw):
+        while offset < len(raw) and raw[offset] != 0xFF:
+            offset += 1
+        while offset < len(raw) and raw[offset] == 0xFF:
+            offset += 1
+        if offset >= len(raw):
+            return None
+        marker = raw[offset]
+        offset += 1
+        if marker in {0x01, 0xD8, 0xD9}:
+            continue
+        if offset + 2 > len(raw):
+            return None
+        segment_length = int.from_bytes(raw[offset:offset + 2], "big")
+        if segment_length < 2 or offset + segment_length > len(raw):
+            return None
+        if marker in start_of_frame and segment_length >= 7:
+            height = int.from_bytes(raw[offset + 3:offset + 5], "big")
+            width = int.from_bytes(raw[offset + 5:offset + 7], "big")
+            return width, height
+        offset += segment_length
+    return None
+
+
+def _webp_dimensions(raw: bytes) -> tuple[int, int] | None:
+    if len(raw) < 16:
+        return None
+    chunk = raw[12:16]
+    if chunk == b"VP8X" and len(raw) >= 30:
+        width = 1 + int.from_bytes(raw[24:27], "little")
+        height = 1 + int.from_bytes(raw[27:30], "little")
+        return width, height
+    if chunk == b"VP8L" and len(raw) >= 25 and raw[20] == 0x2F:
+        packed = raw[21:25]
+        width = 1 + packed[0] + ((packed[1] & 0x3F) << 8)
+        height = 1 + (packed[1] >> 6) + (packed[2] << 2) + ((packed[3] & 0x0F) << 10)
+        return width, height
+    if chunk == b"VP8 " and len(raw) >= 30 and raw[23:26] == b"\x9d\x01\x2a":
+        width = int.from_bytes(raw[26:28], "little") & 0x3FFF
+        height = int.from_bytes(raw[28:30], "little") & 0x3FFF
+        return width, height
+    return None
+
+
+def _binary_asset_import_references(
+    target_path: str,
+    indexed_files: list[IndexedFile],
+) -> tuple[list[dict[str, Any]], bool]:
+    references: list[dict[str, Any]] = []
+    for indexed in indexed_files:
+        if indexed.sha256 is None or indexed.language not in {
+            "javascript",
+            "javascript-react",
+            "typescript",
+            "typescript-react",
+        }:
+            continue
+        for hint in indexed.import_hints:
+            if _relative_asset_import_target(indexed.path, hint.specifier) != target_path:
+                continue
+            references.append({
+                "source_path": indexed.path,
+                "source_sha256": indexed.sha256,
+                "specifier": hint.specifier,
+                "start_line": hint.start_line,
+                "end_line": hint.end_line,
+            })
+    ordered = sorted(
+        references,
+        key=lambda item: (
+            item["source_path"],
+            item["start_line"],
+            item["end_line"],
+            item["specifier"],
+        ),
+    )
+    deduped = list({
+        (
+            item["source_path"],
+            item["start_line"],
+            item["end_line"],
+            item["specifier"],
+        ): item
+        for item in ordered
+    }.values())
+    return (
+        deduped[:MAX_BINARY_ASSET_IMPORT_REFERENCES],
+        len(deduped) > MAX_BINARY_ASSET_IMPORT_REFERENCES,
+    )
+
+
+def _relative_asset_import_target(source_path: str, specifier: str) -> str | None:
+    if not specifier.startswith(("./", "../")):
+        return None
+    clean_specifier = re.split(r"[?#]", specifier, maxsplit=1)[0]
+    normalized = posixpath.normpath(
+        posixpath.join(posixpath.dirname(source_path), clean_specifier)
+    )
+    if normalized in {"", ".", ".."} or normalized.startswith("../"):
+        return None
+    return normalized
+
+
 def _decode(raw: bytes) -> str | None:
+    if _is_binary_content(raw):
+        return None
     for encoding in ("utf-8", "latin-1"):
         try:
             return raw.decode(encoding)

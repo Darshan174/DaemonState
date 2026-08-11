@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import struct
 import subprocess
+import zlib
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -11,6 +14,20 @@ from app.models import CodeEdge, CodeFile, CodeSymbol, Workspace
 from app.schemas.workspace_foundation import RepositorySemanticDelta
 from app.services import repo_indexer
 from app.services.repo_indexer import RepoIndexer
+
+
+def _png_bytes(width: int, height: int, marker: bytes) -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        checksum = zlib.crc32(kind + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", checksum)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"tEXt", marker)
+        + chunk(b"IEND", b"")
+    )
 
 
 def test_git_state_preserves_porcelain_index_and_worktree_columns(
@@ -54,6 +71,55 @@ def test_git_state_expands_untracked_directories_to_file_rows(tmp_path):
     assert [item["path"] for item in state["changed_files"]] == [
         "Resources/icon.png",
     ]
+
+
+def test_scan_retries_once_when_repository_snapshot_changes(tmp_path, monkeypatch) -> None:
+    def state(commit: str) -> dict[str, object]:
+        return {
+            "branch": "main",
+            "base_commit": None,
+            "head_commit": commit,
+            "dirty": False,
+            "changed_files": [],
+            "untracked_files": [],
+            "recent_commits": [],
+        }
+
+    states = iter((state("a" * 40), state("b" * 40), state("b" * 40), state("b" * 40)))
+    monkeypatch.setattr(repo_indexer, "_git_state", lambda _root: next(states))
+
+    frame = repo_indexer._scan_repo(tmp_path)
+
+    assert frame.head_commit == "b" * 40
+
+
+def test_scan_fails_closed_after_two_snapshot_races(tmp_path, monkeypatch) -> None:
+    def state(commit: str) -> dict[str, object]:
+        return {
+            "branch": "main",
+            "base_commit": None,
+            "head_commit": commit,
+            "dirty": False,
+            "changed_files": [],
+            "untracked_files": [],
+            "recent_commits": [],
+        }
+
+    states = iter(
+        (
+            state("a" * 40),
+            state("b" * 40),
+            state("c" * 40),
+            state("d" * 40),
+        )
+    )
+    monkeypatch.setattr(repo_indexer, "_git_state", lambda _root: next(states))
+
+    with pytest.raises(
+        repo_indexer.RepositorySnapshotChanged,
+        match="two consecutive scan attempts",
+    ):
+        repo_indexer._scan_repo(tmp_path)
 
 
 def test_unreadable_semantic_delta_is_a_valid_non_observation():
@@ -178,6 +244,119 @@ async def test_semantic_delta_for_unsupported_language_is_explicitly_line_only(
     assert not any(key.startswith("symbols_") for key in delta)
 
 
+async def test_regex_indexed_typescript_body_edit_is_never_complete(tmp_path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "workspace-foundation@example.invalid"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Workspace Foundation Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+    source = tmp_path / "view.ts"
+    source.write_text(
+        "export function label() {\n  return 'old';\n}\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "view.ts"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "baseline"],
+        cwd=tmp_path,
+        check=True,
+    )
+    source.write_text(
+        "export function label() {\n  const note = `\n# not-a-markdown-heading\n`;\n"
+        "  return note;\n}\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+    delta = next(
+        item["semantic_delta"]
+        for item in frame.changed_files
+        if item["path"] == "view.ts"
+    )
+
+    assert delta["status"] == "partial"
+    assert delta["parser_coverage"] == "line_only"
+    assert delta["complete"] is False
+    assert "headings_added" not in delta
+    assert "headings_removed" not in delta
+
+
+async def test_changed_png_uses_binary_metadata_without_text_semantic_garbage(
+    tmp_path,
+):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "workspace-foundation@example.invalid"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Workspace Foundation Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+    resources = tmp_path / "Resources"
+    resources.mkdir()
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    source = source_dir / "view.ts"
+    source.write_text(
+        'import icon from "../Resources/icon.png";\n'
+        "export const iconUrl = icon;\n",
+        encoding="utf-8",
+    )
+    icon = resources / "icon.png"
+    head_bytes = _png_bytes(4, 3, b"baseline")
+    icon.write_bytes(head_bytes)
+    subprocess.run(["git", "add", "Resources/icon.png", "src/view.ts"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "baseline"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    current_bytes = _png_bytes(
+        8,
+        6,
+        b"opaque\xffbytes\n# \xffbinary-heading-garbage\n",
+    )
+    icon.write_bytes(current_bytes)
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+    change = next(item for item in frame.changed_files if item["path"] == "Resources/icon.png")
+    asset = change["binary_asset"]
+
+    assert "semantic_delta" not in change
+    assert asset["kind"] == "image"
+    assert asset["complete"] is True
+    assert asset["current"] == {
+        "content_sha256": hashlib.sha256(current_bytes).hexdigest(),
+        "format": "png",
+        "mime_type": "image/png",
+        "byte_size": len(current_bytes),
+        "width_px": 8,
+        "height_px": 6,
+    }
+    assert asset["head"]["content_sha256"] == hashlib.sha256(head_bytes).hexdigest()
+    assert (asset["head"]["width_px"], asset["head"]["height_px"]) == (4, 3)
+    assert asset["import_references"] == [{
+        "source_path": "src/view.ts",
+        "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "specifier": "../Resources/icon.png",
+        "start_line": 1,
+        "end_line": 1,
+    }]
+    assert repo_indexer._decode(current_bytes) is None
+    assert repo_indexer._index_file_bytes("Resources/icon.png", current_bytes) is None
+    assert "binary-heading-garbage" not in str(change)
+
+
 async def test_indexes_python_files_symbols_and_routes(tmp_path):
     (tmp_path / ".git").mkdir()
     app_dir = tmp_path / "app"
@@ -300,6 +479,92 @@ async def test_python_call_hints_reject_shadowed_and_reassigned_bindings(tmp_pat
     ):
         indexed = next(item for item in frame.indexed_files if item.path == path)
         assert indexed.call_hints == []
+
+
+async def test_python_call_hints_resolve_stable_imported_instances_and_self_methods(
+    tmp_path,
+):
+    (tmp_path / ".git").mkdir()
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    (app_dir / "__init__.py").write_text("", encoding="utf-8")
+    (app_dir / "service.py").write_text(
+        "class Worker:\n"
+        "    def run(self, payload):\n"
+        "        return self.compile(payload)\n\n"
+        "    def compile(self, payload):\n"
+        "        return payload\n",
+        encoding="utf-8",
+    )
+    (app_dir / "api.py").write_text(
+        "from .service import Worker\n\n"
+        "async def create_item(payload):\n"
+        "    worker = Worker()\n"
+        "    return worker.run(payload)\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+    api_file = next(item for item in frame.indexed_files if item.path == "app/api.py")
+    service_file = next(
+        item for item in frame.indexed_files if item.path == "app/service.py"
+    )
+
+    assert any(
+        item.caller_name == "create_item"
+        and item.target_name == "run"
+        and item.target_specifier == ".service"
+        and item.target_container == "Worker"
+        and item.binding_kind == "bound_instance_method"
+        for item in api_file.call_hints
+    )
+    assert any(
+        item.caller_name == "run"
+        and item.target_name == "compile"
+        and item.target_container == "Worker"
+        and item.binding_kind == "self_method"
+        for item in service_file.call_hints
+    )
+
+
+async def test_python_call_hints_reject_conditional_or_reassigned_receivers(tmp_path):
+    (tmp_path / ".git").mkdir()
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    (app_dir / "__init__.py").write_text("", encoding="utf-8")
+    (app_dir / "service.py").write_text(
+        "class Worker:\n"
+        "    def run(self):\n"
+        "        return True\n",
+        encoding="utf-8",
+    )
+    (app_dir / "unsafe.py").write_text(
+        "from .service import Worker\n\n"
+        "def reassigned(flag, other):\n"
+        "    worker = Worker()\n"
+        "    if flag:\n"
+        "        worker = other\n"
+        "    return worker.run()\n\n"
+        "def conditional(flag):\n"
+        "    if flag:\n"
+        "        worker = Worker()\n"
+        "    return worker.run()\n\n"
+        "class LocalWorker:\n"
+        "    def run(self, other):\n"
+        "        self = other\n"
+        "        return self.finish()\n\n"
+        "    def finish(self):\n"
+        "        return True\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+    indexed = next(item for item in frame.indexed_files if item.path == "app/unsafe.py")
+
+    assert not any(
+        item.binding_kind in {"bound_instance_method", "self_method"}
+        for item in indexed.call_hints
+    )
 
 
 async def test_python_call_hints_are_strictly_capped_per_file(tmp_path):

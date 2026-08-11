@@ -128,6 +128,7 @@ _FEATURE_HEADERS = frozenset(
         "capability",
         "feature",
         "flow",
+        "surface",
         "use case",
         "workflow",
     }
@@ -142,6 +143,8 @@ _CONCEPT_HEADERS = frozenset(
 )
 _DEFINITION_HEADERS = frozenset(
     {
+        "behavior",
+        "current behavior",
         "definition",
         "description",
         "meaning",
@@ -200,11 +203,18 @@ class DocumentedEngineeringKnowledge:
 
 
 @dataclass(frozen=True)
+class DocumentedEndpoint:
+    route: str
+    source: SourceLocation
+
+
+@dataclass(frozen=True)
 class DocumentedCapability:
     name: str
     summary: str
     steps: tuple[DocumentedWorkflowStep, ...]
     source: SourceLocation
+    endpoints: tuple[DocumentedEndpoint, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -452,6 +462,14 @@ def collect_documented_project(
                 )
             )
         )
+    capabilities = _attach_documented_capability_endpoints(
+        frame,
+        root=root,
+        capabilities=capabilities,
+        readme_path=readme_path,
+        readme_sections=sections,
+        readme_sha256=current_sha256,
+    )
     system_flows = _collect_documented_system_flows(
         frame,
         root=root,
@@ -481,6 +499,113 @@ def collect_documented_project(
         source=source,
         truncated=truncated or len(text.splitlines()) > MAX_DOCUMENT_LINES,
     )
+
+
+def _attach_documented_capability_endpoints(
+    frame: RepoFrame,
+    *,
+    root: Path,
+    capabilities: tuple[DocumentedCapability, ...],
+    readme_path: str,
+    readme_sections: tuple[_MarkdownSection, ...],
+    readme_sha256: str,
+) -> tuple[DocumentedCapability, ...]:
+    """Attach explicit HTTP endpoints from capability-named documentation sections."""
+
+    documents: list[tuple[str, str, tuple[_MarkdownSection, ...]]] = [
+        (readme_path, readme_sha256, readme_sections)
+    ]
+    candidates = sorted(
+        (
+            item
+            for item in frame.indexed_files
+            if item.path != readme_path
+            and item.language == "markdown"
+            and item.sha256
+            and not _documentation_noise_path(item.path)
+        ),
+        key=lambda item: (_capability_endpoint_document_priority(item.path), item.path),
+    )[:24]
+    for indexed in candidates:
+        try:
+            candidate = (root / indexed.path).resolve(strict=True)
+            candidate.relative_to(root)
+            raw = candidate.read_bytes()
+        except (OSError, ValueError):
+            continue
+        if not raw or hashlib.sha256(raw).hexdigest() != indexed.sha256:
+            continue
+        lines = (
+            raw[:MAX_DOCUMENT_BYTES]
+            .decode("utf-8", errors="replace")
+            .splitlines()[:MAX_DOCUMENT_LINES]
+        )
+        documents.append((indexed.path, indexed.sha256, _markdown_sections(lines)))
+
+    endpoint_pattern = re.compile(
+        r"(?<![A-Za-z])(?P<method>GET|POST|PUT|PATCH|DELETE)\s+"
+        r"`?(?P<path>/[A-Za-z0-9_{}:./-]{1,500})",
+        re.IGNORECASE,
+    )
+    result: list[DocumentedCapability] = []
+    for capability in capabilities:
+        capability_roots = _word_roots(capability.name)
+        endpoints: list[DocumentedEndpoint] = []
+        seen: set[str] = set()
+        for path, digest, sections in documents:
+            for section in sections:
+                if not capability_roots & _word_roots(section.heading):
+                    continue
+                for line_number, line in section.lines:
+                    for match in endpoint_pattern.finditer(line):
+                        route = (
+                            f"{match.group('method').upper()} "
+                            f"{match.group('path').rstrip('.,;:')}"
+                        )
+                        if route in seen:
+                            continue
+                        seen.add(route)
+                        endpoints.append(DocumentedEndpoint(
+                            route=route,
+                            source=SourceLocation(
+                                path=path,
+                                sha256=digest,
+                                heading=section.heading,
+                                start_line=line_number,
+                                end_line=line_number,
+                                rule_id="documented_capability_endpoint.v1",
+                            ),
+                        ))
+                        if len(endpoints) >= 4:
+                            break
+                    if len(endpoints) >= 4:
+                        break
+                if len(endpoints) >= 4:
+                    break
+            if len(endpoints) >= 4:
+                break
+        result.append(DocumentedCapability(
+            name=capability.name,
+            summary=capability.summary,
+            steps=capability.steps,
+            source=capability.source,
+            endpoints=tuple(endpoints),
+        ))
+    return tuple(result)
+
+
+def _capability_endpoint_document_priority(path: str) -> int:
+    name = Path(path.casefold()).name
+    if any(marker in name for marker in ("product", "guide", "api", "cli")):
+        return 0
+    if any(marker in name for marker in ("architecture", "design", "runtime")):
+        return 1
+    return 2
+
+
+def _documentation_noise_path(path: str) -> bool:
+    parts = set(path.casefold().replace("\\", "/").split("/"))
+    return bool(parts & {"fixtures", "fixture", "generated", "node_modules", "vendor"})
 
 
 def collect_architecture_observations(
@@ -1346,12 +1471,24 @@ def _documented_capabilities(
         for headers, cells, line_number in _tables(section):
             if len(headers) < 2 or len(cells) < 2:
                 continue
-            if headers[0] not in _FEATURE_HEADERS:
+            feature_index = next(
+                (index for index, header in enumerate(headers) if header in _FEATURE_HEADERS),
+                None,
+            )
+            definition_index = next(
+                (
+                    index
+                    for index, header in enumerate(headers)
+                    if header in _DEFINITION_HEADERS
+                ),
+                None,
+            )
+            if feature_index is None or definition_index is None:
                 continue
-            if headers[1] not in _DEFINITION_HEADERS:
+            if max(feature_index, definition_index) >= len(cells):
                 continue
-            name = _safe_text(cells[0], 100)
-            summary = _safe_text(cells[1], 280)
+            name = _safe_text(cells[feature_index], 100)
+            summary = _safe_text(cells[definition_index], 280)
             key = name.casefold()
             if not name or not summary or key in seen:
                 continue

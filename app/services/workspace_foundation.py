@@ -23,6 +23,7 @@ from app.schemas.workspace_foundation import (
     CapabilityState,
     CapabilitySurface,
     CapabilityVerificationStatus,
+    ChangeIntent,
     CommandKind,
     CommandOrigin,
     CommandVerification,
@@ -42,6 +43,7 @@ from app.schemas.workspace_foundation import (
     ProductProfile,
     ProductClaim,
     ProductClaimKind,
+    ProductionFlow,
     QualityIssue,
     QualityIssueKind,
     QualityReport,
@@ -49,6 +51,7 @@ from app.schemas.workspace_foundation import (
     QualityStatus,
     RequiredCommandKey,
     RequiredVerificationCommand,
+    RepositoryBinaryAssetMetadata,
     RepositoryChange,
     RepositoryChangeKind,
     RepositoryChangeRole,
@@ -66,6 +69,7 @@ from app.schemas.workspace_foundation import (
     SurfaceRole,
     VerificationPolicy,
     VerificationPolicySource,
+    VerificationRun,
     WorkflowStep,
     WorkspaceCommand,
     WorkspaceFoundationArtifact,
@@ -106,6 +110,12 @@ from app.services.workspace_foundation_edges import (
 )
 from app.services.workspace_foundation_verification import (
     WorkspaceVerificationObservation,
+)
+from app.services.workspace_foundation_operational import (
+    compile_change_intents,
+    compile_durable_facts,
+    compile_production_flows,
+    compile_verification_runs,
 )
 
 
@@ -156,6 +166,28 @@ _EXACT_PRODUCTION_EDGE_RULES = frozenset({
     *_STATIC_FLOW_EDGE_RULES,
     "local_module_import.v1",
 })
+_ACTION_ENDPOINT_TERMS = frozenset({
+    "build",
+    "compil",
+    "compile",
+    "continue",
+    "create",
+    "execute",
+    "open",
+    "prepare",
+    "resume",
+    "run",
+    "stage",
+    "submit",
+})
+_INFORMATION_ENDPOINT_TERMS = frozenset({
+    "capability",
+    "health",
+    "option",
+    "provider",
+    "readiness",
+    "status",
+})
 
 
 @dataclass(frozen=True)
@@ -166,6 +198,7 @@ class _SurfaceMatch:
     matched_terms: tuple[str, ...]
     symbol: IndexedSymbol | None = None
     route: str | None = None
+    documentation_source: SourceLocation | None = None
 
 
 class _EvidenceRegistry:
@@ -354,7 +387,22 @@ class WorkspaceFoundationCompiler:
             registry,
             snapshot_fingerprint,
         )
+        production_flows = compile_production_flows(
+            implementation_traces,
+            capabilities=capabilities,
+            snapshot=snapshot_fingerprint,
+        )
+        verification_runs = compile_verification_runs(
+            commands,
+            snapshot=snapshot_fingerprint,
+        )
+        change_intents = compile_change_intents(
+            repository_state,
+            capabilities=capabilities,
+            components=components,
+        )
         durable_knowledge = _durable_knowledge(durable_foundation, registry)
+        durable_facts = compile_durable_facts(durable_knowledge)
         quality = _quality_report(
             frame=frame,
             product_documented=product_documented,
@@ -368,9 +416,13 @@ class WorkspaceFoundationCompiler:
             implementation_traces=implementation_traces,
             verification_policy=verification_policy,
             commands=commands,
+            production_flows=production_flows,
+            verification_runs=verification_runs,
             repository_state=repository_state,
+            change_intents=change_intents,
             repository_engineering_knowledge=repository_engineering_knowledge,
             durable_knowledge=durable_knowledge,
+            durable_facts=durable_facts,
             durable_foundation=durable_foundation,
             edge_observation=edge_observation,
             architecture_observation_count=architecture_observation_count,
@@ -388,11 +440,15 @@ class WorkspaceFoundationCompiler:
             architecture_components=components,
             structural_edges=structural_edges,
             implementation_traces=implementation_traces,
+            production_flows=production_flows,
             verification_policy=verification_policy,
             commands=commands,
+            verification_runs=verification_runs,
             repository_state=repository_state,
+            change_intents=change_intents,
             repository_engineering_knowledge=repository_engineering_knowledge,
             durable_knowledge=durable_knowledge,
+            durable_facts=durable_facts,
             quality_report=quality,
         )
         return WorkspaceFoundationArtifact.from_payload(payload)
@@ -872,6 +928,8 @@ def _surface_matches(
     frame: RepoFrame,
 ) -> list[_SurfaceMatch]:
     primary_terms = _capability_primary_terms(capability.name)
+    exact_primary_tokens = _word_tokens(capability.name)
+    documented_routes = _unique_documented_route_matches(capability, frame)
     secondary_terms = (
         _word_roots(
             " ".join(
@@ -897,6 +955,19 @@ def _surface_matches(
         route_pairs = [
             (route, _word_roots(route)) for route in item.route_hints
         ]
+        exact_symbol_tokens = set().union(
+            *(
+                _word_tokens(symbol.name) & exact_primary_tokens
+                for symbol, _terms in symbol_pairs
+            )
+        ) if symbol_pairs else set()
+        exact_route_tokens = set().union(
+            *(
+                _word_tokens(route) & exact_primary_tokens
+                for route, _terms in route_pairs
+            )
+        ) if route_pairs else set()
+        exact_path_tokens = _word_tokens(item.path) & exact_primary_tokens
         matching_routes = [
             (route, terms) for route, terms in route_pairs if terms & primary_terms
         ]
@@ -913,6 +984,16 @@ def _surface_matches(
             if matching_routes
             else None
         )
+        documented_endpoint = documented_routes.get(item.path)
+        if documented_endpoint is not None:
+            selected_route = next(
+                (
+                    pair
+                    for pair in route_pairs
+                    if pair[0] == documented_endpoint[0]
+                ),
+                selected_route,
+            )
         primary_path = primary_terms & path_terms
         primary_symbols = [
             (symbol, terms & primary_terms)
@@ -935,15 +1016,24 @@ def _surface_matches(
             8.0 * len(primary_path)
             + 6.0 * len(primary_routes)
             + 5.0 * len({term for _symbol, terms in primary_symbols for term in terms})
+            + 10.0 * len(exact_symbol_tokens)
+            + 8.0 * len(exact_route_tokens)
+            + 3.0 * len(exact_path_tokens)
             + 3.0 * len(secondary_routes)
             + 1.5 * len(secondary_path)
             + 0.5 * len(secondary_symbol_terms)
+            + 40.0 * bool(documented_endpoint)
         )
         # Summary nouns are useful for ranking only after the capability's
         # own name (or one of its narrow product-interface aliases) matched.
         # Otherwise broad prose such as "provider" or "ready" creates a
         # convincing but false capability map.
-        if not (primary_path or primary_symbols or primary_routes):
+        if not (
+            primary_path
+            or primary_symbols
+            or primary_routes
+            or documented_endpoint
+        ):
             continue
         if item.is_test:
             score -= 1.0
@@ -963,7 +1053,9 @@ def _surface_matches(
             else None
         )
         rule_id = (
-            "capability_route_match.v1"
+            "documented_capability_route_match.v1"
+            if documented_endpoint
+            else "capability_route_match.v1"
             if route
             else "capability_symbol_match.v1"
             if symbol
@@ -987,6 +1079,9 @@ def _surface_matches(
                 matched_terms=matched,
                 symbol=symbol,
                 route=route,
+                documentation_source=(
+                    documented_endpoint[1] if documented_endpoint else None
+                ),
             )
         )
     return sorted(matches, key=lambda item: (-item.score, item.file.path))
@@ -1105,6 +1200,16 @@ def _surface(
             "This does not prove runtime behaviour."
         ),
     )
+    evidence_ref_ids = [evidence_id]
+    if match.documentation_source is not None:
+        evidence_ref_ids.append(registry.add(
+            tier=EvidenceTier.DOCUMENTATION_STATED,
+            source=match.documentation_source,
+            note=(
+                f"Repository documentation explicitly binds {capability.name} to "
+                f"{match.route}; the separate code evidence establishes the unique route."
+            ),
+        ))
     locator = match.file.path
     if symbol and symbol.start_line:
         locator = f"{locator}:{symbol.start_line}"
@@ -1125,12 +1230,16 @@ def _surface(
         ),
         locator=locator,
         repository_path=match.file.path,
-        evidence_ref_ids=(evidence_id,),
+        evidence_ref_ids=tuple(evidence_ref_ids),
     )
 
 
 def _surface_derivation(match: _SurfaceMatch) -> SurfaceDerivation:
-    if match.rule_id in {"capability_route_match.v1", "route_capability_root.v1"}:
+    if match.rule_id in {
+        "capability_route_match.v1",
+        "documented_capability_route_match.v1",
+        "route_capability_root.v1",
+    }:
         return SurfaceDerivation.EXACT_ROUTE
     if match.rule_id == "capability_symbol_match.v1":
         return SurfaceDerivation.SYMBOL_MATCH
@@ -1823,9 +1932,9 @@ def _production_flow_candidate_key(
     secondary_terms: frozenset[str],
     anchor_paths: frozenset[str],
     indexed: dict[str, IndexedFile],
-) -> tuple[int, int, int, int, int, int, int, int, tuple[str, ...]]:
+) -> tuple[int, int, int, int, int, int, int, int, int, tuple[str, ...]]:
     if not edges:
-        return (0, 0, 0, 0, 0, 0, 0, 0, ())
+        return (0, 0, 0, 0, 0, 0, 0, 0, 0, ())
     rules = [str(edge.get("rule_id") or "") for edge in edges]
     route_terms, symbol_terms = _flow_candidate_endpoint_terms(edges)
     path_terms = _word_roots(
@@ -1846,6 +1955,28 @@ def _production_flow_candidate_key(
         + 2 * len(path_terms & secondary_terms)
     )
     relevance_score = primary_relevance + secondary_relevance
+    endpoint_values = [
+        str((edge.get("evidence") or {}).get(field) or "")
+        for edge in edges
+        for field in ("route", "declared_route", "client_path")
+    ]
+    endpoint_methods = {
+        value.split(None, 1)[0].upper()
+        for value in endpoint_values
+        if value.split(None, 1)
+        and value.split(None, 1)[0].isalpha()
+        and value.split(None, 1)[0].upper()
+        in {"GET", "POST", "PUT", "PATCH", "DELETE"}
+    }
+    endpoint_action_terms = (route_terms | symbol_terms) & _ACTION_ENDPOINT_TERMS
+    endpoint_information_terms = (
+        route_terms | symbol_terms
+    ) & _INFORMATION_ENDPOINT_TERMS
+    action_score = (
+        12 * bool(endpoint_methods & {"POST", "PUT", "PATCH", "DELETE"})
+        + 4 * len(endpoint_action_terms)
+        - 8 * bool(endpoint_methods == {"GET"} and endpoint_information_terms)
+    )
     paths = [
         str(edges[0].get("source_path") or ""),
         *(str(edge.get("target_path") or "") for edge in edges),
@@ -1881,8 +2012,9 @@ def _production_flow_candidate_key(
         else 1
     )
     return (
-        relevance_score,
         primary_relevance,
+        action_score,
+        relevance_score,
         preferred_transitions,
         distinct_roles,
         cross_file_calls,
@@ -2606,6 +2738,16 @@ def _repository_state(
             raise RepositoryObservationValidationError(
                 f"repository semantic delta for {path!r} is invalid: {exc}"
             ) from exc
+        try:
+            binary_asset = (
+                RepositoryBinaryAssetMetadata.model_validate(raw["binary_asset"])
+                if isinstance(raw.get("binary_asset"), dict)
+                else None
+            )
+        except ValueError as exc:
+            raise RepositoryObservationValidationError(
+                f"repository binary asset metadata for {path!r} is invalid: {exc}"
+            ) from exc
         semantic_ref = (
             registry.add(
                 tier=EvidenceTier.CODE_OBSERVED,
@@ -2620,6 +2762,19 @@ def _repository_state(
             if semantic_delta is not None
             else None
         )
+        binary_ref = (
+            registry.add(
+                tier=EvidenceTier.CODE_OBSERVED,
+                source_sha256=snapshot_fingerprint,
+                rule="head_vs_worktree_binary_asset.v1",
+                note=(
+                    f"Hash-bound HEAD-vs-working-tree binary metadata for {path}; "
+                    "the scanner did not decode these bytes as text or infer behavior."
+                ),
+            )
+            if binary_asset is not None
+            else None
+        )
         changes.append(
             RepositoryChange(
                 path=path,
@@ -2629,7 +2784,11 @@ def _repository_state(
                     str(raw.get("old_path") or "").replace("\\", "/").strip("/") or None
                 ),
                 content_sha256=content_sha,
-                role=_repository_change_role(path, indexed_by_path.get(path)),
+                role=(
+                    RepositoryChangeRole.ASSET
+                    if binary_asset is not None
+                    else _repository_change_role(path, indexed_by_path.get(path))
+                ),
                 capability_ids=tuple(sorted(capability_by_path.get(path, set())))[:16],
                 component_ids=tuple(
                     [component.id]
@@ -2638,9 +2797,10 @@ def _repository_state(
                 ),
                 related_test_paths=related_tests.get(path, ()),
                 semantic_delta=semantic_delta,
+                binary_asset=binary_asset,
                 evidence_ref_ids=tuple(
                     reference_id
-                    for reference_id in (change_ref, semantic_ref)
+                    for reference_id in (change_ref, semantic_ref, binary_ref)
                     if reference_id is not None
                 ),
             )
@@ -2683,14 +2843,16 @@ def _select_repository_change_rows(
     """Retain a diverse, high-signal subset of a bounded dirty snapshot.
 
     Git status does not reveal intent. Selection therefore uses only observed
-    role and semantic-delta richness, keeping one representative per role
-    before filling remaining slots by evidence density.
+    role and typed change-observation richness, keeping one representative per
+    role before filling remaining slots by evidence density.
     """
 
     if limit <= 0:
         return []
 
     def role(raw: dict[str, Any]) -> RepositoryChangeRole:
+        if isinstance(raw.get("binary_asset"), dict):
+            return RepositoryChangeRole.ASSET
         path = str(raw.get("path") or "")
         return _repository_change_role(path, indexed_by_path.get(path))
 
@@ -2735,6 +2897,7 @@ def _select_repository_change_rows(
         RepositoryChangeRole.MIGRATION,
         RepositoryChangeRole.SCHEMA,
         RepositoryChangeRole.IMPLEMENTATION,
+        RepositoryChangeRole.ASSET,
         RepositoryChangeRole.TEST,
         RepositoryChangeRole.CONFIGURATION,
         RepositoryChangeRole.OPERATIONS,
@@ -2923,9 +3086,13 @@ def _quality_report(
     implementation_traces: tuple[ImplementationTrace, ...],
     verification_policy: VerificationPolicy,
     commands: tuple[WorkspaceCommand, ...],
+    production_flows: tuple[ProductionFlow, ...],
+    verification_runs: tuple[VerificationRun, ...],
     repository_state: RepositoryState,
+    change_intents: tuple[ChangeIntent, ...],
     repository_engineering_knowledge: tuple[RepositoryEngineeringKnowledgeFact, ...],
     durable_knowledge: tuple[DurableKnowledgeFact, ...],
+    durable_facts: tuple[DurableKnowledgeFact, ...],
     durable_foundation: CompiledProjectFoundation | None,
     edge_observation: WorkspaceEdgeObservation,
     architecture_observation_count: int,
@@ -3025,6 +3192,29 @@ def _quality_report(
                 "path could be established; end-to-end implementation flow is unknown."
             ),
             entities=(item.id for item in mapped_capabilities),
+        )
+    if not production_flows:
+        issue(
+            "production_flow_missing",
+            kind=QualityIssueKind.INCOMPLETE_MAPPING,
+            severity=QualitySeverity.WARNING,
+            section=FoundationSection.ARCHITECTURE,
+            message=(
+                "No entrypoint-backed request-to-output production flow was established; "
+                "generic dependencies are not a substitute for an operational path."
+            ),
+        )
+    elif not any(flow.complete for flow in production_flows):
+        issue(
+            "production_flow_partial",
+            kind=QualityIssueKind.INCOMPLETE_MAPPING,
+            severity=QualitySeverity.WARNING,
+            section=FoundationSection.ARCHITECTURE,
+            message=(
+                "Production flows are partial and name their missing service, persistence, "
+                "compiler, or output stages."
+            ),
+            entities=(flow.id for flow in production_flows),
         )
     if not documented_system_flows:
         issue(
@@ -3127,6 +3317,32 @@ def _quality_report(
                     "Some changed paths could not be tied to a capability or architecture "
                     "component; intended behavior and unfinished work remain unknown."
                 ),
+            )
+        covered_change_paths = {
+            path for intent in change_intents for path in intent.changed_paths
+        }
+        known_change_intents = bool(change_intents) and all(
+            intent.before_behavior is not None
+            and intent.after_behavior is not None
+            and intent.completed.value != "unknown"
+            and intent.remaining_status.value != "unknown"
+            for intent in change_intents
+        )
+        all_changed_paths_covered = (
+            not repository_state.changes_truncated
+            and covered_change_paths == {change.path for change in repository_state.changes}
+        )
+        if not (known_change_intents and all_changed_paths_covered):
+            issue(
+                "change_intent_unknown",
+                kind=QualityIssueKind.MISSING_EVIDENCE,
+                severity=QualitySeverity.WARNING,
+                section=FoundationSection.REPOSITORY,
+                message=(
+                    "Dirty paths are grouped, but before/after behavior, completion, or "
+                    "remaining work lacks trusted task/checkpoint evidence."
+                ),
+                entities=(intent.id for intent in change_intents),
             )
     if documented.truncated:
         issue(
@@ -3298,6 +3514,50 @@ def _quality_report(
         + (5.0 if durable_knowledge else 3.0 if repository_engineering_knowledge else 0.0),
         2,
     )
+    required_keys_for_gate = {
+        (item.key.command, item.key.working_directory)
+        for item in verification_policy.required_commands
+    }
+    admitted_run_keys = {
+        (run.command, run.working_directory)
+        for run in verification_runs
+    }
+    verification_gate = (
+        verification_policy.discovery_complete
+        and bool(required_keys_for_gate)
+        and required_keys_for_gate <= admitted_run_keys
+    )
+    production_flow_gate = any(
+        flow.complete and flow.proof.value in {"test_verified", "runtime_verified"}
+        for flow in production_flows
+    )
+    covered_change_paths = {
+        path for intent in change_intents for path in intent.changed_paths
+    }
+    change_intent_gate = not repository_state.dirty or (
+        not repository_state.changes_truncated
+        and covered_change_paths == {change.path for change in repository_state.changes}
+        and bool(change_intents)
+        and all(
+            intent.before_behavior is not None
+            and intent.after_behavior is not None
+            and intent.completed.value != "unknown"
+            and intent.remaining_status.value != "unknown"
+            for intent in change_intents
+        )
+    )
+    durable_fact_gate = bool(durable_facts)
+    if not all(
+        (
+            verification_gate,
+            production_flow_gate,
+            change_intent_gate,
+            durable_fact_gate,
+        )
+    ):
+        # A high semantic score is an admission claim, not an average. Missing any
+        # operational lane keeps the artifact below the continuation-ready band.
+        score = min(score, 94.0)
     copy_ready = all(core.values())
     status = (
         QualityStatus.FAIL
@@ -3819,6 +4079,7 @@ def _word_roots(value: str) -> set[str]:
             continue
         root = token
         for prefix in (
+            "compil",
             "continu",
             "execut",
             "eviden",
@@ -3837,6 +4098,104 @@ def _word_roots(value: str) -> set[str]:
                     break
         roots.add(root)
     return roots
+
+
+def _word_tokens(value: str) -> set[str]:
+    """Return exact camel-aware tokens before stemming or prefix folding."""
+
+    camel_split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(value or ""))
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", camel_split.casefold())
+        if len(token) >= 4
+    }
+
+
+def _unique_documented_route_matches(
+    capability: DocumentedCapability,
+    frame: RepoFrame,
+) -> dict[str, tuple[str, SourceLocation]]:
+    """Resolve each declared endpoint to one unique indexed route, or omit it."""
+
+    observed: list[tuple[str, str, tuple[str, str]]] = []
+    for item in frame.indexed_files:
+        if item.is_test:
+            continue
+        for route in item.route_hints:
+            signature = _route_signature(route)
+            if signature is not None:
+                observed.append((item.path, route, signature))
+
+    result: dict[str, tuple[str, SourceLocation]] = {}
+    for endpoint in capability.endpoints:
+        signature = _route_signature(endpoint.route)
+        if signature is None:
+            continue
+        method, path = signature
+        allowed_paths = {path}
+        if path.startswith("/api/"):
+            allowed_paths.add(path.removeprefix("/api"))
+        candidates = [
+            (item_path, route)
+            for item_path, route, (observed_method, observed_path) in observed
+            if observed_method == method and observed_path in allowed_paths
+        ]
+        if len(candidates) != 1:
+            continue
+        item_path, route = candidates[0]
+        current = result.get(item_path)
+        if current is None or _documented_route_preference(
+            route,
+            capability,
+        ) > _documented_route_preference(current[0], capability):
+            result[item_path] = (route, endpoint.source)
+    return result
+
+
+def _route_signature(value: str) -> tuple[str, str] | None:
+    match = re.fullmatch(r"([A-Za-z]+)\s+(.+)", str(value or "").strip())
+    if match is None:
+        return None
+    method = match.group(1).upper()
+    if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+        return None
+    path = match.group(2).split("?", 1)[0]
+    path = re.sub(r"\{[^{}]+\}", "{}", path)
+    path = re.sub(r"(?<=/):[A-Za-z_][A-Za-z0-9_]*", "{}", path)
+    return method, re.sub(r"/{2,}", "/", path) or "/"
+
+
+def _documented_route_preference(
+    route: str,
+    capability: DocumentedCapability,
+) -> tuple[int, int, int, int, str]:
+    signature = _route_signature(route)
+    method = signature[0] if signature is not None else ""
+    terms = _word_roots(route)
+    capability_terms = _word_roots(
+        f"{capability.name} {capability.summary} "
+        + " ".join(step.description for step in capability.steps)
+    )
+    action_weights = {
+        "prepare": 7,
+        "execut": 6,
+        "run": 6,
+        "open": 5,
+        "submit": 5,
+        "create": 4,
+        "compile": 4,
+        "compil": 4,
+        "stage": 3,
+    }
+    action_score = max((action_weights.get(term, 0) for term in terms), default=0)
+    information_penalty = len(terms & _INFORMATION_ENDPOINT_TERMS)
+    return (
+        int(method in {"POST", "PUT", "PATCH", "DELETE"}),
+        action_score,
+        len(terms & capability_terms),
+        -information_penalty,
+        route,
+    )
 
 
 def _capability_primary_terms(value: str) -> set[str]:

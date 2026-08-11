@@ -33,6 +33,7 @@ from app.services.model_profiles import profile_for_target_model
 from app.services.repo_indexer import IndexedFile, RepoFrame
 from app.schemas.workspace_foundation import (
     WORKSPACE_FOUNDATION_SCHEMA_VERSION,
+    WorkspaceFoundationArtifact,
     verify_workspace_foundation_sha256,
 )
 from app.services.workspace_foundation_verification import (
@@ -438,6 +439,16 @@ async def test_compile_pack_persists_manifest_markdown_and_items(db_session, tmp
         "8e90e727-5ea0-4d50-8ca7-9019847912af"
     )
     assert result.manifest["lockfile"]["continuation"] == result.manifest["continuation"]
+    workspace_foundation = WorkspaceFoundationArtifact.model_validate(
+        result.manifest["workspace_foundation"]
+    )
+    assert verify_workspace_foundation_sha256(workspace_foundation)
+    assert result.manifest["repo_state"]["workspace_foundation_sha256"] == (
+        workspace_foundation.semantic_sha256
+    )
+    assert result.manifest["repo_state"][
+        "workspace_foundation_artifact_sha256"
+    ] == workspace_foundation.artifact_sha256
     compiler_constraints = [
         item
         for item in result.manifest["selected_context"]
