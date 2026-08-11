@@ -10,6 +10,7 @@ import DaemonStateIcon from "./DaemonStateIcon";
 export default function FloatingContextToggle({
   workspaceId,
   selectedSessions,
+  showSessionSummary = true,
 }) {
   const noticeId = useId();
   const {
@@ -25,7 +26,18 @@ export default function FloatingContextToggle({
     visible,
     visibleForAnotherWorkspace,
   } = useDesktopOverlaySessionSync({ workspaceId, selectedSessions });
-  const requestError = visibilityMutation.error
+  const mutationRequestedSessions = normalizeOverlaySessions(
+    visibilityMutation.variables?.selectedSessions,
+  );
+  const mutationMatchesCurrentSelection = (
+    visibilityMutation.variables?.selectedSessions === undefined
+    || requestedSessions === undefined
+    || overlaySessionIdentityKey(mutationRequestedSessions)
+      === overlaySessionIdentityKey(requestedSessions)
+  );
+  const requestError = (mutationMatchesCurrentSelection
+    ? visibilityMutation.error
+    : null)
     || (statusQuery.isError ? statusQuery.error : null);
   const unavailableMessage = (
     !loading
@@ -79,7 +91,7 @@ export default function FloatingContextToggle({
       >
         <DaemonStateIcon size={24} className="shrink-0 transition-transform group-hover:scale-105" />
         <span className="hidden whitespace-nowrap sm:inline">Floating button</span>
-        {selectedSessionCount ? (
+        {showSessionSummary && selectedSessionCount ? (
           <span
             aria-label={`${selectedSessionCount} custom session${selectedSessionCount === 1 ? "" : "s"} synced`}
             className="flex -space-x-1.5"
@@ -90,6 +102,7 @@ export default function FloatingContextToggle({
                   type={session.provider}
                   size="small"
                   decorative
+                  anthropicFilled={session.provider === "claude"}
                   className="!h-6 !w-6 !rounded-lg"
                 />
                 <span

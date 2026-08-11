@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import NowPage from "./NowPage";
 import {
   readExecuteActiveSessionIdentities,
+  readExecuteSessionContexts,
   writeExecuteActiveSessionIdentities,
   writeExecuteSessionContexts,
 } from "./executeSessionSelection";
@@ -744,7 +745,12 @@ describe("checkpoint product loop", () => {
     const continuationChoices = screen.getByRole("navigation", {
       name: "Custom session selection",
     });
-    expect(continuationChoices).toHaveClass("mx-auto", "w-full", "max-w-4xl");
+    const actionDock = screen.getByTestId("continue-action-dock");
+    expect(actionDock).toHaveClass("grid", "w-full", "max-w-4xl", "lg:grid-cols-2");
+    expect(continuationChoices).toHaveClass("w-full", "self-start");
+    expect(screen.getByTestId("floating-session-endpoint")).toContainElement(
+      screen.getByRole("switch", { name: "Floating context control" }),
+    );
     expect(within(continuationChoices).getAllByRole("link")).toHaveLength(1);
     expect(screen.getByRole("link", { name: "Choose custom sessions in Execute" })).toHaveAttribute("href", "/app/execute?from=continue");
     expect(screen.queryByRole("link", { name: "Prepare an older session" })).not.toBeInTheDocument();
@@ -815,7 +821,8 @@ describe("checkpoint product loop", () => {
       sessionId: "session-1",
       enabled: true,
     });
-    expect(mocks.hookCalls.library).toEqual([]);
+    expect(mocks.hookCalls.library.length).toBeGreaterThan(0);
+    expect(mocks.hookCalls.library.every(({ enabled }) => enabled === false)).toBe(true);
     expect(mocks.hookCalls.memory).toEqual([]);
     expect(mocks.hookCalls.providers.at(-1)).toMatchObject({
       workspaceId: "workspace-1",
@@ -855,6 +862,9 @@ describe("checkpoint product loop", () => {
         compaction_count: 2,
       },
     ]);
+    mocks.library.data = {
+      sessions: readExecuteSessionContexts("workspace-1"),
+    };
 
     render(
       <MemoryRouter initialEntries={["/app?session_flow=custom"]}>
@@ -862,16 +872,47 @@ describe("checkpoint product loop", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole("region", {
+    const sessionEndpoint = screen.getByTestId("floating-session-endpoint");
+    const sessionBlades = screen.getByRole("region", {
       name: "Custom Continue sessions",
-    })).toBeInTheDocument();
+    });
+    expect(sessionEndpoint).toContainElement(sessionBlades);
+    expect(sessionBlades).toHaveAttribute("data-session-pin-fan", "true");
+    expect(sessionBlades).toHaveClass(
+      "flex",
+      "flex-col",
+      "lg:col-start-1",
+      "lg:row-start-1",
+      "lg:h-52",
+      "lg:min-w-0",
+    );
+    expect(sessionBlades.querySelector("[data-session-pin-mobile-rail]")).toBeInTheDocument();
+    expect(screen.queryByLabelText("3 custom sessions synced")).not.toBeInTheDocument();
     const codexBlade = screen.getByRole("button", {
       name: "Codex custom sessions, session 1 selected",
     });
     expect(codexBlade).toBeInTheDocument();
-    expect(screen.getByRole("button", {
+    expect(codexBlade.querySelector('[data-harness-logo="codex"]')).toHaveAttribute(
+      "data-harness-logo-treatment",
+      "floating-button",
+    );
+    expect(codexBlade.closest('[data-session-pin="codex"]')).toHaveAttribute(
+      "data-session-pin-angle",
+      "10deg",
+    );
+    expect(codexBlade.querySelector("[data-session-pin-eye]")).toBeInTheDocument();
+    const claudeBlade = screen.getByRole("button", {
       name: "Claude Code custom sessions, session 3 selected",
-    })).toBeInTheDocument();
+    });
+    expect(claudeBlade).toBeInTheDocument();
+    expect(claudeBlade.querySelector('[data-harness-logo="claude"]')).toHaveAttribute(
+      "data-harness-logo-treatment",
+      "floating-button",
+    );
+    expect(claudeBlade.closest('[data-session-pin="claude"]')).toHaveAttribute(
+      "data-session-pin-angle",
+      "-10deg",
+    );
     expect(screen.queryByRole("button", {
       name: /OpenCode custom sessions/,
     })).not.toBeInTheDocument();
@@ -903,6 +944,93 @@ describe("checkpoint product loop", () => {
     });
   });
 
+  it("fans all three provider tabs from the floating control joint", () => {
+    writeExecuteSessionContexts("workspace-1", [
+      {
+        source_document_id: "source-pin-codex",
+        connector_type: "codex",
+        session_id: "pin-codex",
+        title: "Codex implementation task",
+        compaction_count: 2,
+      },
+      {
+        source_document_id: "source-pin-claude",
+        connector_type: "claude",
+        session_id: "pin-claude",
+        title: "Claude architecture task",
+        compaction_count: 2,
+      },
+      {
+        source_document_id: "source-pin-opencode",
+        connector_type: "opencode",
+        session_id: "pin-opencode",
+        title: "OpenCode terminal task",
+        compaction_count: 2,
+      },
+    ]);
+    mocks.library.data = {
+      sessions: readExecuteSessionContexts("workspace-1"),
+    };
+
+    render(
+      <MemoryRouter initialEntries={["/app?session_flow=custom"]}>
+        <NowPage />
+      </MemoryRouter>,
+    );
+
+    const endpoint = screen.getByTestId("floating-session-endpoint");
+    const joint = endpoint.querySelector('[data-session-pin-joint="floating-control"]');
+    expect(joint).toContainElement(
+      screen.getByRole("switch", { name: "Floating context control" }),
+    );
+    expect(joint).toHaveClass(
+      "lg:col-start-2",
+      "lg:row-start-1",
+      "lg:w-auto",
+      "lg:shrink-0",
+    );
+    expect(endpoint.querySelector('[data-session-pin="codex"]')).toHaveAttribute(
+      "data-session-pin-angle",
+      "14deg",
+    );
+    expect(endpoint.querySelector('[data-session-pin="claude"]')).toHaveAttribute(
+      "data-session-pin-angle",
+      "0deg",
+    );
+    expect(endpoint.querySelector('[data-session-pin="opencode"]')).toHaveAttribute(
+      "data-session-pin-angle",
+      "-14deg",
+    );
+    expect(endpoint.querySelectorAll("[data-session-pin-eye]")).toHaveLength(3);
+  });
+
+  it("drops a saved pin that no longer exists in the active workspace library", async () => {
+    writeExecuteSessionContexts("workspace-1", [{
+      source_document_id: "source-stale-pin",
+      connector_type: "codex",
+      session_id: "stale-pin",
+      title: "Session from another workspace",
+      compaction_count: 2,
+    }]);
+    mocks.library.data = { sessions: [] };
+    mocks.overlayStatus.data = {
+      available: true,
+      visible: true,
+      workspace_id: "workspace-1",
+      selected_sessions: [],
+    };
+
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+
+    expect(screen.queryByRole("region", {
+      name: "Custom Continue sessions",
+    })).not.toBeInTheDocument();
+    await waitFor(() => expect(
+      readExecuteSessionContexts("workspace-1"),
+    ).toEqual([]));
+    expect(mocks.overlayVisibility.mutate).not.toHaveBeenCalled();
+  });
+
   it("restores and syncs saved session blades on a direct Continue visit", async () => {
     writeExecuteSessionContexts("workspace-1", [{
       source_document_id: "source-hidden",
@@ -911,6 +1039,9 @@ describe("checkpoint product loop", () => {
       title: "Stored Execute session",
       compaction_count: 2,
     }]);
+    mocks.library.data = {
+      sessions: readExecuteSessionContexts("workspace-1"),
+    };
     mocks.overlayStatus.data = {
       available: true,
       visible: true,
@@ -958,6 +1089,9 @@ describe("checkpoint product loop", () => {
         compaction_count: 2,
       },
     ]);
+    mocks.library.data = {
+      sessions: readExecuteSessionContexts("workspace-1"),
+    };
     writeExecuteActiveSessionIdentities("workspace-1", {
       codex: "codex:reload-two",
     });
@@ -1256,7 +1390,8 @@ describe("checkpoint product loop", () => {
       enabled: true,
     });
     expect(mocks.hookCalls.history.at(-1)).toMatchObject({ limit: 12, enabled: true });
-    expect(mocks.hookCalls.library).toEqual([]);
+    expect(mocks.hookCalls.library.length).toBeGreaterThan(0);
+    expect(mocks.hookCalls.library.every(({ enabled }) => enabled === false)).toBe(true);
     expect(mocks.hookCalls.memory).toEqual([]);
     expect(mocks.hookCalls.providers.at(-1)).toMatchObject({
       workspaceId: "workspace-1",
@@ -1293,7 +1428,8 @@ describe("checkpoint product loop", () => {
       /No current in-project root session was found/i,
     ).length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "Save current context" })).not.toBeInTheDocument();
-    expect(mocks.hookCalls.library).toEqual([]);
+    expect(mocks.hookCalls.library.length).toBeGreaterThan(0);
+    expect(mocks.hookCalls.library.every(({ enabled }) => enabled === false)).toBe(true);
   });
 
   it("keeps the saved context preview available when the initial digest fails", () => {
@@ -3074,7 +3210,8 @@ Remove screenshot IDs and temporary paths from the Now page.
     expect(screen.getAllByText(
       /No current in-project root session was found/i,
     ).length).toBeGreaterThan(0);
-    expect(mocks.hookCalls.library).toEqual([]);
+    expect(mocks.hookCalls.library.length).toBeGreaterThan(0);
+    expect(mocks.hookCalls.library.every(({ enabled }) => enabled === false)).toBe(true);
   });
 
   it("does not enable a provider when only a repository can be resolved", () => {

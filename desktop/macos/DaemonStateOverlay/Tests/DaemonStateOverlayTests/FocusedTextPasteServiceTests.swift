@@ -87,15 +87,101 @@ struct FocusedTextPasteServiceTests {
 
     @Test
     @MainActor
+    func pastesAutomaticallyWhenAWebEditorHasNoAXFocusedElement() async throws {
+        let accessibility = FakeAccessibilityElementClient()
+        accessibility.hasFocusedElement = false
+        let pasteboard = FakeTextPasteboard()
+        var postedProcessIdentifiers: [pid_t] = []
+        let service = FocusedTextPasteService(
+            accessibility: accessibility,
+            pasteboard: pasteboard,
+            postCommandV: {
+                postedProcessIdentifiers.append($0)
+                return true
+            }
+        )
+
+        let outcome = try await service.deliver(
+            "Paste into the Electron chat editor",
+            to: service.captureTarget()
+        )
+
+        #expect(outcome == .pasted)
+        #expect(postedProcessIdentifiers == [accessibility.processIdentifier])
+        #expect(
+            pasteboard.string(forType: .string)
+                == "Paste into the Electron chat editor"
+        )
+    }
+
+    @Test
+    @MainActor
+    func pastesAutomaticallyThroughANonEditableWebContainer() async throws {
+        let accessibility = FakeAccessibilityElementClient()
+        accessibility.role = kAXGroupRole as String
+        let pasteboard = FakeTextPasteboard()
+        var postedProcessIdentifiers: [pid_t] = []
+        let service = FocusedTextPasteService(
+            accessibility: accessibility,
+            pasteboard: pasteboard,
+            postCommandV: {
+                postedProcessIdentifiers.append($0)
+                return true
+            }
+        )
+
+        let outcome = try await service.deliver(
+            "Paste through the focused web container",
+            to: service.captureTarget()
+        )
+
+        #expect(outcome == .pasted)
+        #expect(postedProcessIdentifiers == [accessibility.processIdentifier])
+    }
+
+    @Test
+    @MainActor
+    func doesNotPasteIfTheFrontmostAppChangesAfterCapture() async throws {
+        let accessibility = FakeAccessibilityElementClient()
+        accessibility.hasFocusedElement = false
+        var posted = false
+        let service = FocusedTextPasteService(
+            accessibility: accessibility,
+            pasteboard: FakeTextPasteboard(),
+            postCommandV: { _ in
+                posted = true
+                return true
+            }
+        )
+        let capture = service.captureTarget()
+        accessibility.frontmostPID = 99_999
+
+        let outcome = try await service.deliver(
+            "Do not paste into a different app",
+            to: capture
+        )
+
+        #expect(
+            outcome
+                == .notPasted(
+                    "The target app changed before automatic paste."
+                )
+        )
+        #expect(!posted)
+    }
+
+    @Test
+    @MainActor
     func neverInsertsIntoASecureTextField() async throws {
         let accessibility = FakeAccessibilityElementClient()
         accessibility.role = kAXTextFieldRole as String
         accessibility.subrole = "AXSecureTextField"
         accessibility.settableAttributes = [kAXSelectedTextAttribute as String]
         var posted = false
+        let pasteboard = FakeTextPasteboard()
         let service = FocusedTextPasteService(
             accessibility: accessibility,
-            pasteboard: FakeTextPasteboard(),
+            pasteboard: pasteboard,
             postCommandV: { _ in
                 posted = true
                 return true
@@ -109,10 +195,13 @@ struct FocusedTextPasteServiceTests {
 
         #expect(
             outcome
-                == .copiedOnly("Copied — focus an editable chat box to paste.")
+                == .notPasted(
+                    "Automatic paste is disabled for secure and search fields."
+                )
         )
         #expect(accessibility.insertedValues.isEmpty)
         #expect(!posted)
+        #expect(pasteboard.string(forType: .string) == nil)
     }
 }
 
@@ -147,6 +236,7 @@ private final class FakeAccessibilityElementClient: AccessibilityElementClient {
     let element = AXUIElementCreateSystemWide()
     let processIdentifier: pid_t = 42_424
     var trusted = true
+    var frontmostPID: pid_t? = 42_424
     var hasFocusedElement = true
     var focusedElementMatchesCapture = true
     var role: String?
@@ -158,6 +248,10 @@ private final class FakeAccessibilityElementClient: AccessibilityElementClient {
 
     func isTrusted(prompt: Bool) -> Bool {
         trusted
+    }
+
+    func frontmostProcessIdentifier() -> pid_t? {
+        frontmostPID
     }
 
     func focusedElement() -> AXUIElement? {

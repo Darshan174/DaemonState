@@ -37,6 +37,14 @@ final class OverlayTrackingView: NSView {
 
 @MainActor
 final class SessionFanButton: NSButton {
+    static let collapseDuration: TimeInterval = 0.20
+    static let anthropicCardColor = NSColor(
+        srgbRed: 201.0 / 255.0,
+        green: 158.0 / 255.0,
+        blue: 123.0 / 255.0,
+        alpha: 1
+    )
+
     let session: OverlaySelectedSession
     var onPress: ((OverlaySelectedSession) -> Void)?
     var onFocusChanged: ((Bool) -> Void)?
@@ -45,6 +53,7 @@ final class SessionFanButton: NSButton {
     private var trackingAreaReference: NSTrackingArea?
     private let logoImage: NSImage?
     private(set) var lastRevealDelay: TimeInterval = 0
+    private(set) var lastCollapseDelay: TimeInterval = 0
 
     init(session: OverlaySelectedSession, frame: NSRect) {
         self.session = session
@@ -146,9 +155,9 @@ final class SessionFanButton: NSButton {
         shadow.shadowBlurRadius = 6
         shadow.shadowOffset = NSSize(width: 0, height: -1)
         shadow.set()
-        (hovering
-            ? NSColor(calibratedWhite: 1, alpha: 1)
-            : NSColor(calibratedWhite: 0.98, alpha: 0.98)
+        Self.cardFillColor(
+            for: session.provider,
+            hovering: hovering
         ).setFill()
         card.fill()
         NSGraphicsContext.restoreGraphicsState()
@@ -223,6 +232,7 @@ final class SessionFanButton: NSButton {
         lastRevealDelay = delay
         guard let layer else { return }
         layer.removeAnimation(forKey: "session-fan-reveal")
+        layer.removeAnimation(forKey: "session-fan-collapse")
         alphaValue = 1
         guard animated else { return }
 
@@ -248,8 +258,43 @@ final class SessionFanButton: NSButton {
         layer.add(group, forKey: "session-fan-reveal")
     }
 
-    func stopRevealAnimation() {
+    func animateCollapse(
+        to hubCenter: NSPoint,
+        delay: TimeInterval,
+        animated: Bool
+    ) {
+        lastCollapseDelay = delay
+        guard let layer else { return }
+        layer.removeAnimation(forKey: "session-fan-reveal")
+        layer.removeAnimation(forKey: "session-fan-collapse")
+        alphaValue = 1
+        guard animated else { return }
+
+        let position = CABasicAnimation(keyPath: "position")
+        position.fromValue = NSValue(point: layer.position)
+        position.toValue = NSValue(point: hubCenter)
+
+        let scale = CAKeyframeAnimation(keyPath: "transform.scale")
+        scale.values = [1, 1.04, 0.46]
+        scale.keyTimes = [0, 0.22, 1]
+
+        let opacity = CABasicAnimation(keyPath: "opacity")
+        opacity.fromValue = 1
+        opacity.toValue = 0
+
+        let group = CAAnimationGroup()
+        group.animations = [position, scale, opacity]
+        group.duration = Self.collapseDuration
+        group.beginTime = layer.convertTime(CACurrentMediaTime(), from: nil) + delay
+        group.fillMode = .forwards
+        group.isRemovedOnCompletion = false
+        group.timingFunction = CAMediaTimingFunction(name: .easeIn)
+        layer.add(group, forKey: "session-fan-collapse")
+    }
+
+    func stopFanAnimations() {
         layer?.removeAnimation(forKey: "session-fan-reveal")
+        layer?.removeAnimation(forKey: "session-fan-collapse")
         alphaValue = 1
     }
 
@@ -267,24 +312,42 @@ final class SessionFanButton: NSButton {
         )
     }
 
-    private static func loadProviderLogo(_ provider: String) -> NSImage? {
+    static func cardFillColor(
+        for provider: String,
+        hovering: Bool
+    ) -> NSColor {
+        if provider == "claude" {
+            return anthropicCardColor
+        }
+        return hovering
+            ? NSColor(calibratedWhite: 1, alpha: 1)
+            : NSColor(calibratedWhite: 0.98, alpha: 0.98)
+    }
+
+    static func providerLogoURL(_ provider: String) -> URL? {
         let resourceName: String
+        let resourceExtension: String
         switch provider {
         case "codex":
             resourceName = "openai"
+            resourceExtension = "svg"
         case "claude":
             resourceName = "claude"
+            resourceExtension = "svg"
         case "opencode":
             resourceName = "opencode"
+            resourceExtension = "svg"
         default:
             return nil
         }
-        guard let url = Bundle.module.url(
+        return Bundle.module.url(
             forResource: resourceName,
-            withExtension: "svg"
-        ) else {
-            return nil
-        }
+            withExtension: resourceExtension
+        )
+    }
+
+    private static func loadProviderLogo(_ provider: String) -> NSImage? {
+        guard let url = providerLogoURL(provider) else { return nil }
         return NSImage(contentsOf: url)
     }
 

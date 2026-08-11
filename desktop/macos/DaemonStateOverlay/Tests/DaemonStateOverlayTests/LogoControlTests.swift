@@ -47,7 +47,7 @@ struct LogoControlTests {
 
     @Test
     @MainActor
-    func selectedSessionFanOrbitsTheHubInStaggeredOrdinalOrder() throws {
+    func selectedSessionFanOrbitsTheHubInStaggeredOrdinalOrder() async throws {
         let controller = OverlayPanelController(savedOrigin: nil)
         defer { controller.hide() }
         let sessions = selectedSessionFixtures()
@@ -92,8 +92,64 @@ struct LogoControlTests {
         controller.collapse()
 
         #expect(!controller.isExpanded)
+        #expect(controller.window?.frame.width == 200)
+        #expect(controller.sessionButtons.allSatisfy { !$0.isHidden })
+        #expect(abs(first.lastCollapseDelay - 0.09) < 0.001)
+        #expect(abs(second.lastCollapseDelay - 0.045) < 0.001)
+        #expect(third.lastCollapseDelay == 0)
+
+        controller.expand()
+        try await Task<Never, Never>.sleep(nanoseconds: 350_000_000)
+
+        #expect(controller.isExpanded)
+        #expect(controller.window?.frame.width == 200)
+        #expect(controller.sessionButtons.allSatisfy { !$0.isHidden })
+
+        controller.collapse()
+        try await Task<Never, Never>.sleep(nanoseconds: 350_000_000)
+
+        #expect(!controller.isExpanded)
         #expect(controller.window?.frame.width == 72)
         #expect(controller.sessionButtons.allSatisfy { $0.isHidden })
+    }
+
+    @Test
+    @MainActor
+    func anthropicSessionButtonUsesAFullTanCardWithATransparentBlackMark() throws {
+        let anthropic = try #require(
+            SessionFanButton.cardFillColor(
+                for: "claude",
+                hovering: false
+            ).usingColorSpace(.sRGB)
+        )
+        let hoveredAnthropic = try #require(
+            SessionFanButton.cardFillColor(
+                for: "claude",
+                hovering: true
+            ).usingColorSpace(.sRGB)
+        )
+        let codex = try #require(
+            SessionFanButton.cardFillColor(
+                for: "codex",
+                hovering: false
+            ).usingColorSpace(.sRGB)
+        )
+
+        #expect(abs(anthropic.redComponent - (201.0 / 255.0)) < 0.001)
+        #expect(abs(anthropic.greenComponent - (158.0 / 255.0)) < 0.001)
+        #expect(abs(anthropic.blueComponent - (123.0 / 255.0)) < 0.001)
+        #expect(hoveredAnthropic == anthropic)
+        #expect(codex.redComponent > 0.97)
+        #expect(codex.greenComponent > 0.97)
+        #expect(codex.blueComponent > 0.97)
+
+        let logoURL = try #require(
+            SessionFanButton.providerLogoURL("claude")
+        )
+        let logoSource = try String(contentsOf: logoURL, encoding: .utf8)
+        #expect(logoURL.pathExtension == "svg")
+        #expect(logoSource.contains("fill=\"#252525\""))
+        #expect(!logoSource.contains("<rect"))
     }
 
     @Test

@@ -34,6 +34,7 @@ import {
   useContinuationProviders,
   useLatestCheckpoint,
   useOpenContinuationHarness,
+  useSessionLibrary,
   useStageContinuation,
 } from "../api/hooks";
 import {
@@ -58,22 +59,58 @@ import {
   readExecuteSessionContexts,
   resolveExecuteSessionContexts,
   writeExecuteActiveSessionIdentities,
+  writeExecuteSessionContexts,
 } from "./executeSessionSelection";
 import { useProductWorkspace } from "./useProductWorkspace";
 
 export default function NowPage() {
   const workspace = useProductWorkspace();
-  const customSessions = useMemo(() => {
+  const storedCustomSessions = useMemo(() => {
     if (!workspace.activeWorkspaceId) return [];
-    return resolveExecuteSessionContexts(
-      readExecuteSessionContexts(workspace.activeWorkspaceId),
-      undefined,
-    );
+    return readExecuteSessionContexts(workspace.activeWorkspaceId);
   }, [
     workspace.activeWorkspaceId,
   ]);
-  // A saved selection is durable workspace intent. Navigation origin is not
-  // allowed to deactivate it or erase its native floating-control blades.
+  const sessionLibraryQuery = useSessionLibrary(
+    workspace.activeWorkspaceId,
+    { enabled: storedCustomSessions.length > 0 },
+  );
+  const sessionLibraryConfirmed = Boolean(sessionLibraryQuery.data);
+  const customSessions = useMemo(() => resolveExecuteSessionContexts(
+    storedCustomSessions,
+    sessionLibraryConfirmed
+      ? sessionLibraryQuery.data?.sessions || []
+      : undefined,
+  ), [
+    sessionLibraryConfirmed,
+    sessionLibraryQuery.data,
+    storedCustomSessions,
+  ]);
+  const storedCustomSessionKey = JSON.stringify(
+    storedCustomSessions.map(executeSessionIdentity),
+  );
+  const customSessionKey = JSON.stringify(
+    customSessions.map(executeSessionIdentity),
+  );
+  useEffect(() => {
+    if (
+      !workspace.activeWorkspaceId
+      || !sessionLibraryConfirmed
+      || storedCustomSessionKey === customSessionKey
+    ) return;
+    writeExecuteSessionContexts(
+      workspace.activeWorkspaceId,
+      customSessions,
+    );
+  }, [
+    customSessionKey,
+    customSessions,
+    sessionLibraryConfirmed,
+    storedCustomSessionKey,
+    workspace.activeWorkspaceId,
+  ]);
+  // A saved selection is durable workspace intent, but the active workspace's
+  // Library remains authoritative when a saved session has been removed.
   const customSessionFlow = customSessions.length > 0;
   const customSessionsByProvider = useMemo(() => Object.fromEntries(
     HARNESS_ORDER.map((provider) => [
@@ -155,9 +192,9 @@ export default function NowPage() {
   customSessionRequestKeyRef.current = customSessionRequestKey;
   const activeCustomSessionsRef = useRef(activeCustomSessions);
   activeCustomSessionsRef.current = activeCustomSessions;
-  const overlaySelectedSessions = customSessionFlow
+  const overlaySelectedSessions = sessionLibraryConfirmed
     ? desktopOverlaySessionSelections(customSessions)
-    : [];
+    : undefined;
   const latestSessionDiscoveryQuery = useLatestLocalAISessionDiscovery(
     workspace.activeWorkspaceId,
   );
@@ -794,14 +831,7 @@ export default function NowPage() {
         <div className="daemonstate-now-grid pointer-events-none absolute inset-0" aria-hidden="true" />
         <div className="daemonstate-now-orbit pointer-events-none absolute -right-24 -top-32 h-80 w-80 rounded-full border border-[#b8b8b0]/45 dark:border-white/10" aria-hidden="true" />
         <div className="relative px-4 pb-5 pt-4 sm:px-6 sm:pb-6 sm:pt-5 lg:px-8">
-          <div className="flex justify-end">
-            <FloatingContextToggle
-              workspaceId={workspace.activeWorkspaceId}
-              selectedSessions={overlaySelectedSessions}
-            />
-          </div>
-
-          <div className="mt-3 sm:mt-4">
+          <div className="mt-1 sm:mt-2">
             <div className="max-w-3xl">
               <p className="text-xs font-black uppercase tracking-[0.18em] text-[#65751d] dark:text-[#d9ff68]">
                 Choose the next harness
@@ -826,41 +856,72 @@ export default function NowPage() {
               </dd>
             </dl>
 
-            <nav
-              className="mx-auto mt-6 w-full max-w-4xl"
-              aria-label="Custom session selection"
+            <div
+              data-testid="continue-action-dock"
+              className="mx-auto mt-6 grid w-full max-w-4xl gap-4 lg:grid-cols-2 lg:items-center lg:gap-6"
             >
-              <Link
-                to="/app/execute?from=continue"
-                aria-label="Choose custom sessions in Execute"
-                className="group flex min-h-20 w-full items-center gap-3 rounded-2xl border border-[#d3d3cb] bg-white/70 px-4 py-3.5 text-left shadow-[0_8px_24px_rgba(23,23,19,0.04)] backdrop-blur-md transition hover:-translate-y-0.5 hover:border-[#9cad58] hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#849633]/70 motion-reduce:hover:translate-y-0 dark:border-white/[0.12] dark:bg-white/[0.045] dark:shadow-none dark:hover:border-[#d9ff68]/45 dark:hover:bg-white/[0.075] dark:focus-visible:ring-[#d9ff68]/70"
+              <nav
+                className="w-full self-start"
+                aria-label="Custom session selection"
               >
-                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-[#d4d4cc] bg-[#efefe9] text-[#65751d] dark:border-white/10 dark:bg-black/15 dark:text-[#d9ff68]">
-                  <Layers3 className="h-4 w-4" aria-hidden="true" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-semibold text-[#24241f] dark:text-white">Choose custom sessions in Execute</span>
-                  <span className="mt-1 block text-[11px] leading-4 text-[#77776e] dark:text-white/50">Select the Session Contexts to include in your execution workspace.</span>
-                </span>
-                <ArrowRight className="h-4 w-4 shrink-0 text-[#8a8a80] transition-transform group-hover:translate-x-0.5 group-hover:text-[#65751d] dark:text-white/35 dark:group-hover:text-[#d9ff68]" aria-hidden="true" />
-              </Link>
-            </nav>
+                <Link
+                  to="/app/execute?from=continue"
+                  aria-label="Choose custom sessions in Execute"
+                  className="group flex min-h-20 w-full items-center gap-3 rounded-2xl border border-[#d3d3cb]/80 bg-white/45 px-4 py-3.5 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.65),0_12px_34px_rgba(23,23,19,0.06)] backdrop-blur-xl backdrop-saturate-150 transition hover:-translate-y-0.5 hover:border-[#9cad58] hover:bg-white/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#849633]/70 motion-reduce:hover:translate-y-0 dark:border-white/[0.14] dark:bg-white/[0.055] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.10)] dark:hover:border-[#d9ff68]/45 dark:hover:bg-white/[0.09] dark:focus-visible:ring-[#d9ff68]/70"
+                >
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-[#d4d4cc]/80 bg-white/45 text-[#65751d] backdrop-blur-md dark:border-white/10 dark:bg-black/15 dark:text-[#d9ff68]">
+                    <Layers3 className="h-4 w-4" aria-hidden="true" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold text-[#24241f] dark:text-white">Choose custom sessions in Execute</span>
+                    <span className="mt-1 block text-[11px] leading-4 text-[#77776e] dark:text-white/50">Select the Session Contexts to include in your execution workspace.</span>
+                  </span>
+                  <ArrowRight className="h-4 w-4 shrink-0 text-[#8a8a80] transition-transform group-hover:translate-x-0.5 group-hover:text-[#65751d] dark:text-white/35 dark:group-hover:text-[#d9ff68]" aria-hidden="true" />
+                </Link>
+              </nav>
 
-            {customSessionFlow && customSessions.length ? (
-              <ContinueSessionSwissKnife
-                sessions={customSessions}
-                sessionsByProvider={customSessionsByProvider}
-                activeSessionIds={activeCustomSessionIds}
-                disabled={continuationWorkflowPending}
-                onSelect={(provider, session) => {
-                  if (continuationWorkflowPending) return;
-                  setActiveCustomSessionIds((current) => ({
-                    ...current,
-                    [provider]: executeSessionIdentity(session),
-                  }));
-                }}
-              />
-            ) : null}
+              <div
+                data-testid="floating-session-endpoint"
+                className={`relative flex min-w-0 flex-col items-end ${
+                  customSessionFlow && customSessions.length
+                    ? "lg:grid lg:min-h-52 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center"
+                    : "justify-end"
+                }`}
+              >
+                <div
+                  data-session-pin-joint={customSessionFlow && customSessions.length
+                    ? "floating-control"
+                    : undefined}
+                  className={`relative z-[60] flex w-full justify-end ${
+                  customSessionFlow && customSessions.length
+                    ? "lg:col-start-2 lg:row-start-1 lg:w-auto lg:shrink-0"
+                    : ""
+                  }`}
+                >
+                  <FloatingContextToggle
+                    workspaceId={workspace.activeWorkspaceId}
+                    selectedSessions={overlaySelectedSessions}
+                    showSessionSummary={false}
+                  />
+                </div>
+
+                {customSessionFlow && customSessions.length ? (
+                  <ContinueSessionSwissKnife
+                    sessions={customSessions}
+                    sessionsByProvider={customSessionsByProvider}
+                    activeSessionIds={activeCustomSessionIds}
+                    disabled={continuationWorkflowPending}
+                    onSelect={(provider, session) => {
+                      if (continuationWorkflowPending) return;
+                      setActiveCustomSessionIds((current) => ({
+                        ...current,
+                        [provider]: executeSessionIdentity(session),
+                      }));
+                    }}
+                  />
+                ) : null}
+              </div>
+            </div>
 
             {repositorySelectionRequired ? (
               <label className="mx-auto mt-4 block w-full max-w-4xl rounded-2xl border border-[#d3d3cb] bg-white/70 px-4 py-3 shadow-[0_8px_24px_rgba(23,23,19,0.04)] backdrop-blur-md dark:border-white/[0.12] dark:bg-white/[0.045]">
@@ -1119,17 +1180,28 @@ function ContinueSessionSwissKnife({
       (candidate) => executeSessionIdentity(candidate) === executeSessionIdentity(session),
     ) + 1
   );
+  const availableProviders = HARNESS_ORDER.filter(
+    (provider) => (sessionsByProvider[provider] || []).length,
+  );
+  const pinAngleFor = (index) => {
+    if (availableProviders.length <= 1) return "0deg";
+    const spread = availableProviders.length === 2 ? 20 : 28;
+    return `${(spread / 2) - ((spread / (availableProviders.length - 1)) * index)}deg`;
+  };
 
   return (
     <section
       aria-label="Custom Continue sessions"
-      className="relative z-50 mx-auto mt-4 grid w-full max-w-4xl grid-cols-3 gap-2 px-1 sm:gap-4"
+      data-session-pin-fan="true"
+      className="relative z-50 mt-3 flex w-full flex-col gap-2 pr-7 lg:col-start-1 lg:row-start-1 lg:mt-0 lg:h-52 lg:min-w-0 lg:pr-0"
     >
-      {HARNESS_ORDER.map((provider) => {
+      <span
+        aria-hidden="true"
+        data-session-pin-mobile-rail="true"
+        className="absolute -top-3 bottom-6 right-[14px] w-px bg-[#9aae35]/70 shadow-[0_0_12px_rgba(154,174,53,0.22)] dark:bg-[#d9ff68]/55 lg:hidden"
+      />
+      {availableProviders.map((provider, providerIndex) => {
         const providerSessions = sessionsByProvider[provider] || [];
-        if (!providerSessions.length) {
-          return <span key={provider} aria-hidden="true" />;
-        }
         const meta = harnessMeta(provider);
         const active = providerSessions.find(
           (session) => executeSessionIdentity(session) === activeSessionIds[provider],
@@ -1139,7 +1211,13 @@ function ContinueSessionSwissKnife({
         return (
           <div
             key={provider}
-            className="relative flex min-w-0 justify-center"
+            data-session-pin={provider}
+            data-session-pin-angle={pinAngleFor(providerIndex)}
+            className={`relative flex w-full min-w-0 justify-end lg:absolute lg:left-0 lg:right-[-22px] lg:top-1/2 lg:w-auto lg:-translate-y-1/2 ${expanded ? "z-50" : "z-20"}`}
+            style={{
+              "--session-pin-angle": pinAngleFor(providerIndex),
+              zIndex: expanded ? 50 : 30 - providerIndex,
+            }}
             onMouseEnter={() => setOpenedProvider(provider)}
             onMouseLeave={() => setOpenedProvider((current) => (
               current === provider ? null : current
@@ -1165,15 +1243,21 @@ function ContinueSessionSwissKnife({
               aria-haspopup="menu"
               aria-busy={disabled || undefined}
               aria-label={`${meta.name} custom sessions, session ${activeOrdinal} selected`}
-              onClick={() => setOpenedProvider(provider)}
-              className="relative z-20 flex min-h-12 w-full max-w-[240px] items-center gap-2 rounded-2xl border border-[#d3d3cb] bg-white/80 px-2.5 py-2 text-left shadow-[0_10px_28px_rgba(23,23,19,0.08)] backdrop-blur-xl transition hover:-translate-y-0.5 hover:border-[#9dbc47] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#849633]/70 aria-busy:cursor-wait aria-busy:opacity-70 dark:border-white/[0.13] dark:bg-black/25 dark:hover:border-[#d9ff68]/50 sm:px-3"
+              onClick={() => setOpenedProvider((current) => (
+                current === provider ? null : provider
+              ))}
+              className="relative z-20 flex min-h-12 w-full origin-right items-center gap-2 overflow-hidden rounded-full border border-[#bfc0b7]/85 bg-white/58 px-2.5 py-2 pr-8 text-left shadow-[inset_0_0_0_1px_rgba(255,255,255,0.28),inset_0_1px_0_rgba(255,255,255,0.78),0_10px_28px_rgba(23,23,19,0.08)] backdrop-blur-xl backdrop-saturate-150 transition hover:-translate-x-0.5 hover:border-[#9dbc47] hover:bg-white/75 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#849633]/70 aria-busy:cursor-wait aria-busy:opacity-70 dark:border-white/25 dark:bg-white/[0.075] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),inset_0_1px_0_rgba(255,255,255,0.12)] dark:hover:border-[#d9ff68]/55 dark:hover:bg-white/[0.12] sm:px-3 sm:pr-8 lg:rotate-[var(--session-pin-angle)]"
             >
               <HarnessLogo
                 type={provider}
                 size="small"
                 decorative
+                floatingButtonStyle
                 className="!h-8 !w-8 !rounded-xl sm:!h-9 sm:!w-9"
               />
+              <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[#171713] px-1 font-mono text-[9px] font-black text-white dark:bg-[#d9ff68] dark:text-[#171713]">
+                {activeOrdinal}
+              </span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-[10px] font-black uppercase tracking-[0.1em] text-[#68685f] dark:text-[#c7c7bd]">
                   {providerSessions.length} {meta.name}
@@ -1182,13 +1266,15 @@ function ContinueSessionSwissKnife({
                   {active.title}
                 </span>
               </span>
-              <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[#171713] px-1 font-mono text-[9px] font-black text-white dark:bg-[#d9ff68] dark:text-[#171713]">
-                {activeOrdinal}
-              </span>
+              <span
+                aria-hidden="true"
+                data-session-pin-eye="true"
+                className="absolute right-1.5 top-1/2 h-4 w-4 -translate-y-1/2 rounded-full border border-[#798a2a]/80 bg-[#d9ff68]/45 shadow-[inset_0_0_0_3px_rgba(255,255,255,0.45),0_0_10px_rgba(217,255,104,0.22)] dark:border-[#d9ff68]/70 dark:bg-[#d9ff68]/20 dark:shadow-[inset_0_0_0_3px_rgba(23,23,19,0.75),0_0_10px_rgba(217,255,104,0.18)]"
+              />
             </button>
 
             {expanded ? (
-              <div className="absolute bottom-full left-1/2 z-10 w-[min(18rem,76vw)] -translate-x-1/2 pb-2">
+              <div className="absolute bottom-full right-0 z-40 w-[min(18rem,76vw)] pb-2 lg:bottom-auto lg:right-full lg:top-1/2 lg:w-[min(18.75rem,48vw)] lg:-translate-y-1/2 lg:pb-0 lg:pr-3">
                 <div
                   role="menu"
                   aria-label={`${meta.name} selected sessions`}
@@ -1222,6 +1308,7 @@ function ContinueSessionSwissKnife({
                           type={provider}
                           size="small"
                           decorative
+                          floatingButtonStyle
                           className="!h-8 !w-8 !rounded-xl"
                         />
                         <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[#171713] px-1 font-mono text-[9px] font-black text-white dark:bg-[#d9ff68] dark:text-[#171713]">
