@@ -13,6 +13,7 @@ final class PromptDropdownController: NSObject, NSPopoverDelegate {
     private let contentController = PromptDropdownViewController()
     private var cachedPrompts: [PromptSnippet] = []
     private var previousApplication: NSRunningApplication?
+    private var restorationCompletion: (() -> Void)?
     private var refreshTask: Task<Void, Never>?
     private var saveTask: Task<Void, Never>?
 
@@ -29,12 +30,9 @@ final class PromptDropdownController: NSObject, NSPopoverDelegate {
         }
         contentController.onSelect = { [weak self] prompt in
             guard let self else { return }
-            self.onToggle?(prompt)
-            self.contentController.update(
-                prompts: self.cachedPrompts,
-                selectedIDs: self.selectedPromptIDs?() ?? []
-            )
-            self.close()
+            self.close(afterRestoring: { [weak self] in
+                self?.onToggle?(prompt)
+            })
         }
     }
 
@@ -45,6 +43,10 @@ final class PromptDropdownController: NSObject, NSPopoverDelegate {
 
     var editorHasInputFocus: Bool {
         contentController.editorHasInputFocus
+    }
+
+    var isShown: Bool {
+        popover.isShown
     }
 
     func toggle(relativeTo button: NSView) {
@@ -74,13 +76,14 @@ final class PromptDropdownController: NSObject, NSPopoverDelegate {
         refresh()
     }
 
-    func close() {
+    func close(afterRestoring completion: (() -> Void)? = nil) {
         refreshTask?.cancel()
         saveTask?.cancel()
+        restorationCompletion = completion ?? restorationCompletion
         if popover.isShown {
             popover.performClose(nil)
         } else {
-            restorePreviousApplication()
+            completeApplicationRestoration()
         }
     }
 
@@ -93,7 +96,7 @@ final class PromptDropdownController: NSObject, NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
-        restorePreviousApplication()
+        completeApplicationRestoration()
     }
 
     private func refresh() {
@@ -156,11 +159,19 @@ final class PromptDropdownController: NSObject, NSPopoverDelegate {
         }
     }
 
-    private func restorePreviousApplication() {
-        guard let application = previousApplication else { return }
+    private func completeApplicationRestoration() {
+        let completion = restorationCompletion
+        restorationCompletion = nil
+        guard let application = previousApplication else {
+            completion?()
+            return
+        }
         previousApplication = nil
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
             application.activate(options: [.activateIgnoringOtherApps])
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+                completion?()
+            }
         }
     }
 
@@ -266,7 +277,7 @@ final class PromptDropdownViewController: NSViewController, NSTextViewDelegate {
     ) {
         promptTextView.string = ""
         characterLabel.stringValue = "0 / 20,000"
-        statusLabel.stringValue = "Saved — click it below to activate prompt mode."
+        statusLabel.stringValue = "Saved — click it below to paste automatically."
         statusLabel.textColor = NSColor(
             calibratedRed: 0.76,
             green: 1,
@@ -329,7 +340,7 @@ final class PromptDropdownViewController: NSViewController, NSTextViewDelegate {
         let titleRow = horizontalStack([title, headerSpacer, selectionLabel])
 
         let subtitle = NSTextField(
-            wrappingLabelWithString: "Paste a reusable instruction here, or select one already saved."
+            wrappingLabelWithString: "Save a reusable instruction here, or click one below to paste it automatically."
         )
         subtitle.font = .systemFont(ofSize: 12, weight: .regular)
         subtitle.textColor = NSColor(calibratedWhite: 0.66, alpha: 1)
@@ -405,7 +416,7 @@ final class PromptDropdownViewController: NSViewController, NSTextViewDelegate {
         let historyTitle = NSTextField(labelWithString: "Saved prompts")
         historyTitle.font = .systemFont(ofSize: 12, weight: .semibold)
         historyTitle.textColor = NSColor(calibratedWhite: 0.94, alpha: 1)
-        let historyHint = NSTextField(labelWithString: "Click to select · open again for more")
+        let historyHint = NSTextField(labelWithString: "Click to paste automatically")
         historyHint.font = .systemFont(ofSize: 9.5, weight: .regular)
         historyHint.textColor = NSColor(calibratedWhite: 0.46, alpha: 1)
         let historySpacer = NSView()
@@ -602,12 +613,10 @@ private final class PromptRowButton: NSButton {
         action = #selector(pressed)
         toolTip = prompt.content
         setAccessibilityRole(.button)
-        setAccessibilityLabel(prompt.content)
-        setAccessibilityValue(selected ? "Selected" : "Not selected")
+        setAccessibilityLabel("Paste prompt: \(prompt.content)")
+        setAccessibilityValue("Pastes automatically")
         setAccessibilityHelp(
-            selected
-                ? "Remove this prompt from prompt mode."
-                : "Add this prompt to prompt mode."
+            "Paste this prompt into the previously focused editor."
         )
     }
 
@@ -690,7 +699,7 @@ private final class PromptRowButton: NSButton {
             withAttributes: metaAttributes
         )
 
-        let actionText = selected ? "REMOVE" : "SELECT"
+        let actionText = "PASTE"
         let actionAttributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 8.5, weight: .heavy),
             .foregroundColor: selected

@@ -24,9 +24,11 @@ final class OverlayPanelController: NSWindowController {
 
     private let collapsedSize = NSSize(width: 72, height: 72)
     private let fanRevealStagger: TimeInterval = 0.075
+    private let fanCollapseStagger: TimeInterval = 0.045
     private var hubOffset = NSPoint.zero
     private var focusedSessionIdentities = Set<String>()
     private var collapseWorkItem: DispatchWorkItem?
+    private var collapseAnimationWorkItem: DispatchWorkItem?
 
     init(savedOrigin: NSPoint?) {
         logoControl = LogoControl(frame: NSRect(x: 8, y: 8, width: 56, height: 56))
@@ -104,14 +106,14 @@ final class OverlayPanelController: NSWindowController {
     }
 
     func hide() {
-        collapse()
+        collapseImmediately()
         window?.orderOut(nil)
     }
 
     func setSelectedSessions(_ values: [OverlaySelectedSession]) {
         let normalized = normalizedOverlaySelectedSessions(values)
         guard normalized != selectedSessions else { return }
-        collapse()
+        collapseImmediately()
         selectedSessions = normalized
         rebuildSessionButtons()
     }
@@ -135,7 +137,13 @@ final class OverlayPanelController: NSWindowController {
         collapseWorkItem?.cancel()
         collapseWorkItem = nil
         let shouldExpand = requestedExpansion && !selectedSessions.isEmpty
-        guard shouldExpand != isExpanded, let panel = window else { return }
+        guard let panel = window else { return }
+
+        if shouldExpand {
+            collapseAnimationWorkItem?.cancel()
+            collapseAnimationWorkItem = nil
+        }
+        guard shouldExpand != isExpanded else { return }
 
         let hubOrigin = collapsedOrigin(forPanelOrigin: panel.frame.origin)
         if shouldExpand {
@@ -169,23 +177,8 @@ final class OverlayPanelController: NSWindowController {
                 revealSessions: true
             )
         } else {
-            for button in sessionButtons {
-                button.stopRevealAnimation()
-                button.isHidden = true
-            }
-            hubOffset = .zero
-            let origin = constrainedOrigin(
-                hubOrigin,
-                size: collapsedSize,
-                visibleFrame: visibleFrame(containing: hubOrigin, panel: panel)
-            )
-            panel.setFrame(
-                NSRect(origin: origin, size: collapsedSize),
-                display: true
-            )
-            rootView.frame = NSRect(origin: .zero, size: collapsedSize)
             isExpanded = false
-            layoutControls()
+            animateCollapse(toward: hubOrigin, panel: panel)
         }
         rootView.updateTrackingAreas()
     }
@@ -243,7 +236,7 @@ final class OverlayPanelController: NSWindowController {
             guard let buttonFrames,
                   buttonFrames.indices.contains(index),
                   isExpanded else {
-                button.stopRevealAnimation()
+                button.stopFanAnimations()
                 button.frame = .zero
                 button.isHidden = true
                 continue
@@ -262,6 +255,76 @@ final class OverlayPanelController: NSWindowController {
                 )
             }
         }
+    }
+
+    private func animateCollapse(toward hubOrigin: NSPoint, panel: NSWindow) {
+        let animated = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            && !sessionButtons.isEmpty
+        guard animated else {
+            completeCollapse(toward: hubOrigin, panel: panel)
+            return
+        }
+
+        let hubCenter = NSPoint(
+            x: hubOffset.x + collapsedSize.width / 2,
+            y: hubOffset.y + collapsedSize.height / 2
+        )
+        for (index, button) in sessionButtons.enumerated() {
+            let reverseIndex = sessionButtons.count - index - 1
+            button.animateCollapse(
+                to: hubCenter,
+                delay: TimeInterval(reverseIndex) * fanCollapseStagger,
+                animated: true
+            )
+        }
+
+        let finalDelay = TimeInterval(max(0, sessionButtons.count - 1))
+            * fanCollapseStagger
+            + SessionFanButton.collapseDuration
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  !self.isExpanded,
+                  let currentPanel = self.window,
+                  currentPanel === panel else { return }
+            self.collapseAnimationWorkItem = nil
+            self.completeCollapse(toward: hubOrigin, panel: currentPanel)
+        }
+        collapseAnimationWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + finalDelay,
+            execute: workItem
+        )
+    }
+
+    private func collapseImmediately() {
+        collapseWorkItem?.cancel()
+        collapseWorkItem = nil
+        collapseAnimationWorkItem?.cancel()
+        collapseAnimationWorkItem = nil
+        guard let panel = window else { return }
+        let hubOrigin = collapsedOrigin(forPanelOrigin: panel.frame.origin)
+        isExpanded = false
+        completeCollapse(toward: hubOrigin, panel: panel)
+    }
+
+    private func completeCollapse(toward hubOrigin: NSPoint, panel: NSWindow) {
+        for button in sessionButtons {
+            button.stopFanAnimations()
+            button.isHidden = true
+        }
+        hubOffset = .zero
+        let origin = constrainedOrigin(
+            hubOrigin,
+            size: collapsedSize,
+            visibleFrame: visibleFrame(containing: hubOrigin, panel: panel)
+        )
+        panel.setFrame(
+            NSRect(origin: origin, size: collapsedSize),
+            display: true
+        )
+        rootView.frame = NSRect(origin: .zero, size: collapsedSize)
+        layoutControls()
+        rootView.updateTrackingAreas()
     }
 
     private func sessionFanGeometry(
