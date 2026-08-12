@@ -33,7 +33,7 @@ final class OverlayPanelController: NSWindowController {
     init(savedOrigin: NSPoint?) {
         logoControl = LogoControl(frame: NSRect(x: 8, y: 8, width: 56, height: 56))
         promptMenuButton = PromptMenuButton(
-            frame: NSRect(x: 48, y: 0, width: 24, height: 24)
+            frame: NSRect(x: 13, y: 8, width: 46, height: 20)
         )
         rootView = OverlayTrackingView(
             frame: NSRect(
@@ -227,10 +227,10 @@ final class OverlayPanelController: NSWindowController {
             height: 56
         )
         promptMenuButton.frame = NSRect(
-            x: hubOffset.x + 48,
-            y: hubOffset.y,
-            width: 24,
-            height: 24
+            x: hubOffset.x + 13,
+            y: hubOffset.y + 8,
+            width: 46,
+            height: 20
         )
         for (index, button) in sessionButtons.enumerated() {
             guard let buttonFrames,
@@ -507,6 +507,10 @@ final class PromptMenuButton: NSButton {
     private var hovering = false
     private var trackingAreaReference: NSTrackingArea?
 
+    // A flipped coordinate system keeps the integrated bottom-edge artwork
+    // expressed in the same top-to-bottom direction in which it appears.
+    override var isFlipped: Bool { true }
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         title = ""
@@ -554,62 +558,53 @@ final class PromptMenuButton: NSButton {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let selected = selectedPromptCount > 0
-        let rect = bounds.insetBy(dx: 1.5, dy: 1.5)
-        let background = NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8)
+        let pressed = isHighlighted
+        let red = NSColor(
+            calibratedRed: pressed ? 0.74 : 0.94,
+            green: pressed ? 0.025 : 0.045,
+            blue: pressed ? 0.055 : 0.075,
+            alpha: 1
+        )
 
-        if selected {
-            NSGraphicsContext.saveGraphicsState()
+        // This curved cap follows the logo's lower arc. The control retains a
+        // larger transparent hit target, but no longer reads as a second,
+        // detached button.
+        let cap = NSBezierPath()
+        cap.move(to: NSPoint(x: bounds.midX - 16, y: 8.5))
+        cap.line(to: NSPoint(x: bounds.midX + 16, y: 8.5))
+        cap.curve(
+            to: NSPoint(x: bounds.midX, y: 15),
+            controlPoint1: NSPoint(x: bounds.midX + 13.5, y: 12.5),
+            controlPoint2: NSPoint(x: bounds.midX + 6.5, y: 15)
+        )
+        cap.curve(
+            to: NSPoint(x: bounds.midX - 16, y: 8.5),
+            controlPoint1: NSPoint(x: bounds.midX - 6.5, y: 15),
+            controlPoint2: NSPoint(x: bounds.midX - 13.5, y: 12.5)
+        )
+        cap.close()
+
+        NSGraphicsContext.saveGraphicsState()
+        if hovering && !pressed {
             let shadow = NSShadow()
-            shadow.shadowColor = NSColor(
-                calibratedRed: 0.70,
-                green: 0.95,
-                blue: 0.31,
-                alpha: 0.62
-            )
-            shadow.shadowBlurRadius = 7
+            shadow.shadowColor = red.withAlphaComponent(0.72)
+            shadow.shadowBlurRadius = 5
             shadow.shadowOffset = .zero
             shadow.set()
-            NSColor(calibratedRed: 0.76, green: 1, blue: 0.36, alpha: 1).setFill()
-            background.fill()
-            NSGraphicsContext.restoreGraphicsState()
-        } else {
-            NSColor(calibratedWhite: hovering ? 0.12 : 0.04, alpha: 0.92).setFill()
-            background.fill()
         }
+        red.setFill()
+        cap.fill()
+        NSGraphicsContext.restoreGraphicsState()
 
-        (selected
-            ? NSColor(calibratedWhite: 0, alpha: 0.78)
-            : NSColor(calibratedWhite: 1, alpha: hovering ? 0.9 : 0.65)
-        ).setStroke()
-        background.lineWidth = 1
-        background.stroke()
-
-        if selected {
-            let value = selectedPromptCount > 9 ? "9+" : "\(selectedPromptCount)"
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: selectedPromptCount > 9 ? 8 : 10, weight: .bold),
-                .foregroundColor: NSColor.black,
-            ]
-            let size = value.size(withAttributes: attributes)
-            value.draw(
-                at: NSPoint(
-                    x: bounds.midX - size.width / 2,
-                    y: bounds.midY - size.height / 2
-                ),
-                withAttributes: attributes
-            )
-        } else {
-            let chevron = NSBezierPath()
-            chevron.move(to: NSPoint(x: bounds.midX - 3.5, y: bounds.midY - 1.5))
-            chevron.line(to: NSPoint(x: bounds.midX, y: bounds.midY + 2))
-            chevron.line(to: NSPoint(x: bounds.midX + 3.5, y: bounds.midY - 1.5))
-            chevron.lineWidth = 1.6
-            chevron.lineCapStyle = .round
-            chevron.lineJoinStyle = .round
-            NSColor.white.withAlphaComponent(hovering ? 0.95 : 0.72).setStroke()
-            chevron.stroke()
-        }
+        let chevron = NSBezierPath()
+        chevron.move(to: NSPoint(x: bounds.midX - 3.5, y: 10.1))
+        chevron.line(to: NSPoint(x: bounds.midX, y: 12.9))
+        chevron.line(to: NSPoint(x: bounds.midX + 3.5, y: 10.1))
+        chevron.lineWidth = 1.55
+        chevron.lineCapStyle = .round
+        chevron.lineJoinStyle = .round
+        NSColor.white.withAlphaComponent(hovering ? 1 : 0.9).setStroke()
+        chevron.stroke()
     }
 
     @objc private func pressed() {

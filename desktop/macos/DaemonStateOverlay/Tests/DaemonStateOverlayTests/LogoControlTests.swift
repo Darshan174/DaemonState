@@ -47,6 +47,31 @@ struct LogoControlTests {
 
     @Test
     @MainActor
+    func promptDropdownOccupiesTheLogoBottomEdgeAndKeepsItsOwnAction() {
+        let controller = OverlayPanelController(savedOrigin: nil)
+        defer { controller.hide() }
+        let logoFrame = controller.logoControl.frame
+        let dropdownFrame = controller.promptMenuButton.frame
+        var dropdownPresses = 0
+        var logoPresses = 0
+
+        controller.promptMenuButton.onPress = { dropdownPresses += 1 }
+        controller.logoControl.onSingleClick = { logoPresses += 1 }
+
+        #expect(dropdownFrame.midX == logoFrame.midX)
+        #expect(dropdownFrame.minY == logoFrame.minY)
+        #expect(dropdownFrame.minX == logoFrame.minX + 5)
+        #expect(dropdownFrame.maxX == logoFrame.maxX - 5)
+        #expect(dropdownFrame.maxY < logoFrame.midY)
+
+        controller.promptMenuButton.performClick(nil)
+
+        #expect(dropdownPresses == 1)
+        #expect(logoPresses == 0)
+    }
+
+    @Test
+    @MainActor
     func selectedSessionFanOrbitsTheHubInStaggeredOrdinalOrder() async throws {
         let controller = OverlayPanelController(savedOrigin: nil)
         defer { controller.hide() }
