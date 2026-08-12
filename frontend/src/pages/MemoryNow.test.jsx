@@ -847,6 +847,8 @@ describe("ExecutePage", () => {
     expect(within(executeHeader).getByText(
       "Prepare verified workspace context and the Session Contexts you choose.",
     )).toBeInTheDocument();
+    expect(within(executeHeader).queryByText("DaemonState")).not.toBeInTheDocument();
+    expect(within(executeHeader).getByText("Workspace ready")).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "Context hierarchy" })).not.toBeInTheDocument();
     expect(screen.queryByText("Workspace foundation")).not.toBeInTheDocument();
     expect(screen.queryByText("Context products")).not.toBeInTheDocument();

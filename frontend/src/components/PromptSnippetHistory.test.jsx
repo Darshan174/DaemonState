@@ -113,6 +113,18 @@ describe("PromptSnippetHistory", () => {
     const library = screen.getByRole("region", {
       name: "Prompt library",
     });
+    const artwork = within(library).getByTestId("prompt-library-artwork");
+    expect(artwork).toHaveClass("absolute", "inset-0", "overflow-hidden");
+    const doodleTile = artwork.querySelector('[data-prompt-library-art="doodle-tile"]');
+    expect(doodleTile).toHaveClass("absolute", "-inset-8", "bg-repeat", "opacity-[0.045]");
+    expect(doodleTile).toHaveStyle({
+      backgroundPosition: "17px 11px",
+      backgroundRepeat: "repeat",
+      backgroundSize: "860px auto",
+    });
+    expect(doodleTile.style.backgroundImage).toContain("url(");
+    expect(artwork.querySelectorAll("img")).toHaveLength(0);
+    expect(document.querySelectorAll("[data-testid='prompt-library-artwork']")).toHaveLength(1);
     const addButton = screen.getByRole("button", { name: "Add prompt manually" });
     expect(within(screen.getByTestId("prompt-library-header")).getByRole("button", {
       name: "Add prompt manually",

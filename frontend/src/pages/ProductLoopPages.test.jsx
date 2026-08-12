@@ -731,7 +731,9 @@ describe("checkpoint product loop", () => {
       "dark:bg-[#171713]",
       "dark:text-white",
     );
-    expect(screen.queryByText("DaemonState")).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("continue-execute-banner")).queryByText(
+      "DaemonState",
+    )).not.toBeInTheDocument();
     expect(screen.queryByText("Activity in view")).not.toBeInTheDocument();
     const statusRibbon = screen.getByLabelText("Observed work status");
     expect(within(statusRibbon).getByText(/^Source activity /)).toBeInTheDocument();
@@ -752,7 +754,34 @@ describe("checkpoint product loop", () => {
       screen.getByRole("switch", { name: "Floating context control" }),
     );
     expect(within(continuationChoices).getAllByRole("link")).toHaveLength(1);
-    expect(screen.getByRole("link", { name: "Choose custom sessions in Execute" })).toHaveAttribute("href", "/app/execute?from=continue");
+    const executeBanner = screen.getByTestId("continue-execute-banner");
+    expect(executeBanner).toHaveClass(
+      "daemonstate-resume-header",
+      "min-h-56",
+      "rounded-[2rem]",
+    );
+    expect(within(executeBanner).getByRole("heading", {
+      name: "Execute",
+      level: 2,
+    })).toBeInTheDocument();
+    expect(within(executeBanner).getByText(
+      "Open Execute to select custom sessions and choose which Session Contexts appear in Continue.",
+    )).toBeInTheDocument();
+    expect(within(executeBanner).queryByText(
+      "Prepare verified workspace context and the Session Contexts you choose.",
+    )).not.toBeInTheDocument();
+    expect(within(executeBanner).queryByRole("button", {
+      name: /session contexts/i,
+    })).not.toBeInTheDocument();
+    const navigationArrow = executeBanner.querySelector("[data-navigation-arrow]");
+    expect(navigationArrow).toBeInTheDocument();
+    expect(navigationArrow).not.toHaveClass("rounded-full", "border", "bg-white/35");
+    expect(navigationArrow.querySelector(".lucide-chevron-right")).toBeInTheDocument();
+    expect(executeBanner.querySelector("[data-harness-deck-backdrop]")).toHaveAttribute(
+      "data-deck-alignment",
+      "center",
+    );
+    expect(screen.getByRole("link", { name: "Open Execute" })).toHaveAttribute("href", "/app/execute?from=continue");
     expect(screen.queryByRole("link", { name: "Prepare an older session" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Context ready for selection" })).not.toBeInTheDocument();
     expect(screen.queryByTestId("context-package-card")).not.toBeInTheDocument();
@@ -784,20 +813,24 @@ describe("checkpoint product loop", () => {
     expect(screen.queryByText(/02 \//)).not.toBeInTheDocument();
     expect(screen.queryByText(/03 \//)).not.toBeInTheDocument();
     expect(screen.queryByText(/04 \//)).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Continuation harnesses")).toHaveClass(
+    const continuationHarnesses = screen.getByLabelText("Continuation harnesses");
+    expect(continuationHarnesses).toHaveClass(
       "daemonstate-harness-fan",
+      "daemonstate-provider-layout",
       "snap-mandatory",
       "overflow-x-auto",
       "md:snap-none",
       "md:overflow-visible",
-      "md:max-w-4xl",
-      "md:gap-0",
+      "md:max-w-5xl",
     );
-    expect(screen.getByLabelText("Continuation harnesses")).not.toHaveClass(
-      "daemonstate-provider-deck",
-      "xl:snap-none",
-      "xl:overflow-visible",
+    const availableTools = within(continuationHarnesses).getByLabelText(
+      "Available AI tools",
     );
+    const unavailableTools = within(continuationHarnesses).getByLabelText(
+      "Unavailable AI tools",
+    );
+    expect(within(availableTools).getAllByRole("article")).toHaveLength(3);
+    expect(within(unavailableTools).queryAllByRole("article")).toHaveLength(0);
     const codexProvider = screen.getByRole("button", { name: "Open desktop handoff in Codex" });
     const claudeProvider = screen.getByRole("button", { name: "Open desktop handoff in Claude Code" });
     const openCodeProvider = screen.getByRole("button", { name: "Open desktop handoff in OpenCode" });
@@ -836,7 +869,7 @@ describe("checkpoint product loop", () => {
     expect(mocks.hookCalls.refresh).toEqual([]);
   });
 
-  it("shows numbered provider session blades only after the Continue selection flow and stages the chosen exact session", async () => {
+  it("shows one pin per selected session and stages the exact pin that is chosen", async () => {
     writeExecuteSessionContexts("workspace-1", [
       {
         source_document_id: "source-custom-one",
@@ -888,42 +921,66 @@ describe("checkpoint product loop", () => {
     );
     expect(sessionBlades.querySelector("[data-session-pin-mobile-rail]")).toBeInTheDocument();
     expect(screen.queryByLabelText("3 custom sessions synced")).not.toBeInTheDocument();
-    const codexBlade = screen.getByRole("button", {
-      name: "Codex custom sessions, session 1 selected",
+    const firstCodexPin = screen.getByRole("button", {
+      name: "Codex session 1: First Codex task, selected",
     });
-    expect(codexBlade).toBeInTheDocument();
-    expect(codexBlade.querySelector('[data-harness-logo="codex"]')).toHaveAttribute(
+    expect(firstCodexPin).toBeInTheDocument();
+    expect(firstCodexPin).toHaveAttribute("aria-pressed", "true");
+    expect(firstCodexPin.querySelector('[data-harness-logo="codex"]')).toHaveAttribute(
       "data-harness-logo-treatment",
       "floating-button",
     );
-    expect(codexBlade.closest('[data-session-pin="codex"]')).toHaveAttribute(
+    expect(firstCodexPin.closest('[data-session-pin-session="codex:custom-one"]')).toHaveAttribute(
       "data-session-pin-angle",
-      "10deg",
+      "14deg",
     );
-    expect(codexBlade.querySelector("[data-session-pin-eye]")).toBeInTheDocument();
-    const claudeBlade = screen.getByRole("button", {
-      name: "Claude Code custom sessions, session 3 selected",
+    expect(firstCodexPin.closest('[data-session-pin-session="codex:custom-one"]')).toHaveClass(
+      "pointer-events-none",
+      "lg:hover:z-[70]",
+      "lg:focus-within:z-[70]",
+    );
+    expect(firstCodexPin).toHaveClass("pointer-events-auto");
+    expect(firstCodexPin).not.toHaveClass(
+      "lg:hover:w-[min(30rem,calc(100vw-3rem))]",
+    );
+    expect(firstCodexPin).not.toHaveClass("lg:hover:scale-[1.02]");
+    expect(firstCodexPin.querySelector("[data-session-pin-eye]")).toBeInTheDocument();
+    const secondCodexPin = screen.getByRole("button", {
+      name: "Codex session 2: Second Codex task",
     });
-    expect(claudeBlade).toBeInTheDocument();
-    expect(claudeBlade.querySelector('[data-harness-logo="claude"]')).toHaveAttribute(
+    expect(secondCodexPin).toHaveAttribute("aria-pressed", "false");
+    const secondCodexPinWrapper = secondCodexPin.closest(
+      '[data-session-pin-session="codex:custom-two"]',
+    );
+    expect(secondCodexPinWrapper).toHaveAttribute("data-session-pin-angle", "0deg");
+    expect(secondCodexPinWrapper).toHaveClass(
+      "pointer-events-none",
+      "lg:hover:z-[70]",
+    );
+    expect(secondCodexPin).toHaveClass("pointer-events-auto");
+    const claudePin = screen.getByRole("button", {
+      name: "Claude Code session 3: Claude architecture task, selected",
+    });
+    expect(claudePin).toBeInTheDocument();
+    expect(claudePin.querySelector('[data-harness-logo="claude"]')).toHaveAttribute(
       "data-harness-logo-treatment",
       "floating-button",
     );
-    expect(claudeBlade.closest('[data-session-pin="claude"]')).toHaveAttribute(
+    expect(claudePin.closest('[data-session-pin-session="claude:custom-three"]')).toHaveAttribute(
       "data-session-pin-angle",
-      "-10deg",
+      "-14deg",
     );
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", {
-      name: /OpenCode custom sessions/,
+      name: /OpenCode session/,
     })).not.toBeInTheDocument();
 
-    fireEvent.click(codexBlade);
-    fireEvent.click(screen.getByRole("menuitemradio", {
-      name: /Second Codex task/,
-    }));
+    fireEvent.click(secondCodexPin);
     await waitFor(() => expect(
       readExecuteActiveSessionIdentities("workspace-1"),
     ).toMatchObject({ codex: "codex:custom-two" }));
+    expect(secondCodexPin).toHaveAttribute("aria-pressed", "true");
+    expect(firstCodexPin).toHaveAttribute("aria-pressed", "false");
 
     const codexHandoff = screen.getByRole("button", {
       name: "Open desktop handoff in Codex",
@@ -944,7 +1001,7 @@ describe("checkpoint product loop", () => {
     });
   });
 
-  it("fans all three provider tabs from the floating control joint", () => {
+  it("fans all three selected session tabs from the floating control joint", () => {
     writeExecuteSessionContexts("workspace-1", [
       {
         source_document_id: "source-pin-codex",
@@ -1004,6 +1061,58 @@ describe("checkpoint product loop", () => {
     expect(endpoint.querySelectorAll("[data-session-pin-eye]")).toHaveLength(3);
   });
 
+  it("renders three Codex selections as three separate pins without a grouped menu", () => {
+    writeExecuteSessionContexts("workspace-1", [
+      {
+        source_document_id: "source-codex-pin-one",
+        connector_type: "codex",
+        session_id: "codex-pin-one",
+        title: "First Codex session",
+        compaction_count: 2,
+      },
+      {
+        source_document_id: "source-codex-pin-two",
+        connector_type: "codex",
+        session_id: "codex-pin-two",
+        title: "Second Codex session",
+        compaction_count: 2,
+      },
+      {
+        source_document_id: "source-codex-pin-three",
+        connector_type: "codex",
+        session_id: "codex-pin-three",
+        title: "Third Codex session",
+        compaction_count: 2,
+      },
+    ]);
+    mocks.library.data = {
+      sessions: readExecuteSessionContexts("workspace-1"),
+    };
+
+    render(
+      <MemoryRouter initialEntries={["/app?session_flow=custom"]}>
+        <NowPage />
+      </MemoryRouter>,
+    );
+
+    const endpoint = screen.getByTestId("floating-session-endpoint");
+    const codexPins = endpoint.querySelectorAll('[data-session-pin="codex"]');
+    expect(codexPins).toHaveLength(3);
+    expect(codexPins[0]).toHaveAttribute("data-session-pin-angle", "14deg");
+    expect(codexPins[1]).toHaveAttribute("data-session-pin-angle", "0deg");
+    expect(codexPins[2]).toHaveAttribute("data-session-pin-angle", "-14deg");
+    expect(screen.getByRole("button", {
+      name: "Codex session 1: First Codex session, selected",
+    })).toBeInTheDocument();
+    expect(screen.getByRole("button", {
+      name: "Codex session 2: Second Codex session",
+    })).toBeInTheDocument();
+    expect(screen.getByRole("button", {
+      name: "Codex session 3: Third Codex session",
+    })).toBeInTheDocument();
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
   it("drops a saved pin that no longer exists in the active workspace library", async () => {
     writeExecuteSessionContexts("workspace-1", [{
       source_document_id: "source-stale-pin",
@@ -1055,7 +1164,7 @@ describe("checkpoint product loop", () => {
       name: "Custom Continue sessions",
     })).toBeInTheDocument();
     expect(screen.getByRole("button", {
-      name: "Codex custom sessions, session 1 selected",
+      name: "Codex session 1: Stored Execute session, selected",
     })).toBeInTheDocument();
     expect(screen.getByRole("button", {
       name: "Open desktop handoff in Codex",
@@ -1103,7 +1212,7 @@ describe("checkpoint product loop", () => {
     );
 
     expect(screen.getByRole("button", {
-      name: "Codex custom sessions, session 2 selected",
+      name: "Codex session 2: Second saved choice, selected",
     })).toBeInTheDocument();
     expect(screen.getByRole("button", {
       name: "Open desktop handoff in Codex",
@@ -2228,7 +2337,7 @@ Remove screenshot IDs and temporary paths from the Now page.
     expect(request).not.toHaveProperty("objective");
   });
 
-  it("shows missing Claude Desktop and keeps installed alternatives usable", () => {
+  it("shows missing Claude Desktop and keeps installed alternatives usable", async () => {
     mocks.providers.data.providers = mocks.providers.data.providers.map((provider) => (
       provider.provider === "claude"
         ? {
@@ -2251,14 +2360,47 @@ Remove screenshot IDs and temporary paths from the Now page.
     expect(within(claude).getByText("Desktop missing")).toBeInTheDocument();
     expect(claude).toHaveTextContent("Claude Desktop is not installed.");
     expect(claude).toHaveTextContent("Next: Install Claude Desktop, then check again.");
-    expect(screen.getByRole("button", { name: "Open desktop handoff in Codex" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Open desktop handoff in OpenCode" })).toBeEnabled();
+    const codex = screen.getByRole("button", { name: "Open desktop handoff in Codex" });
+    const openCode = screen.getByRole("button", { name: "Open desktop handoff in OpenCode" });
+    expect(codex).toBeEnabled();
+    expect(openCode).toBeEnabled();
+    const continuationHarnesses = screen.getByLabelText("Continuation harnesses");
+    const availableTools = within(continuationHarnesses).getByLabelText(
+      "Available AI tools",
+    );
+    const unavailableTools = within(continuationHarnesses).getByLabelText(
+      "Unavailable AI tools",
+    );
+    const availableCards = within(availableTools).getAllByRole("article");
+    const unavailableCards = within(unavailableTools).getAllByRole("article");
+    expect(availableCards.map((card) => card.dataset.harness)).toEqual([
+      "codex",
+      "opencode",
+    ]);
+    expect(unavailableCards.map((card) => card.dataset.harness)).toEqual([
+      "claude",
+    ]);
+    expect(availableCards.every(
+      (card) => card.dataset.providerReady === "true",
+    )).toBe(true);
+    expect(unavailableCards[0]).toHaveAttribute("data-provider-ready", "false");
+    expect(availableCards[0]).toHaveClass("border-emerald-500");
+    expect(availableCards[1]).toHaveClass("border-emerald-500");
+    expect(unavailableCards[0]).toHaveClass("border-red-500");
+    expect(availableCards[0]).toHaveAttribute("data-fan-position", "left");
+    expect(availableCards[1]).toHaveAttribute("data-fan-position", "right");
+    expect(unavailableCards[0]).toHaveAttribute("data-fan-position", "center");
+    fireEvent.click(openCode);
+    await waitFor(() => expect(mocks.continuation.mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ target_provider: "opencode" }),
+    ));
+    const continuationCalls = mocks.continuation.mutateAsync.mock.calls.length;
     const retry = screen.getByRole("button", { name: "Retry desktop readiness" });
     fireEvent.click(retry);
     expect(mocks.providers.refetch).toHaveBeenCalledTimes(1);
 
     fireEvent.click(claude);
-    expect(mocks.continuation.mutateAsync).not.toHaveBeenCalled();
+    expect(mocks.continuation.mutateAsync).toHaveBeenCalledTimes(continuationCalls);
   });
 
   it("opens OpenCode without a manual provider-access attestation", async () => {

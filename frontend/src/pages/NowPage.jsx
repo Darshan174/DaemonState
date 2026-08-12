@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
+import ExecuteBanner from "../components/ExecuteBanner";
 import ProductLoadingState from "../components/ProductLoadingState";
 import FloatingContextToggle from "../components/FloatingContextToggle";
 import PromptSnippetHistory from "../components/PromptSnippetHistory";
@@ -699,6 +700,18 @@ export default function NowPage() {
                   description: "Choose linked work before continuing.",
                 };
   const continuationProviders = resolvedContinuationProviders(continuationProvidersQuery);
+  const continuationProviderGroups = [
+    {
+      key: "available",
+      label: "Available AI tools",
+      providers: continuationProviders.filter((provider) => provider.ready === true),
+    },
+    {
+      key: "unavailable",
+      label: "Unavailable AI tools",
+      providers: continuationProviders.filter((provider) => provider.ready !== true),
+    },
+  ];
   const continuationTaskReady = continueAction.kind === "continue";
   const providerRetryVisible = continuationProviders.some((provider) => !provider.ready);
   const activeContinuationRun = continuationProvidersQuery.data?.active_run || null;
@@ -864,20 +877,22 @@ export default function NowPage() {
                 className="w-full self-start"
                 aria-label="Custom session selection"
               >
-                <Link
+                <ExecuteBanner
                   to="/app/execute?from=continue"
-                  aria-label="Choose custom sessions in Execute"
-                  className="group flex min-h-20 w-full items-center gap-3 rounded-2xl border border-[#d3d3cb]/80 bg-white/45 px-4 py-3.5 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.65),0_12px_34px_rgba(23,23,19,0.06)] backdrop-blur-xl backdrop-saturate-150 transition hover:-translate-y-0.5 hover:border-[#9cad58] hover:bg-white/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#849633]/70 motion-reduce:hover:translate-y-0 dark:border-white/[0.14] dark:bg-white/[0.055] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.10)] dark:hover:border-[#d9ff68]/45 dark:hover:bg-white/[0.09] dark:focus-visible:ring-[#d9ff68]/70"
-                >
-                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-[#d4d4cc]/80 bg-white/45 text-[#65751d] backdrop-blur-md dark:border-white/10 dark:bg-black/15 dark:text-[#d9ff68]">
-                    <Layers3 className="h-4 w-4" aria-hidden="true" />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-semibold text-[#24241f] dark:text-white">Choose custom sessions in Execute</span>
-                    <span className="mt-1 block text-[11px] leading-4 text-[#77776e] dark:text-white/50">Select the Session Contexts to include in your execution workspace.</span>
-                  </span>
-                  <ArrowRight className="h-4 w-4 shrink-0 text-[#8a8a80] transition-transform group-hover:translate-x-0.5 group-hover:text-[#65751d] dark:text-white/35 dark:group-hover:text-[#d9ff68]" aria-hidden="true" />
-                </Link>
+                  linkLabel="Open Execute"
+                  description="Open Execute to select custom sessions and choose which Session Contexts appear in Continue."
+                  headingLevel={2}
+                  headingId="continue-execute-title"
+                  showWorkspace={false}
+                  status={digestPending
+                    ? "Checking workspace"
+                    : digestUnavailable
+                      ? "Workspace needs attention"
+                      : "Workspace ready"}
+                  busy={digestPending}
+                  attention={digestUnavailable}
+                  testId="continue-execute-banner"
+                />
               </nav>
 
               <div
@@ -908,7 +923,6 @@ export default function NowPage() {
                 {customSessionFlow && customSessions.length ? (
                   <ContinueSessionSwissKnife
                     sessions={customSessions}
-                    sessionsByProvider={customSessionsByProvider}
                     activeSessionIds={activeCustomSessionIds}
                     disabled={continuationWorkflowPending}
                     onSelect={(provider, session) => {
@@ -945,79 +959,90 @@ export default function NowPage() {
 
             <div
               id="continuation-harnesses"
-              className={`daemonstate-harness-fan relative -mx-4 flex snap-x snap-mandatory items-stretch justify-start gap-4 overflow-x-auto overscroll-x-contain pb-5 pt-2 sm:-mx-6 md:mx-auto md:max-w-4xl md:snap-none md:gap-0 md:overflow-visible md:px-0 md:py-0 ${customSessionFlow && customSessions.length ? "mt-2" : "mt-4"}`}
+              className={`daemonstate-harness-fan daemonstate-provider-layout relative -mx-4 flex snap-x snap-mandatory items-stretch justify-start gap-4 overflow-x-auto overscroll-x-contain pb-5 pt-2 sm:-mx-6 md:mx-auto md:max-w-5xl md:snap-none md:overflow-visible md:px-0 md:py-0 ${customSessionFlow && customSessions.length ? "mt-2" : "mt-4"}`}
               aria-label="Continuation harnesses"
               onMouseLeave={() => setHoveredContinuationProvider(null)}
             >
-              {continuationProviders.map((provider, index) => {
-                const hoverIndex = continuationProviders.findIndex(
-                  (candidate) => (
-                    candidate.provider === hoveredContinuationProvider
-                  ),
-                );
-                const hovered = hoveredContinuationProvider === provider.provider;
-                const pending = pendingProvider === provider.provider;
-                const customSession = customSessionFlow
-                  ? activeCustomSessions[provider.provider]
-                  : null;
-                const customSessionOrdinal = customSession
-                  ? customSessions.findIndex(
-                      (session) => executeSessionIdentity(session) === executeSessionIdentity(customSession),
-                    ) + 1
-                  : 0;
-                const repositoryReady = (
-                  !repositorySelectionRequired || Boolean(continuationRepoPath)
-                );
-                const providerTaskReady = (
-                  (customSessionFlow ? Boolean(customSession) : continuationTaskReady)
-                  && repositoryReady
-                );
-                const providerContextReady = customSessionFlow
-                  ? Number(customSession?.compactionCount || 0) >= MINIMUM_SESSION_CONTEXT_COMPACTIONS
-                  : sessionContextReady;
-                const providerCompactionCount = customSessionFlow
-                  ? Number(customSession?.compactionCount || 0)
-                  : sessionCompactionCount;
-                const distanceFromHover = hoverIndex >= 0 ? index - hoverIndex : 0;
-                const translateX = hoverIndex >= 0 && !hovered
-                  ? distanceFromHover * 24
-                  : 0;
-                const translateY = hovered || pending
-                  ? -18
-                  : Math.abs(distanceFromHover) * 5;
-                return (
-                  <HarnessContinuationCard
-                    key={provider.provider}
-                    provider={provider}
-                    index={index}
-                    hovered={hovered}
-                    translateX={translateX}
-                    translateY={translateY}
-                    pending={pending}
-                    handoffRequested={loadedContinuationProvider === provider.provider}
-                    workflowPending={continuationWorkflowPending}
-                    taskReady={providerTaskReady}
-                    taskPending={continueAction.kind === "loading"}
-                    taskRequirement={!repositoryReady
-                      ? "Choose the repository for this session above."
-                      : customSessionFlow && !customSession
-                        ? `Choose a ${harnessMeta(provider.provider).name} session above.`
-                        : continueAction.description}
-                    contextReady={providerContextReady}
-                    compactionCount={providerCompactionCount}
-                    minimumCompactions={MINIMUM_SESSION_CONTEXT_COMPACTIONS}
-                    sessionOrdinal={customSessionOrdinal || null}
-                    sessionTitle={customSession?.title || ""}
-                    onHover={() => setHoveredContinuationProvider(provider.provider)}
-                    onContinue={(targetProvider) => (
-                      stageTaskContinuation(
-                        targetProvider,
-                        customSessionFlow ? customSession : null,
-                      )
-                    )}
-                  />
-                );
-              })}
+              {continuationProviderGroups.map((group) => (
+                <section
+                  key={group.key}
+                  aria-label={group.label}
+                  data-provider-group={group.key}
+                  data-provider-count={group.providers.length}
+                  className="daemonstate-provider-group flex shrink-0 items-stretch gap-4 md:block"
+                >
+                  {group.providers.map((provider, index) => {
+                    const hoverIndex = group.providers.findIndex(
+                      (candidate) => (
+                        candidate.provider === hoveredContinuationProvider
+                      ),
+                    );
+                    const hovered = hoveredContinuationProvider === provider.provider;
+                    const pending = pendingProvider === provider.provider;
+                    const customSession = customSessionFlow
+                      ? activeCustomSessions[provider.provider]
+                      : null;
+                    const customSessionOrdinal = customSession
+                      ? customSessions.findIndex(
+                          (session) => executeSessionIdentity(session) === executeSessionIdentity(customSession),
+                        ) + 1
+                      : 0;
+                    const repositoryReady = (
+                      !repositorySelectionRequired || Boolean(continuationRepoPath)
+                    );
+                    const providerTaskReady = (
+                      (customSessionFlow ? Boolean(customSession) : continuationTaskReady)
+                      && repositoryReady
+                    );
+                    const providerContextReady = customSessionFlow
+                      ? Number(customSession?.compactionCount || 0) >= MINIMUM_SESSION_CONTEXT_COMPACTIONS
+                      : sessionContextReady;
+                    const providerCompactionCount = customSessionFlow
+                      ? Number(customSession?.compactionCount || 0)
+                      : sessionCompactionCount;
+                    const distanceFromHover = hoverIndex >= 0 ? index - hoverIndex : 0;
+                    const translateX = hoverIndex >= 0 && !hovered
+                      ? distanceFromHover * 18
+                      : 0;
+                    const translateY = hovered || pending
+                      ? -18
+                      : Math.abs(distanceFromHover) * 5;
+                    return (
+                      <HarnessContinuationCard
+                        key={provider.provider}
+                        provider={provider}
+                        index={index}
+                        fanSize={group.providers.length}
+                        hovered={hovered}
+                        translateX={translateX}
+                        translateY={translateY}
+                        pending={pending}
+                        handoffRequested={loadedContinuationProvider === provider.provider}
+                        workflowPending={continuationWorkflowPending}
+                        taskReady={providerTaskReady}
+                        taskPending={continueAction.kind === "loading"}
+                        taskRequirement={!repositoryReady
+                          ? "Choose the repository for this session above."
+                          : customSessionFlow && !customSession
+                            ? `Choose a ${harnessMeta(provider.provider).name} session above.`
+                            : continueAction.description}
+                        contextReady={providerContextReady}
+                        compactionCount={providerCompactionCount}
+                        minimumCompactions={MINIMUM_SESSION_CONTEXT_COMPACTIONS}
+                        sessionOrdinal={customSessionOrdinal || null}
+                        sessionTitle={customSession?.title || ""}
+                        onHover={() => setHoveredContinuationProvider(provider.provider)}
+                        onContinue={(targetProvider) => (
+                          stageTaskContinuation(
+                            targetProvider,
+                            customSessionFlow ? customSession : null,
+                          )
+                        )}
+                      />
+                    );
+                  })}
+                </section>
+              ))}
             </div>
 
             {(
@@ -1169,24 +1194,14 @@ export default function NowPage() {
 
 function ContinueSessionSwissKnife({
   sessions,
-  sessionsByProvider,
   activeSessionIds,
   disabled = false,
   onSelect,
 }) {
-  const [openedProvider, setOpenedProvider] = useState(null);
-  const ordinalFor = (session) => (
-    sessions.findIndex(
-      (candidate) => executeSessionIdentity(candidate) === executeSessionIdentity(session),
-    ) + 1
-  );
-  const availableProviders = HARNESS_ORDER.filter(
-    (provider) => (sessionsByProvider[provider] || []).length,
-  );
   const pinAngleFor = (index) => {
-    if (availableProviders.length <= 1) return "0deg";
-    const spread = availableProviders.length === 2 ? 20 : 28;
-    return `${(spread / 2) - ((spread / (availableProviders.length - 1)) * index)}deg`;
+    if (sessions.length <= 1) return "0deg";
+    const spread = sessions.length === 2 ? 20 : 28;
+    return `${(spread / 2) - ((spread / (sessions.length - 1)) * index)}deg`;
   };
 
   return (
@@ -1200,53 +1215,41 @@ function ContinueSessionSwissKnife({
         data-session-pin-mobile-rail="true"
         className="absolute -top-3 bottom-6 right-[14px] w-px bg-[#9aae35]/70 shadow-[0_0_12px_rgba(154,174,53,0.22)] dark:bg-[#d9ff68]/55 lg:hidden"
       />
-      {availableProviders.map((provider, providerIndex) => {
-        const providerSessions = sessionsByProvider[provider] || [];
+      {sessions.map((session, sessionIndex) => {
+        const provider = session.provider;
         const meta = harnessMeta(provider);
-        const active = providerSessions.find(
-          (session) => executeSessionIdentity(session) === activeSessionIds[provider],
-        ) || providerSessions[0];
-        const activeOrdinal = ordinalFor(active);
-        const expanded = openedProvider === provider;
+        const identity = executeSessionIdentity(session);
+        const ordinal = sessionIndex + 1;
+        const selected = identity === activeSessionIds[provider];
         return (
           <div
-            key={provider}
+            key={identity}
             data-session-pin={provider}
-            data-session-pin-angle={pinAngleFor(providerIndex)}
-            className={`relative flex w-full min-w-0 justify-end lg:absolute lg:left-0 lg:right-[-22px] lg:top-1/2 lg:w-auto lg:-translate-y-1/2 ${expanded ? "z-50" : "z-20"}`}
+            data-session-pin-session={identity}
+            data-session-pin-selected={selected ? "true" : "false"}
+            data-session-pin-angle={pinAngleFor(sessionIndex)}
+            className="pointer-events-none relative z-[var(--session-pin-stack)] flex w-full min-w-0 justify-end lg:absolute lg:left-0 lg:right-[-22px] lg:top-1/2 lg:w-auto lg:-translate-y-1/2 lg:hover:z-[70] lg:focus-within:z-[70]"
             style={{
-              "--session-pin-angle": pinAngleFor(providerIndex),
-              zIndex: expanded ? 50 : 30 - providerIndex,
-            }}
-            onMouseEnter={() => setOpenedProvider(provider)}
-            onMouseLeave={() => setOpenedProvider((current) => (
-              current === provider ? null : current
-            ))}
-            onBlurCapture={(event) => {
-              if (!event.currentTarget.contains(event.relatedTarget)) {
-                setOpenedProvider((current) => (
-                  current === provider ? null : current
-                ));
-              }
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                setOpenedProvider(null);
-                event.currentTarget.querySelector("button")?.focus();
-              }
+              "--session-pin-angle": pinAngleFor(sessionIndex),
+              "--session-pin-stack": selected ? 40 : 30 - sessionIndex,
             }}
           >
             <button
-              id={`continue-session-trigger-${provider}`}
+              id={`continue-session-trigger-${provider}-${ordinal}`}
               type="button"
-              aria-expanded={expanded}
-              aria-haspopup="menu"
+              aria-pressed={selected}
               aria-busy={disabled || undefined}
-              aria-label={`${meta.name} custom sessions, session ${activeOrdinal} selected`}
-              onClick={() => setOpenedProvider((current) => (
-                current === provider ? null : provider
-              ))}
-              className="relative z-20 flex min-h-12 w-full origin-right items-center gap-2 overflow-hidden rounded-full border border-[#bfc0b7]/85 bg-white/58 px-2.5 py-2 pr-8 text-left shadow-[inset_0_0_0_1px_rgba(255,255,255,0.28),inset_0_1px_0_rgba(255,255,255,0.78),0_10px_28px_rgba(23,23,19,0.08)] backdrop-blur-xl backdrop-saturate-150 transition hover:-translate-x-0.5 hover:border-[#9dbc47] hover:bg-white/75 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#849633]/70 aria-busy:cursor-wait aria-busy:opacity-70 dark:border-white/25 dark:bg-white/[0.075] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),inset_0_1px_0_rgba(255,255,255,0.12)] dark:hover:border-[#d9ff68]/55 dark:hover:bg-white/[0.12] sm:px-3 sm:pr-8 lg:rotate-[var(--session-pin-angle)]"
+              aria-label={`${meta.name} session ${ordinal}: ${session.title}${selected ? ", selected" : ""}`}
+              disabled={disabled}
+              onClick={() => {
+                if (disabled || selected) return;
+                onSelect(provider, session);
+              }}
+              className={`pointer-events-auto relative z-20 flex min-h-12 w-full origin-right items-center gap-2 overflow-hidden rounded-full border px-2.5 py-2 pr-8 text-left backdrop-blur-xl backdrop-saturate-150 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#849633]/70 disabled:cursor-wait disabled:opacity-70 sm:px-3 sm:pr-8 lg:rotate-[var(--session-pin-angle)] ${
+                selected
+                  ? "border-[#9dbc47] bg-[#f2fad9]/80 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.35),inset_0_1px_0_rgba(255,255,255,0.82),0_10px_30px_rgba(132,150,51,0.16)] dark:border-[#d9ff68]/60 dark:bg-[#d9ff68]/[0.12] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),inset_0_1px_0_rgba(255,255,255,0.12),0_10px_30px_rgba(217,255,104,0.08)]"
+                  : "border-[#bfc0b7]/85 bg-white/58 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.28),inset_0_1px_0_rgba(255,255,255,0.78),0_10px_28px_rgba(23,23,19,0.08)] hover:border-[#9dbc47] hover:bg-white/75 dark:border-white/25 dark:bg-white/[0.075] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),inset_0_1px_0_rgba(255,255,255,0.12)] dark:hover:border-[#d9ff68]/55 dark:hover:bg-white/[0.12]"
+              }`}
             >
               <HarnessLogo
                 type={provider}
@@ -1256,14 +1259,14 @@ function ContinueSessionSwissKnife({
                 className="!h-8 !w-8 !rounded-xl sm:!h-9 sm:!w-9"
               />
               <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[#171713] px-1 font-mono text-[9px] font-black text-white dark:bg-[#d9ff68] dark:text-[#171713]">
-                {activeOrdinal}
+                {ordinal}
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-[10px] font-black uppercase tracking-[0.1em] text-[#68685f] dark:text-[#c7c7bd]">
-                  {providerSessions.length} {meta.name}
+                  {meta.name}
                 </span>
                 <span className="mt-0.5 hidden truncate text-[10px] font-semibold text-[#77776e] dark:text-[#aaa9a0] sm:block">
-                  {active.title}
+                  {session.title}
                 </span>
               </span>
               <span
@@ -1272,57 +1275,6 @@ function ContinueSessionSwissKnife({
                 className="absolute right-1.5 top-1/2 h-4 w-4 -translate-y-1/2 rounded-full border border-[#798a2a]/80 bg-[#d9ff68]/45 shadow-[inset_0_0_0_3px_rgba(255,255,255,0.45),0_0_10px_rgba(217,255,104,0.22)] dark:border-[#d9ff68]/70 dark:bg-[#d9ff68]/20 dark:shadow-[inset_0_0_0_3px_rgba(23,23,19,0.75),0_0_10px_rgba(217,255,104,0.18)]"
               />
             </button>
-
-            {expanded ? (
-              <div className="absolute bottom-full right-0 z-40 w-[min(18rem,76vw)] pb-2 lg:bottom-auto lg:right-full lg:top-1/2 lg:w-[min(18.75rem,48vw)] lg:-translate-y-1/2 lg:pb-0 lg:pr-3">
-                <div
-                  role="menu"
-                  aria-label={`${meta.name} selected sessions`}
-                  className="flex flex-col gap-1.5 rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6]/95 p-2 shadow-[0_20px_48px_rgba(23,23,19,0.16)] backdrop-blur-xl dark:border-[#34342f] dark:bg-[#141411]/95"
-                >
-                  {providerSessions.map((session) => {
-                    const ordinal = ordinalFor(session);
-                    const selected = executeSessionIdentity(session) === executeSessionIdentity(active);
-                    return (
-                      <button
-                        key={executeSessionIdentity(session)}
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={selected}
-                        disabled={disabled}
-                        onClick={() => {
-                          if (disabled) return;
-                          onSelect(provider, session);
-                          setOpenedProvider(null);
-                          document.getElementById(
-                            `continue-session-trigger-${provider}`,
-                          )?.focus();
-                        }}
-                        className={`flex min-h-11 items-center gap-2.5 rounded-xl border px-2.5 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#9dbc47] disabled:cursor-wait disabled:opacity-60 ${
-                          selected
-                            ? "border-[#9dbc47] bg-[#eef7d4] dark:border-[#d9ff68]/45 dark:bg-[#d9ff68]/10"
-                            : "border-transparent hover:border-[#d8d8cf] hover:bg-white dark:hover:border-white/10 dark:hover:bg-white/[0.05]"
-                        }`}
-                      >
-                        <HarnessLogo
-                          type={provider}
-                          size="small"
-                          decorative
-                          floatingButtonStyle
-                          className="!h-8 !w-8 !rounded-xl"
-                        />
-                        <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[#171713] px-1 font-mono text-[9px] font-black text-white dark:bg-[#d9ff68] dark:text-[#171713]">
-                          {ordinal}
-                        </span>
-                        <span className="min-w-0 flex-1 truncate text-xs font-bold">
-                          {session.title}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ) : null}
           </div>
         );
       })}
