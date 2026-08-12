@@ -7,10 +7,8 @@ import {
   BookOpenCheck,
   Clipboard,
   FileCode2,
-  FolderRoot,
   LockKeyhole,
   RefreshCw,
-  ShieldCheck,
   Trash2,
   X,
 } from "lucide-react";
@@ -22,7 +20,7 @@ import {
   useSessionLibrary,
 } from "../api/hooks";
 import { useDesktopOverlaySessionSync } from "../components/FloatingContextToggle";
-import HarnessDeckBackdrop from "../components/HarnessDeckBackdrop";
+import ExecuteBanner from "../components/ExecuteBanner";
 import { HarnessArtwork, HarnessLogo } from "../components/HarnessBrand";
 import ProductLoadingState from "../components/ProductLoadingState";
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
@@ -408,7 +406,6 @@ export default function ExecutePage() {
     return (
       <div className="relative mx-auto min-h-full w-full max-w-none">
         <ExecuteWorkspaceFrame
-          workspace={workspace.activeWorkspace}
           status="Preparing"
           busy
           selectedSessions={selectedExecuteSessions}
@@ -429,7 +426,6 @@ export default function ExecutePage() {
   return (
     <div className="relative mx-auto min-h-full w-full max-w-none">
       <ExecuteWorkspaceFrame
-        workspace={workspace.activeWorkspace}
         status={partialData ? "Partial context" : "Workspace ready"}
         attention={partialData}
         selectedSessions={selectedExecuteSessions}
@@ -479,7 +475,6 @@ export default function ExecutePage() {
 
 
 function ExecuteWorkspaceFrame({
-  workspace,
   status,
   busy = false,
   attention = false,
@@ -488,7 +483,6 @@ function ExecuteWorkspaceFrame({
   children,
 }) {
   const navigate = useNavigate();
-  const workspaceName = visibleText(workspace?.name) || "Selected workspace";
   const selectedCount = Math.min(
     selectedSessions.length,
     MAX_EXECUTE_SESSION_CONTEXTS,
@@ -501,51 +495,20 @@ function ExecuteWorkspaceFrame({
 
   return (
     <div className="relative mx-auto w-full max-w-7xl space-y-8 pb-14">
-      <header
-        aria-labelledby="execute-title"
-        className="daemonstate-resume-header group relative min-h-56 overflow-hidden rounded-[2rem] border border-[#d8d8cf] bg-[#f7f7f1] px-5 py-7 text-[#171713] dark:border-[#292925] dark:bg-[#0c0c0a] dark:text-white sm:px-8 sm:py-9 lg:px-10"
-      >
-        <div aria-hidden="true" className="absolute -right-20 -top-24 h-72 w-72 rounded-full bg-[#d9ff68]/25 blur-3xl dark:bg-[#d9ff68]/10" />
-        <HarnessDeckBackdrop />
-        <div className="relative flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <h1 id="execute-title" className="text-3xl font-black tracking-[-0.055em] sm:text-4xl">
-              Execute
-            </h1>
-            <p className="mt-2 max-w-3xl text-sm font-medium leading-6 text-[#68685f] dark:text-[#aaa9a0]">
-              Prepare verified workspace context and the Session Contexts you choose.
-            </p>
-          </div>
-
+      <ExecuteBanner
+        showWorkspace={false}
+        status={status}
+        busy={busy}
+        attention={attention}
+        sessionControl={(
           <ExecuteSessionPickerControl
             selectedSessions={selectedSessions}
             selectedCount={selectedCount}
             continueOrigin={continueOrigin}
             onOpenPicker={openSessionPicker}
           />
-        </div>
-
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <span className="inline-flex min-h-8 items-center gap-2 rounded-full border border-[#d8d8cf] bg-white/60 px-3 text-xs font-semibold text-[#77776e] dark:border-[#292925] dark:bg-white/[0.04] dark:text-[#aaa9a0]">
-            <FolderRoot className="h-4 w-4" aria-hidden="true" />
-            {workspaceName}
-          </span>
-          <span
-            className={`inline-flex min-h-8 items-center gap-2 rounded-full border px-3 text-xs font-semibold ${
-              attention
-                ? "border-[#d0a946]/40 bg-[#d0a946]/10 text-[#5f4a12] dark:text-[#e4c875]"
-                : "border-[#d8d8cf] bg-white/60 text-[#68685f] dark:border-[#292925] dark:bg-white/[0.04] dark:text-[#aaa9a0]"
-            }`}
-          >
-            {busy
-              ? <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-              : attention
-                ? <AlertTriangle className="h-3.5 w-3.5 text-attention" aria-hidden="true" />
-                : <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />}
-            {status}
-          </span>
-        </div>
-      </header>
+        )}
+      />
       {children}
     </div>
   );

@@ -11,12 +11,15 @@ const BACKDROP_CARDS = [
 ];
 
 
-export default function HarnessDeckBackdrop() {
+export default function HarnessDeckBackdrop({ centered = false }) {
   return (
     <div
       aria-hidden="true"
       data-harness-deck-backdrop
-      className="pointer-events-none absolute -right-8 -top-10 hidden h-[23rem] w-[37rem] select-none overflow-hidden sm:block"
+      data-deck-alignment={centered ? "center" : "right"}
+      className={`pointer-events-none absolute -top-10 hidden h-[23rem] w-[37rem] select-none overflow-hidden sm:block ${
+        centered ? "left-1/2 -translate-x-1/2" : "-right-8"
+      }`}
       style={{
         maskImage: "linear-gradient(to right, transparent 0%, black 25%, black 100%)",
         WebkitMaskImage: "linear-gradient(to right, transparent 0%, black 25%, black 100%)",

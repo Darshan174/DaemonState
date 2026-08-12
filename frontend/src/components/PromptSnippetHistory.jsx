@@ -14,6 +14,7 @@ import {
   useDeletePromptSnippet,
   usePromptSnippets,
 } from "../api/hooks";
+import promptLibraryDoodleTile from "../assets/prompt-library-doodle-tile.png";
 
 const MAX_PROMPT_CHARACTERS = 20_000;
 
@@ -192,10 +193,27 @@ export default function PromptSnippetHistory({ workspaceId }) {
       <section
         ref={libraryRef}
         aria-labelledby="prompt-library-title"
-        className="overflow-hidden rounded-[14px] border border-[#d8d8cf] bg-[#fbfbf6] shadow-[0_8px_28px_rgba(23,23,19,0.05)] dark:border-[#2d2d28] dark:bg-[#12120f] dark:shadow-none"
+        className="relative isolate overflow-hidden rounded-[14px] border border-[#d8d8cf] bg-[#fbfbf6] shadow-[0_8px_28px_rgba(23,23,19,0.05)] dark:border-[#2d2d28] dark:bg-[#12120f] dark:shadow-none"
       >
         <div
-          className="border-b border-[#deded5] px-4 py-4 dark:border-[#292925] sm:px-5"
+          aria-hidden="true"
+          data-testid="prompt-library-artwork"
+          className="pointer-events-none absolute inset-0 z-0 overflow-hidden"
+        >
+          <div
+            data-prompt-library-art="doodle-tile"
+            className="absolute -inset-8 bg-repeat opacity-[0.045] mix-blend-multiply grayscale contrast-125 dark:invert dark:mix-blend-screen dark:opacity-[0.05]"
+            style={{
+              backgroundImage: `url(${promptLibraryDoodleTile})`,
+              backgroundPosition: "17px 11px",
+              backgroundRepeat: "repeat",
+              backgroundSize: "860px auto",
+            }}
+          />
+        </div>
+
+        <div
+          className="relative z-10 border-b border-[#deded5] bg-[#fbfbf6]/58 px-4 py-4 backdrop-blur-[1px] dark:border-[#292925] dark:bg-[#12120f]/58 sm:px-5"
           data-testid="prompt-library-header"
         >
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -232,7 +250,7 @@ export default function PromptSnippetHistory({ workspaceId }) {
           </div>
         </div>
 
-        <div className="grid min-h-[27rem] gap-0 lg:grid-cols-[minmax(16rem,20rem)_minmax(0,1fr)]">
+        <div className="relative z-10 grid min-h-[27rem] gap-0 bg-[#fbfbf6]/42 backdrop-blur-[1px] dark:bg-[#12120f]/42 lg:grid-cols-[minmax(16rem,20rem)_minmax(0,1fr)]">
           <div className="flex min-h-0 flex-col border-b border-[#deded5] dark:border-[#292925] lg:border-b-0 lg:border-r">
             <div className="flex min-h-14 items-center justify-between gap-3 border-b border-[#deded5] px-4 py-3 dark:border-[#292925]">
               <h3 className="text-xs font-semibold uppercase tracking-[0.08em] text-[#55554e] dark:text-[#c8c8c0]">

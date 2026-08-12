@@ -187,6 +187,7 @@ final class PromptDropdownViewController: NSViewController, NSTextViewDelegate {
     var onSave: ((String) -> Void)?
     var onSelect: ((PromptSnippet) -> Void)?
 
+    private let doodleBackgroundView = PromptDoodleBackgroundView()
     private let promptTextView = PromptTextView()
     private let characterLabel = NSTextField(labelWithString: "0 / 20,000")
     private let saveButton = NSButton(title: "Save prompt", target: nil, action: nil)
@@ -313,6 +314,15 @@ final class PromptDropdownViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func buildInterface() {
+        doodleBackgroundView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(doodleBackgroundView)
+        NSLayoutConstraint.activate([
+            doodleBackgroundView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            doodleBackgroundView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            doodleBackgroundView.topAnchor.constraint(equalTo: view.topAnchor),
+            doodleBackgroundView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+
         let title = NSTextField(labelWithString: "PROMPT MODE")
         title.font = .systemFont(ofSize: 11, weight: .heavy)
         title.textColor = NSColor(
@@ -565,6 +575,56 @@ final class PromptDropdownViewController: NSViewController, NSTextViewDelegate {
         label.textColor = NSColor(calibratedWhite: 0.52, alpha: 1)
         label.alignment = .center
         return label
+    }
+}
+
+@MainActor
+final class PromptDoodleBackgroundView: NSView {
+    private(set) var hasPatternImage = false
+    private var patternColor: NSColor?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        identifier = NSUserInterfaceItemIdentifier(
+            "prompt-mode-doodle-background"
+        )
+        alphaValue = 0.05
+        setAccessibilityElement(false)
+
+        guard let url = Bundle.module.url(
+            forResource: "prompt-library-doodle-tile",
+            withExtension: "png"
+        ), let sourceImage = NSImage(contentsOf: url) else {
+            return
+        }
+
+        let tileSize = NSSize(width: 328, height: 174)
+        let tintedTile = NSImage(
+            size: tileSize,
+            flipped: false
+        ) { bounds in
+            sourceImage.draw(in: bounds)
+            NSColor.white.setFill()
+            bounds.fill(using: .sourceIn)
+            return true
+        }
+        patternColor = NSColor(patternImage: tintedTile)
+        hasPatternImage = true
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let patternColor else { return }
+        patternColor.setFill()
+        dirtyRect.fill()
     }
 }
 

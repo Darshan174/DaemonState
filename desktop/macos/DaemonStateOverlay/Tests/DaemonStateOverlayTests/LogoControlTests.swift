@@ -288,6 +288,26 @@ struct LogoControlTests {
 
     @Test
     @MainActor
+    func promptModeUsesThePromptLibraryDoodleBackground() {
+        let controller = PromptDropdownViewController()
+        let root = controller.view
+        root.layoutSubtreeIfNeeded()
+
+        let backgrounds = root.subviews.compactMap {
+            $0 as? PromptDoodleBackgroundView
+        }
+        let background = backgrounds.first
+
+        #expect(backgrounds.count == 1)
+        #expect(background?.identifier?.rawValue == "prompt-mode-doodle-background")
+        #expect(background?.hasPatternImage == true)
+        #expect(background?.alphaValue == 0.05)
+        #expect(background?.frame == root.bounds)
+        #expect(background?.hitTest(NSPoint(x: 10, y: 10)) == nil)
+    }
+
+    @Test
+    @MainActor
     func openingPromptPopoverFocusesItsEditor() async throws {
         let overlay = OverlayPanelController(savedOrigin: nil)
         let controller = PromptDropdownController()

@@ -43,6 +43,8 @@ describe("HarnessContinuationCard", () => {
       expect(article.querySelector("[data-card-accent-line]")).toHaveStyle({
         backgroundColor: "#10B981",
       });
+      expect(article).toHaveClass("border-2", "border-emerald-500");
+      expect(article).toHaveStyle({ borderColor: "#10B981" });
       expect(screen.getByText("Ready")).toHaveClass(
         "border-emerald-500/60",
         "bg-emerald-200",
@@ -116,12 +118,13 @@ describe("HarnessContinuationCard", () => {
     expect(screen.getByText("Ready")).toBeVisible();
     expect(screen.getByRole("article")).toHaveClass(
       "daemonstate-harness-fan-card",
-      "h-[23rem]",
-      "min-h-[23rem]",
-      "sm:h-[24rem]",
-      "sm:min-h-[24rem]",
+      "h-[22rem]",
+      "min-h-[22rem]",
+      "sm:h-[22rem]",
+      "sm:min-h-[22rem]",
       "w-[calc(100vw-4rem)]",
-      "max-w-[280px]",
+      "max-w-[260px]",
+      "sm:w-[260px]",
       "snap-center",
       "snap-always",
       "text-[#171713]",
@@ -299,8 +302,9 @@ describe("HarnessContinuationCard", () => {
       const artwork = screen.getByRole("article").querySelector(
         `[data-harness-artwork="${provider}"]`,
       );
-      expect(artwork).toHaveClass("grayscale");
-      expect(artwork).not.toHaveStyle({ color: "#D4AF37" });
+      expect(artwork?.tagName).toBe("svg");
+      expect(artwork).not.toHaveClass("grayscale");
+      expect(artwork).toHaveStyle({ color: "#171713" });
       expect(screen.getByRole("article")).toHaveClass(
         "bg-[#fbfbf6]/50",
         "backdrop-blur-xl",
@@ -315,7 +319,14 @@ describe("HarnessContinuationCard", () => {
       });
       expect(screen.getByRole("article").querySelector(
         "[data-card-accent-line]",
-      )).toHaveStyle({ backgroundColor: "#171713" });
+      )).toHaveStyle({ backgroundColor: "#EF4444" });
+      expect(screen.getByRole("article")).toHaveClass(
+        "border-2",
+        "border-red-500",
+      );
+      expect(screen.getByRole("article")).toHaveStyle({
+        borderColor: "#EF4444",
+      });
       const button = screen.getByRole("button", { name: /Open desktop handoff in/ });
       expect(button).toBeDisabled();
       fireEvent.click(button);
@@ -524,5 +535,63 @@ describe("HarnessContinuationCard", () => {
       "[data-card-tint]",
     )).toBeInTheDocument();
     expect(screen.getAllByText("03", { exact: true })).toHaveLength(2);
+  });
+
+  it("uses a shallow two-card spread without changing provider dispatch", () => {
+    const onContinue = vi.fn();
+    const { unmount } = render(
+      <HarnessContinuationCard
+        index={0}
+        fanSize={2}
+        provider={{
+          provider: "codex",
+          ready: true,
+          status: "ready",
+          message: "Codex is ready.",
+        }}
+        taskReady
+        onContinue={onContinue}
+      />,
+    );
+
+    expect(screen.getByRole("article")).toHaveAttribute(
+      "data-fan-position",
+      "left",
+    );
+    expect(screen.getByRole("article")).toHaveStyle({
+      "--daemonstate-card-rotation": "-5deg",
+    });
+    fireEvent.click(screen.getByRole("button", {
+      name: "Open desktop handoff in Codex",
+    }));
+    expect(onContinue).toHaveBeenLastCalledWith("codex");
+    unmount();
+
+    render(
+      <HarnessContinuationCard
+        index={1}
+        fanSize={2}
+        provider={{
+          provider: "opencode",
+          ready: true,
+          status: "ready",
+          message: "OpenCode is ready.",
+        }}
+        taskReady
+        onContinue={onContinue}
+      />,
+    );
+
+    expect(screen.getByRole("article")).toHaveAttribute(
+      "data-fan-position",
+      "right",
+    );
+    expect(screen.getByRole("article")).toHaveStyle({
+      "--daemonstate-card-rotation": "5deg",
+    });
+    fireEvent.click(screen.getByRole("button", {
+      name: "Open desktop handoff in OpenCode",
+    }));
+    expect(onContinue).toHaveBeenLastCalledWith("opencode");
   });
 });
