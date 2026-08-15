@@ -404,6 +404,12 @@ async def test_visible_desktop_stage_allows_only_incomplete_core_advisory(
         )
     assert exc_info.value.code == "session_context_staging_blocked"
     assert "explicit destination token limit" in str(exc_info.value)
+    assert exc_info.value.blocker is not None
+    assert exc_info.value.blocker["title"] == (
+        "Session Context exceeds the destination limit"
+    )
+    assert "larger explicit destination limit" in exc_info.value.blocker["action"]
+    assert "Capture fresh Session Context" not in exc_info.value.blocker["action"]
 
     for code in (
         "project_context_foundation_stale",
@@ -431,6 +437,104 @@ async def test_visible_desktop_stage_allows_only_incomplete_core_advisory(
                 session_context=session_context,
             )
         assert exc_info.value.code == "project_context_staging_blocked"
+        assert exc_info.value.blocker is not None
+        assert exc_info.value.blocker["title"] == (
+            "Current project evidence failed an integrity check"
+        )
+        assert "Refresh the verified repository" in exc_info.value.blocker["action"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    (
+        "content_hash",
+        "provider_identity",
+        "session_identity",
+        "task_sha",
+        "evidence_access",
+        "destination_overflow",
+    ),
+)
+async def test_visible_desktop_stage_rejects_material_session_context_failures(
+    tmp_path,
+    failure: str,
+) -> None:
+    contract = await _contract(_repository(tmp_path))
+    rendered = render_continuation_staging_context(contract)
+    session_content = (
+        "# Session Context — task-level working memory\n\n"
+        f"## Current main goal\n\n{contract.task.request_verbatim}\n"
+    )
+    session_context = {
+        "schema_version": SESSION_HANDOFF_SCHEMA_VERSION,
+        "scope": "session",
+        "provider": "codex",
+        "session_id": "latest-session",
+        "content": session_content,
+        "sha256": hashlib.sha256(session_content.encode("utf-8")).hexdigest(),
+        "current_goal": {"request_sha256": contract.task.request_sha256},
+        "quality_report": {
+            "copy_ready": True,
+            "blocking_issues": [],
+        },
+        "readiness_dimensions": {
+            "semantic_readiness": {"copy_ready": True},
+            "evidence_access": {"blocks_copy": False},
+        },
+        "token_accounting": {"blocks_automatic_delivery": False},
+        "delivery": {"ready_for_target": True},
+    }
+    if failure == "content_hash":
+        session_context["sha256"] = "0" * 64
+    elif failure == "provider_identity":
+        session_context["provider"] = "claude"
+    elif failure == "session_identity":
+        session_context["session_id"] = "different-session"
+    elif failure == "task_sha":
+        session_context["current_goal"] = {"request_sha256": "0" * 64}
+    elif failure == "evidence_access":
+        session_context["readiness_dimensions"] = {
+            "semantic_readiness": {"copy_ready": True},
+            "evidence_access": {"blocks_copy": True},
+        }
+    elif failure == "destination_overflow":
+        session_context["token_accounting"] = {
+            "blocks_automatic_delivery": True,
+            "destination_limit": {"status": "too_large"},
+        }
+        session_context["delivery"] = {"ready_for_target": False}
+
+    preparation = SimpleNamespace(
+        project_context={
+            "schema_version": STAGING_CONTEXT_SCHEMA_VERSION,
+            "scope": "project",
+            "copy_ready": True,
+            "content": rendered,
+            "sha256": hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
+            "quality_issues": [],
+        },
+        source_session={"provider": "codex", "session_id": "latest-session"},
+    )
+
+    with pytest.raises(ContinuationRunError) as exc_info:
+        _staging_context_for_preparation(
+            preparation,
+            contract=contract,
+            expected_lead=contract.task.request_verbatim,
+            session_context=session_context,
+        )
+
+    assert exc_info.value.code == "session_context_staging_blocked"
+    assert exc_info.value.blocker is not None
+    if failure == "destination_overflow":
+        assert exc_info.value.blocker["title"] == (
+            "Session Context exceeds the destination limit"
+        )
+    else:
+        assert exc_info.value.blocker["title"] == (
+            "Session Context failed a material safety check"
+        )
 
 
 @pytest.mark.asyncio

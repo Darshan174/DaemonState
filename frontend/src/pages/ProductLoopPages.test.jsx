@@ -554,27 +554,34 @@ beforeEach(() => {
       provider: "claude",
       source_provider: "codex",
       provider_switched: true,
-      mode: "desktop_composer_prefill",
+      mode: "desktop_composer_command_v",
       handoff_id: "handoff-1",
-      context_delivery: "desktop_composer_prefill_and_clipboard",
+      context_delivery: "desktop_composer_command_v",
       execution_started: false,
       visibility: {
         context_loaded: false,
         context_copied: true,
-        prefill_requested: true,
+        prefill_requested: false,
+        paste_requested: true,
+        paste_verified: false,
+        paste_method: "command_v",
         execution_started: false,
       },
       harness_session: {
         handoff_id: "handoff-1",
         provider: "claude",
-        launched: false,
+        launched: true,
         open_requested: true,
+        open_verified: true,
         navigation_requested: true,
         navigation_verified: false,
         exact_session_supported: false,
         context_loaded: false,
         context_copied: true,
-        prefill_requested: true,
+        prefill_requested: false,
+        paste_requested: true,
+        paste_verified: false,
+        paste_method: "command_v",
         execution_started: false,
       },
     },
@@ -660,7 +667,7 @@ describe("session context clipboard integrity", () => {
 });
 
 describe("checkpoint product loop", () => {
-  it("keeps continuation cards inactive until two provider compactions exist", () => {
+  it("keeps normal Continue cards available before two provider compactions", () => {
     mocks.latestDiscovery.data = latestDiscoveryResult({
       compaction_checkpoints: [
         { id: "provider-compaction-1", window_id: 1 },
@@ -676,12 +683,11 @@ describe("checkpoint product loop", () => {
       screen.getByRole("button", { name: "Open desktop handoff in OpenCode" }),
     ];
     providerButtons.forEach((button) => {
-      expect(button).toBeDisabled();
-      expect(button).toHaveAttribute("data-context-ready", "false");
-      expect(button).toHaveAttribute("data-compaction-count", "1");
+      expect(button).toBeEnabled();
+      expect(button).not.toHaveAttribute("data-context-ready");
     });
-    expect(screen.getAllByText("1/2 compactions")).toHaveLength(3);
-    expect(screen.getAllByText("Session Context locked")).toHaveLength(3);
+    expect(screen.queryByText("1/2 compactions")).not.toBeInTheDocument();
+    expect(screen.queryByText("Session Context locked")).not.toBeInTheDocument();
 
     const codexCard = providerButtons[0].closest("article");
     fireEvent.mouseEnter(codexCard);
@@ -692,10 +698,14 @@ describe("checkpoint product loop", () => {
     });
 
     fireEvent.click(providerButtons[0]);
-    expect(mocks.continuation.mutateAsync).not.toHaveBeenCalled();
+    expect(mocks.continuation.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({
+      source_provider: "codex",
+      source_session_id: "session-1",
+      target_provider: "codex",
+    }));
   });
 
-  it("uses the explicit latest-session count when descriptors are empty", () => {
+  it("does not expose a compaction counter on normal Continue cards", () => {
     mocks.latestDiscovery.data = latestDiscoveryResult({
       compaction_count: 2,
       compaction_checkpoints: [],
@@ -711,8 +721,7 @@ describe("checkpoint product loop", () => {
     ];
     providerButtons.forEach((button) => {
       expect(button).toBeEnabled();
-      expect(button).toHaveAttribute("data-context-ready", "true");
-      expect(button).toHaveAttribute("data-compaction-count", "2");
+      expect(button).not.toHaveAttribute("data-context-ready");
     });
     expect(screen.getAllByText("Open desktop")).toHaveLength(3);
   });
@@ -765,7 +774,7 @@ describe("checkpoint product loop", () => {
       level: 2,
     })).toBeInTheDocument();
     expect(within(executeBanner).getByText(
-      "Open Execute to select custom sessions and choose which Session Contexts appear in Continue.",
+      "Open Execute to choose Session Contexts for the floating button. Harness cards always carry the newest session.",
     )).toBeInTheDocument();
     expect(within(executeBanner).queryByText(
       "Prepare verified workspace context and the Session Contexts you choose.",
@@ -869,7 +878,7 @@ describe("checkpoint product loop", () => {
     expect(mocks.hookCalls.refresh).toEqual([]);
   });
 
-  it("shows one pin per selected session and stages the exact pin that is chosen", async () => {
+  it("keeps Execute pins selectable without changing the newest source used by cards", async () => {
     writeExecuteSessionContexts("workspace-1", [
       {
         source_document_id: "source-custom-one",
@@ -907,7 +916,7 @@ describe("checkpoint product loop", () => {
 
     const sessionEndpoint = screen.getByTestId("floating-session-endpoint");
     const sessionBlades = screen.getByRole("region", {
-      name: "Custom Continue sessions",
+      name: "Floating button sessions",
     });
     expect(sessionEndpoint).toContainElement(sessionBlades);
     expect(sessionBlades).toHaveAttribute("data-session-pin-fan", "true");
@@ -985,9 +994,8 @@ describe("checkpoint product loop", () => {
     const codexHandoff = screen.getByRole("button", {
       name: "Open desktop handoff in Codex",
     });
-    expect(codexHandoff.closest("article")).toHaveAttribute(
+    expect(codexHandoff.closest("article")).not.toHaveAttribute(
       "data-selected-session-ordinal",
-      "2",
     );
     fireEvent.click(codexHandoff);
 
@@ -996,7 +1004,7 @@ describe("checkpoint product loop", () => {
       workspace_id: "workspace-1",
       target_provider: "codex",
       source_provider: "codex",
-      source_session_id: "custom-two",
+      source_session_id: "session-1",
       repo_path: "/workspace/daemonstate",
     });
   });
@@ -1132,7 +1140,7 @@ describe("checkpoint product loop", () => {
     render(<MemoryRouter><NowPage /></MemoryRouter>);
 
     expect(screen.queryByRole("region", {
-      name: "Custom Continue sessions",
+      name: "Floating button sessions",
     })).not.toBeInTheDocument();
     await waitFor(() => expect(
       readExecuteSessionContexts("workspace-1"),
@@ -1161,14 +1169,14 @@ describe("checkpoint product loop", () => {
     render(<MemoryRouter><NowPage /></MemoryRouter>);
 
     expect(screen.getByRole("region", {
-      name: "Custom Continue sessions",
+      name: "Floating button sessions",
     })).toBeInTheDocument();
     expect(screen.getByRole("button", {
       name: "Codex session 1: Stored Execute session, selected",
     })).toBeInTheDocument();
     expect(screen.getByRole("button", {
       name: "Open desktop handoff in Codex",
-    }).closest("article")).toHaveAttribute("data-selected-session-ordinal", "1");
+    }).closest("article")).not.toHaveAttribute("data-selected-session-ordinal");
     await waitFor(() => expect(mocks.overlayVisibility.mutate).toHaveBeenCalledWith({
       visible: true,
       workspaceId: "workspace-1",
@@ -1216,10 +1224,7 @@ describe("checkpoint product loop", () => {
     })).toBeInTheDocument();
     expect(screen.getByRole("button", {
       name: "Open desktop handoff in Codex",
-    }).closest("article")).toHaveAttribute(
-      "data-selected-session-ordinal",
-      "2",
-    );
+    }).closest("article")).not.toHaveAttribute("data-selected-session-ordinal");
   });
 
   it("falls back from an imported-chat disclaimer to the real session task", () => {
@@ -1320,6 +1325,16 @@ describe("checkpoint product loop", () => {
   });
 
   it("fails closed instead of continuing an older session when discovery fails", () => {
+    writeExecuteSessionContexts("workspace-1", [{
+      source_document_id: "source-overlay-session",
+      connector_type: "codex",
+      session_id: "overlay-session",
+      title: "Saved floating button context",
+      compaction_count: 2,
+    }]);
+    mocks.library.data = {
+      sessions: readExecuteSessionContexts("workspace-1"),
+    };
     mocks.latestDiscovery.data = undefined;
     mocks.latestDiscovery.isLoading = false;
     mocks.latestDiscovery.isFetching = false;
@@ -1340,6 +1355,9 @@ describe("checkpoint product loop", () => {
     expect(screen.getByText(
       "Local Codex history could not be read.",
     )).toBeInTheDocument();
+    expect(screen.getByRole("region", {
+      name: "Floating button sessions",
+    })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(mocks.latestDiscovery.refetch).toHaveBeenCalledTimes(1);
     expect(mocks.continuation.mutateAsync).not.toHaveBeenCalled();
@@ -1933,8 +1951,9 @@ Remove screenshot IDs and temporary paths from the Now page.
     const status = await screen.findByRole("status");
     expect(status).toHaveTextContent("Continue in Claude Code");
     expect(status).toHaveTextContent(
-      "Context copied. Review the draft, then send it in Claude Code.",
+      "Context copied to your clipboard. A paste command was sent to Claude Code, but the composer contents could not be verified. Confirm the context is visible, then send it.",
     );
+    expect(status).not.toHaveTextContent("draft");
     expect(status).not.toHaveTextContent("App rendering cannot be verified here");
     expect(status).not.toHaveTextContent("Look for Claude Code on your desktop");
     const requestAgain = screen.getByRole("button", {
@@ -1989,6 +2008,121 @@ Remove screenshot IDs and temporary paths from the Now page.
     ).not.toBe(firstRequestKey);
   });
 
+  it("reports a verified accessibility insertion as pasted", async () => {
+    const staged = await mocks.continuation.mutateAsync();
+    mocks.continuation.mutateAsync.mockReset().mockResolvedValue({
+      ...staged,
+      delivery: {
+        ...staged.delivery,
+        provider: "codex",
+        context_delivery: "desktop_composer_accessibility_insert",
+        visibility: {
+          ...staged.delivery.visibility,
+          context_loaded: true,
+          paste_requested: true,
+          paste_verified: true,
+          paste_method: "accessibility_insert",
+        },
+        harness_session: {
+          ...staged.delivery.harness_session,
+          provider: "codex",
+          context_loaded: true,
+          paste_requested: true,
+          paste_verified: true,
+          paste_method: "accessibility_insert",
+        },
+      },
+      run: {
+        ...staged.run,
+        provider: "codex",
+      },
+    });
+
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+    fireEvent.click(screen.getByRole("button", {
+      name: "Open desktop handoff in Codex",
+    }));
+
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent(
+      "Context was pasted into Codex. Review it, then send it.",
+    );
+  });
+
+  it("does not claim a successful handoff for a clipboard-only response", async () => {
+    const staged = await mocks.continuation.mutateAsync();
+    mocks.continuation.mutateAsync.mockReset().mockResolvedValue({
+      ...staged,
+      delivery: {
+        ...staged.delivery,
+        context_delivery: "clipboard",
+        visibility: {
+          context_loaded: false,
+          context_copied: true,
+          paste_requested: false,
+          paste_verified: false,
+          execution_started: false,
+        },
+        harness_session: {
+          ...staged.delivery.harness_session,
+          context_loaded: false,
+          context_copied: true,
+          paste_requested: false,
+          paste_verified: false,
+        },
+      },
+    });
+
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+    fireEvent.click(screen.getByRole("button", {
+      name: "Open desktop handoff in Codex",
+    }));
+
+    const blocker = await screen.findByRole("alert");
+    expect(blocker).toHaveTextContent("Context staging was not confirmed");
+    expect(blocker).toHaveTextContent("No successful handoff is being claimed");
+  });
+
+  it.each([
+    ["an unverified app open", {
+      open_verified: false,
+    }],
+    ["paste fields mixed only into visibility", {
+      paste_requested: false,
+      paste_verified: false,
+      paste_method: null,
+      context_loaded: false,
+    }],
+  ])("rejects %s instead of claiming a handoff", async (_label, sessionPatch) => {
+    const staged = await mocks.continuation.mutateAsync();
+    mocks.continuation.mutateAsync.mockReset().mockResolvedValue({
+      ...staged,
+      delivery: {
+        ...staged.delivery,
+        visibility: {
+          ...staged.delivery.visibility,
+          open_verified: true,
+          paste_requested: true,
+          paste_verified: false,
+          paste_method: "command_v",
+        },
+        harness_session: {
+          ...staged.delivery.harness_session,
+          ...sessionPatch,
+        },
+      },
+    });
+
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+    fireEvent.click(screen.getByRole("button", {
+      name: "Open desktop handoff in Codex",
+    }));
+
+    const blocker = await screen.findByRole("alert");
+    expect(blocker).toHaveTextContent("Context staging was not confirmed");
+    expect(blocker).toHaveTextContent("No successful handoff is being claimed");
+  });
+
   it("warns when a visible desktop draft has an incomplete foundation", async () => {
     const staged = await mocks.continuation.mutateAsync();
     mocks.continuation.mutateAsync.mockReset().mockResolvedValue({
@@ -2020,7 +2154,7 @@ Remove screenshot IDs and temporary paths from the Now page.
       "Review the repository in the opened desktop app before submitting.",
     );
     expect(status).toHaveTextContent("Automatic execution remains blocked.");
-    expect(status).toHaveTextContent("Context copied.");
+    expect(status).toHaveTextContent("Context copied to your clipboard.");
     expect(screen.queryByText("Project Context is not safe to stage")).not.toBeInTheDocument();
   });
 
@@ -2169,7 +2303,7 @@ Remove screenshot IDs and temporary paths from the Now page.
     fireEvent.click(screen.getByRole("button", { name: "Open desktop handoff in Codex" }));
 
     const status = await screen.findByRole("status");
-    expect(status).toHaveTextContent("Context copied.");
+    expect(status).toHaveTextContent("Context copied to your clipboard.");
     expect(status).not.toHaveTextContent("Workflow advanced after verification");
   });
 
@@ -2564,8 +2698,45 @@ Remove screenshot IDs and temporary paths from the Now page.
     }
   });
 
-  it("keeps the staging state visible when background session refresh changes the task key", () => {
-    mocks.continuation.mutateAsync.mockImplementation(() => new Promise(() => {}));
+  it("shows a readiness timeout as retryable unknown state", () => {
+    mocks.providers.data.providers = mocks.providers.data.providers.map((provider) => (
+      provider.provider === "codex"
+        ? {
+            ...provider,
+            status: "check_timed_out",
+            ready: false,
+            code: "desktop_readiness_timeout",
+            desktop_available: null,
+            desktop_handoff_supported: false,
+            message: (
+              "Codex Desktop launch readiness could not be verified within 3 seconds. "
+              + "Installation status was not determined."
+            ),
+            action: "Retry desktop readiness.",
+          }
+        : provider
+    ));
+
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+
+    const codex = screen.getByRole("button", {
+      name: "Open desktop handoff in Codex",
+    });
+    expect(codex).toBeDisabled();
+    expect(within(codex).getByText("Check timed out")).toBeInTheDocument();
+    expect(codex).toHaveTextContent("Installation status was not determined.");
+    expect(codex).toHaveTextContent("Next: Retry desktop readiness.");
+    expect(codex).toHaveTextContent("Retry readiness");
+    expect(codex).not.toHaveTextContent("Unavailable");
+    expect(codex).not.toHaveTextContent("Not runnable");
+  });
+
+  it("keeps and accepts a stage result when display metadata refreshes for the same source", async () => {
+    const staged = await mocks.continuation.mutateAsync();
+    let resolveStage;
+    mocks.continuation.mutateAsync.mockReset().mockImplementation(() => new Promise((resolve) => {
+      resolveStage = resolve;
+    }));
     const view = render(<MemoryRouter><NowPage /></MemoryRouter>);
 
     fireEvent.click(screen.getByRole("button", { name: "Open desktop handoff in OpenCode" }));
@@ -2587,16 +2758,43 @@ Remove screenshot IDs and temporary paths from the Now page.
       ...mocks.digest.data.activity.recent_sessions[0],
       session_title: "Background refresh imported a newer session title",
       title: "Background refresh imported a newer session title",
-      session_id: "background-refresh-session",
       source_activity_at: "2026-07-25T16:04:00Z",
     };
+    mocks.latestDiscovery.data = latestDiscoveryResult({
+      title: "Background refresh imported a newer session title",
+      preview: "Background refresh imported newer display metadata",
+      updated_at: "2026-07-25T16:04:00Z",
+      revision_number: 2,
+    });
     view.rerender(<MemoryRouter><NowPage /></MemoryRouter>);
 
     expect(screen.getByRole("status")).toHaveTextContent("Requesting a desktop handoff in OpenCode");
     expect(screen.getByRole("button", { name: "Open desktop handoff in OpenCode" })).toHaveAttribute("data-provider-pending", "true");
+
+    resolveStage({
+      ...staged,
+      delivery: {
+        ...staged.delivery,
+        provider: "opencode",
+        harness_session: {
+          ...staged.delivery.harness_session,
+          provider: "opencode",
+        },
+      },
+      run: {
+        ...staged.run,
+        provider: "opencode",
+      },
+    });
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(
+      "Continue in OpenCode",
+    ));
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Context copied to your clipboard.",
+    );
   });
 
-  it("reuses an in-flight request key across remount and provider switch", async () => {
+  it("uses a new in-flight request key across remount and provider switch", async () => {
     mocks.continuation.mutateAsync.mockImplementation(() => new Promise(() => {}));
     const firstView = render(<MemoryRouter><NowPage /></MemoryRouter>);
 
@@ -2618,7 +2816,7 @@ Remove screenshot IDs and temporary paths from the Now page.
     ).toHaveBeenCalledTimes(2));
     const reloadedRequest = mocks.continuation.mutateAsync.mock.calls[1][0];
 
-    expect(reloadedRequest.idempotency_key).toBe(
+    expect(reloadedRequest.idempotency_key).not.toBe(
       firstRequest.idempotency_key,
     );
     expect(firstRequest.target_provider).toBe("codex");
@@ -2634,13 +2832,17 @@ Remove screenshot IDs and temporary paths from the Now page.
         source_provider: "codex",
         source_session_id: "session-1",
         handoff_id: "recovered-visible-handoff",
-        context_delivery: "desktop_composer_prefill_and_clipboard",
+        context_delivery: "desktop_composer_command_v",
         execution_started: false,
         harness_session: {
           handoff_id: "recovered-visible-handoff",
           open_requested: true,
+          open_verified: true,
           context_copied: true,
           context_loaded: false,
+          paste_requested: true,
+          paste_verified: false,
+          paste_method: "command_v",
           execution_started: false,
         },
       },
@@ -3060,7 +3262,7 @@ Remove screenshot IDs and temporary paths from the Now page.
     const blocker = await screen.findByRole("alert");
     expect(blocker).toHaveTextContent("Context staging was not confirmed");
     expect(blocker).toHaveTextContent(
-      "desktop open request and clipboard copy were not both confirmed",
+      "provider opened and received a safe paste request",
     );
     expect(screen.queryByText(/Continue in Codex/)).not.toBeInTheDocument();
     expect(blocker).not.toHaveTextContent("Audited the configuration");

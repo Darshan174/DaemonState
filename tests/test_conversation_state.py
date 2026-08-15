@@ -64,6 +64,54 @@ def test_binary_answer_resolves_against_a_pending_proposal() -> None:
     assert "Accepted the prior assistant proposal" in state.decisions[-1].statement
 
 
+def test_yes_go_ahead_binds_one_recommended_ordered_plan_as_a_proposal() -> None:
+    state = resolve_conversation_state([
+        event(1, "user", "Investigate why the Continue cards are disabled."),
+        event(
+            2,
+            "assistant",
+            (
+                "The diagnosis contains several historical observations.\n\n"
+                "### Recommended correction order\n\n"
+                "1. Remove the Continue-only maturity lock.\n"
+                "2. Keep Execute's historical-copy gate.\n"
+                "3. Verify the destination-specific paste result.\n"
+                "4. Preserve unrelated workspace changes.\n"
+                "5. Run the focused tests."
+            ),
+        ),
+        event(3, "user", "yes go ahead"),
+    ])
+
+    assert state.active_goal is not None
+    assert state.unresolved_references == ()
+    assert state.transitions[-1].act == "accept"
+    accepted = state.decisions[-1].statement
+    assert "Accepted the prior assistant proposal" in accepted
+    assert "Remove the Continue-only maturity lock" in accepted
+    assert "Run the focused tests" in accepted
+    assert "historical observations" not in accepted
+
+
+def test_yes_does_not_bind_multiple_recommended_ordered_plans() -> None:
+    state = resolve_conversation_state([
+        event(1, "user", "Improve Continue."),
+        event(
+            2,
+            "assistant",
+            (
+                "Recommended plan:\n1. Keep the current UI.\n2. Fix delivery.\n\n"
+                "Proposed plan:\n1. Replace the UI.\n2. Remove delivery."
+            ),
+        ),
+        event(3, "user", "yes"),
+    ])
+
+    assert state.active_goal is not None
+    assert state.unresolved_references[-1].user_text == "yes"
+    assert state.unresolved_references[-1].blocks_copy is True
+
+
 def test_done_answers_a_requested_prerequisite_without_completing_the_task() -> None:
     state = resolve_conversation_state([
         event(1, "user", "Push the branch."),

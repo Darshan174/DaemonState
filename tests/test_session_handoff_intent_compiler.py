@@ -12,7 +12,9 @@ from app.schemas.continuation_execution import TaskMode, infer_task_mode
 from app.services.checkpoints import (
     CHECKPOINT_CATEGORIES,
     COMPACT_SESSION_CONTEXT_REQUIRED_HEADINGS,
+    _compact_session_start_steps,
     _infer_session_task_mode,
+    _sentences,
     build_session_handoff_contract,
     render_compact_session_handoff,
     session_handoff_render_issues,
@@ -23,6 +25,7 @@ from app.services.request_artifacts import TrustedRequestImageDescriptor
 def _checkpoint_data(
     request: str,
     *,
+    request_fragments: tuple[str | tuple[str, str], ...] = (),
     changed_files: tuple[str, ...] = (),
     relevant_files: tuple[str, ...] = (),
     active_blocker: str | None = None,
@@ -30,15 +33,40 @@ def _checkpoint_data(
     superseded: bool = False,
 ) -> tuple[dict[str, object], dict[str, object]]:
     sections: dict[str, list[dict[str, object]]] = {key: [] for key in CHECKPOINT_CATEGORIES}
+    goal_payload: dict[str, object] = {
+        "request_verbatim": request,
+        "request_sha256": hashlib.sha256(request.encode()).hexdigest(),
+    }
+    if request_fragments:
+        stored_fragments: list[dict[str, object]] = []
+        for index, fragment_value in enumerate(request_fragments, start=1):
+            if isinstance(fragment_value, tuple):
+                fragment, resolved = fragment_value
+            else:
+                fragment, resolved = fragment_value, ""
+            stored_fragment: dict[str, object] = {
+                "provider_event_id": f"msg-{index}",
+                "sequence_number": index,
+                "request_verbatim": fragment,
+                "request_sha256": hashlib.sha256(fragment.encode()).hexdigest(),
+            }
+            if resolved:
+                stored_fragment.update(
+                    {
+                        "resolved_statement": resolved,
+                        "resolved_statement_sha256": hashlib.sha256(
+                            resolved.encode()
+                        ).hexdigest(),
+                    }
+                )
+            stored_fragments.append(stored_fragment)
+        goal_payload["request_fragments"] = stored_fragments
     sections["goal"] = [
         {
             "statement": request,
             "truth_state": "user_asserted",
             "state": "active",
-            "payload": {
-                "request_verbatim": request,
-                "request_sha256": hashlib.sha256(request.encode()).hexdigest(),
-            },
+            "payload": goal_payload,
             "evidence": [],
         }
     ]
@@ -162,6 +190,7 @@ def _checkpoint_data(
 def _contract(
     request: str,
     *,
+    request_fragments: tuple[str | tuple[str, str], ...] = (),
     continuation_lead: str | None = None,
     changed_files: tuple[str, ...] = (),
     relevant_files: tuple[str, ...] = (),
@@ -173,6 +202,7 @@ def _contract(
 ) -> tuple[dict[str, object], dict[str, object]]:
     data, comparison = _checkpoint_data(
         request,
+        request_fragments=request_fragments,
         changed_files=changed_files,
         relevant_files=relevant_files,
         active_blocker=active_blocker,
@@ -191,7 +221,7 @@ def _contract(
     return contract, data
 
 
-def _tiny_png() -> bytes:
+def _tiny_png(rgba: bytes = b"\xff\x00\x00\xff") -> bytes:
     def chunk(kind: bytes, data: bytes) -> bytes:
         return (
             struct.pack(">I", len(data))
@@ -203,7 +233,7 @@ def _tiny_png() -> bytes:
     return b"\x89PNG\r\n\x1a\n" + b"".join(
         (
             chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)),
-            chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00\xff")),
+            chunk(b"IDAT", zlib.compress(b"\x00" + rgba)),
             chunk(b"IEND", b""),
         )
     )
@@ -238,6 +268,318 @@ def test_ambiguous_required_attachment_never_invents_a_completion_requirement(
     assert "Fix authentication" in normalized_goal
     assert "Update API docs" in normalized_goal
     assert "required_attachment_requirement_linkage" in {
+        item["code"] for item in contract["quality_report"]["blocking_issues"]
+    }
+
+
+def test_composite_attachment_links_only_to_its_declaring_follow_up(
+    tmp_path,
+) -> None:
+    root = "now deeply investigate why the cards in the continue page aren't working"
+    accepted_plan = (
+        "Accepted the prior assistant proposal: Recommended correction order:\n"
+        "1. Remove the two-compaction restriction from Continue.\n"
+        "2. Make every card use one shared latest-session source.\n"
+        "3. Reuse the floating button's real paste mechanism.\n"
+        "4. Include the destination provider in the retry key.\n"
+        "5. Distinguish desktop detection from account readiness."
+    )
+    image_bytes = _tiny_png()
+    image_path = tmp_path / "codex-card-failure.png"
+    image_path.write_bytes(image_bytes)
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    failure_follow_up = (
+        "this happened when i clicked codex card. WHY TF DOES THIS KEEP FAILING?\n"
+        f'<image name=[Image #1] path="{image_path}">\n</image>'
+    )
+    request = (
+        f"{root}\n\n"
+        "## Additional user-authored requirements\n\n"
+        f"### Follow-up 1\n{accepted_plan}\n\n"
+        f"### Follow-up 2\n{failure_follow_up}"
+    )
+    contract, _data = _contract(
+        request,
+        request_fragments=(root, ("yes go ahead", accepted_plan), failure_follow_up),
+        trusted_attachment_descriptors=(
+            TrustedRequestImageDescriptor(
+                path=str(image_path),
+                resolved_path=str(image_path),
+                sha256=digest,
+                mime_type="image/png",
+            ),
+        ),
+        allow_local_artifacts=True,
+    )
+
+    complaint = next(
+        item
+        for item in contract["requirements"]
+        if item["text"] == "WHY TF DOES THIS KEEP FAILING?"
+    )
+    attachment = contract["attachment_dependencies"][0]
+    assert attachment["required"] is True
+    assert attachment["available"] is True
+    assert attachment["requirement_ids"] == [complaint["id"]]
+    assert complaint["attachment_ids"] == [attachment["id"]]
+    linkage = next(
+        item
+        for item in contract["quality_report"]["checks"]
+        if item["code"] == "required_attachment_requirement_linkage"
+    )
+    assert linkage["status"] == "pass"
+    assert not any(
+        item["code"] == "required_attachment_requirement_linkage"
+        for item in contract["quality_report"]["blocking_issues"]
+    )
+
+
+def test_declared_attachment_with_two_same_fragment_outcomes_stays_ambiguous(
+    tmp_path,
+) -> None:
+    image_bytes = _tiny_png()
+    image_path = tmp_path / "ambiguous-follow-up.png"
+    image_path.write_bytes(image_bytes)
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    request = (
+        "Fix authentication. Update API docs.\n"
+        f'<image name=[Image #1] path="{image_path}">\n</image>'
+    )
+    contract, _data = _contract(
+        request,
+        request_fragments=(request,),
+        trusted_attachment_descriptors=(
+            TrustedRequestImageDescriptor(
+                path=str(image_path),
+                resolved_path=str(image_path),
+                sha256=digest,
+                mime_type="image/png",
+            ),
+        ),
+        allow_local_artifacts=True,
+    )
+
+    assert [item["text"] for item in contract["requirements"]] == [
+        "Fix authentication.",
+        "Update API docs.",
+    ]
+    assert contract["attachment_dependencies"][0]["requirement_ids"] == []
+    assert "required_attachment_requirement_linkage" in {
+        item["code"] for item in contract["quality_report"]["blocking_issues"]
+    }
+
+
+def test_composite_attachments_never_cross_link_between_follow_ups(
+    tmp_path,
+) -> None:
+    image_bytes = _tiny_png()
+    login_path = tmp_path / "login-error.png"
+    billing_path = tmp_path / "billing-error.png"
+    login_path.write_bytes(image_bytes)
+    billing_path.write_bytes(image_bytes)
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    root = "Investigate both reported failures."
+    login_follow_up = (
+        "Fix the login failure shown here.\n"
+        f'<image name=[Login] path="{login_path}">\n</image>'
+    )
+    billing_follow_up = (
+        "Fix the billing failure shown here.\n"
+        f'<image name=[Billing] path="{billing_path}">\n</image>'
+    )
+    request = (
+        f"{root}\n\n"
+        "## Additional user-authored requirements\n\n"
+        f"### Follow-up 1\n{login_follow_up}\n\n"
+        f"### Follow-up 2\n{billing_follow_up}"
+    )
+    contract, _data = _contract(
+        request,
+        request_fragments=(root, login_follow_up, billing_follow_up),
+        trusted_attachment_descriptors=(
+            TrustedRequestImageDescriptor(
+                path=str(login_path),
+                resolved_path=str(login_path),
+                sha256=digest,
+                mime_type="image/png",
+            ),
+            TrustedRequestImageDescriptor(
+                path=str(billing_path),
+                resolved_path=str(billing_path),
+                sha256=digest,
+                mime_type="image/png",
+            ),
+        ),
+        allow_local_artifacts=True,
+    )
+
+    login_requirement = next(
+        item for item in contract["requirements"] if "login failure" in item["text"]
+    )
+    billing_requirement = next(
+        item for item in contract["requirements"] if "billing failure" in item["text"]
+    )
+    attachments_by_path = {
+        item["path"]: item for item in contract["attachment_dependencies"]
+    }
+    assert attachments_by_path[str(login_path)]["requirement_ids"] == [
+        login_requirement["id"]
+    ]
+    assert attachments_by_path[str(billing_path)]["requirement_ids"] == [
+        billing_requirement["id"]
+    ]
+    assert login_requirement["attachment_ids"] != billing_requirement["attachment_ids"]
+
+
+def test_reused_attachment_path_without_event_binding_fails_closed(
+    tmp_path,
+) -> None:
+    image_bytes = _tiny_png()
+    shared_path = tmp_path / "shared.png"
+    shared_path.write_bytes(image_bytes)
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    login_follow_up = (
+        "Fix the login failure shown here.\n"
+        f'<image name=[Evidence] path="{shared_path}">\n</image>'
+    )
+    billing_follow_up = (
+        "Fix the billing failure shown here.\n"
+        f'<image   name=[Evidence]   path="{shared_path}">\n</image>'
+    )
+    request = (
+        "Investigate both reported failures.\n\n"
+        "## Additional user-authored requirements\n\n"
+        f"### Follow-up 1\n{login_follow_up}\n\n"
+        f"### Follow-up 2\n{billing_follow_up}"
+    )
+    contract, _data = _contract(
+        request,
+        request_fragments=(
+            "Investigate both reported failures.",
+            login_follow_up,
+            billing_follow_up,
+        ),
+        trusted_attachment_descriptors=(
+            TrustedRequestImageDescriptor(
+                path=str(shared_path),
+                resolved_path=str(shared_path),
+                sha256=digest,
+                mime_type="image/png",
+            ),
+        ),
+        allow_local_artifacts=True,
+    )
+
+    attachments = contract["attachment_dependencies"]
+    assert len(attachments) == 2
+    linked_text = [
+        next(
+            requirement["text"]
+            for requirement in contract["requirements"]
+            if requirement["id"] == attachment["requirement_ids"][0]
+        )
+        for attachment in attachments
+    ]
+    assert linked_text == [
+        "Fix the login failure shown here.",
+        "Fix the billing failure shown here.",
+    ]
+    assert all(attachment["available"] is False for attachment in attachments)
+    assert all(
+        attachment["resolution"] == "source_event_attachment_identity_ambiguous"
+        for attachment in attachments
+    )
+    assert "required_attachments_resolved" in {
+        item["code"] for item in contract["quality_report"]["blocking_issues"]
+    }
+
+
+def test_user_authored_composite_heading_is_not_treated_as_provenance(
+    tmp_path,
+) -> None:
+    image_bytes = _tiny_png()
+    image_path = tmp_path / "single-turn.png"
+    image_path.write_bytes(image_bytes)
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    request = (
+        "Fix authentication.\n"
+        "### Follow-up 1\n"
+        "Update API docs.\n"
+        f'<image name=[Evidence] path="{image_path}">\n</image>'
+    )
+    contract, _data = _contract(
+        request,
+        request_fragments=(request,),
+        trusted_attachment_descriptors=(
+            TrustedRequestImageDescriptor(
+                path=str(image_path),
+                resolved_path=str(image_path),
+                sha256=digest,
+                mime_type="image/png",
+            ),
+        ),
+        allow_local_artifacts=True,
+    )
+
+    assert len(contract["requirements"]) == 2
+    assert contract["attachment_dependencies"][0]["requirement_ids"] == []
+    assert "required_attachment_requirement_linkage" in {
+        item["code"] for item in contract["quality_report"]["blocking_issues"]
+    }
+
+
+def test_conflicting_attachment_identities_reusing_one_path_fail_closed(
+    tmp_path,
+) -> None:
+    red_bytes = _tiny_png()
+    blue_bytes = _tiny_png(b"\x00\x00\xff\xff")
+    source_path = tmp_path / "reused-source.png"
+    red_path = tmp_path / "red.png"
+    blue_path = tmp_path / "blue.png"
+    red_path.write_bytes(red_bytes)
+    blue_path.write_bytes(blue_bytes)
+    request = (
+        "Fix the login screenshot.\n"
+        f'<image name=[Login] path="{source_path}">\n</image>\n\n'
+        "## Additional user-authored requirements\n\n"
+        "### Follow-up 1\n"
+        "Fix the billing screenshot.\n"
+        f'<image name=[Billing] path="{source_path}">\n</image>'
+    )
+    contract, _data = _contract(
+        request,
+        request_fragments=(
+            (
+                "Fix the login screenshot.\n"
+                f'<image name=[Login] path="{source_path}">\n</image>'
+            ),
+            (
+                "Fix the billing screenshot.\n"
+                f'<image name=[Billing] path="{source_path}">\n</image>'
+            ),
+        ),
+        trusted_attachment_descriptors=(
+            TrustedRequestImageDescriptor(
+                path=str(source_path),
+                resolved_path=str(red_path),
+                sha256=hashlib.sha256(red_bytes).hexdigest(),
+                mime_type="image/png",
+            ),
+            TrustedRequestImageDescriptor(
+                path=str(source_path),
+                resolved_path=str(blue_path),
+                sha256=hashlib.sha256(blue_bytes).hexdigest(),
+                mime_type="image/png",
+            ),
+        ),
+        allow_local_artifacts=True,
+    )
+
+    assert all(
+        attachment["available"] is False
+        for attachment in contract["attachment_dependencies"]
+    )
+    assert "required_attachments_resolved" in {
         item["code"] for item in contract["quality_report"]["blocking_issues"]
     }
 
@@ -824,6 +1166,143 @@ def test_vague_card_complaint_compiles_to_honest_discovery_brief() -> None:
     assert "checkpoint-intent-fixture" not in content
     assert "## Continue with" not in content
     assert set(COMPACT_SESSION_CONTEXT_REQUIRED_HEADINGS) <= set(content.splitlines())
+    assert session_handoff_render_issues(
+        content,
+        request_verbatim=request,
+        handoff_contract=contract,
+        variant="compact_v2",
+    ) == []
+
+def test_opencode_destination_complaint_compiles_to_grounded_read_only_brief(
+    tmp_path,
+) -> None:
+    request = (
+        "the opencode continue was somewhat successful, it pastes the prompt in "
+        "the terminal instead of chatbox as shown in the screenshot\n\n"
+        "this was th"
+    )
+    image_bytes = _tiny_png()
+    image_path = tmp_path / "opencode-destination.png"
+    image_path.write_bytes(image_bytes)
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    production_paths = (
+        "README.md",
+        "app/api/continuations.py",
+        "app/as_was.py",
+        "app/instead_of.py",
+        "app/services/continuation.py",
+        "app/services/continuation_runtime.py",
+        "app/services/harness_launcher.py",
+        (
+            "desktop/macos/DaemonStateOverlay/Sources/DaemonStateOverlay/"
+            "ComposerPasteCommand.swift"
+        ),
+        (
+            "desktop/macos/DaemonStateOverlay/Sources/DaemonStateOverlay/"
+            "FocusedTextPasteService.swift"
+        ),
+        "tests/ComposerPasteCommandTest.swift",
+        (
+            "desktop/macos/DaemonStateOverlay/Tests/DaemonStateOverlayTests/"
+            "FocusedTextPasteServiceTests.swift"
+        ),
+        "tests/test_harness_launcher.py",
+    )
+    contract, data = _contract(
+        request,
+        changed_files=production_paths,
+        relevant_files=production_paths,
+        trusted_attachment_descriptors=(
+            TrustedRequestImageDescriptor(
+                path=str(image_path),
+                resolved_path=str(image_path),
+                sha256=digest,
+                mime_type="image/png",
+            ),
+        ),
+        allow_local_artifacts=True,
+    )
+
+    assert contract["task_mode"] == "report"
+    assert contract["execution_policy"]["permission_mode"] == "read_only"
+    assert contract["execution_policy"]["may_edit"] is False
+    intent = contract["intent"]
+    assert intent["task_type_basis"] == "safety_default_unconfirmed"
+    assert intent["reported_behavior"] == {
+        "kind": "destination_mismatch",
+        "flow": "OpenCode Continue",
+        "object": "generated prompt",
+        "actual_destination": "terminal",
+        "expected_destination": "chat composer",
+        "authority": "user_reported",
+    }
+    assert intent["source_quality"] == {
+        "trailing_incomplete_fragment": "this was th",
+        "operational_goal_excludes_trailing_fragment": True,
+    }
+    assert intent["normalized_requirement"].startswith(
+        "Produce an evidence-backed report on the OpenCode Continue destination mismatch"
+    )
+    assert "this was th" not in intent["normalized_requirement"]
+    assert len(contract["requirements"]) == 1
+    assert contract["requirements"][0]["normalized_text"] == intent["normalized_requirement"]
+    assert len(intent["acceptance_criteria"]) == 4
+    assert contract["attachment_dependencies"][0]["required"] is True
+    assert contract["attachment_dependencies"][0]["requirement_ids"] == ["R1"]
+    assert intent["target_resolution"]["status"] == "candidate"
+    assert [item["phrase"] for item in intent["targets"]] == ["chat composer"]
+    candidate_paths = [
+        item["path"] for item in intent["targets"][0]["candidates"]
+    ]
+    assert candidate_paths[:4] == [
+        (
+            "desktop/macos/DaemonStateOverlay/Sources/DaemonStateOverlay/"
+            "ComposerPasteCommand.swift"
+        ),
+        (
+            "desktop/macos/DaemonStateOverlay/Sources/DaemonStateOverlay/"
+            "FocusedTextPasteService.swift"
+        ),
+        "app/services/harness_launcher.py",
+        "app/services/continuation_runtime.py",
+    ]
+    assert "app/as_was.py" not in candidate_paths
+    assert "app/instead_of.py" not in candidate_paths
+    assert "README.md" not in candidate_paths[:4]
+
+    content = render_compact_session_handoff(
+        SimpleNamespace(),
+        request_verbatim=request,
+        contract=contract,
+        checkpoint_data=data,
+    )
+    goal_section = content.split("## Goal", 1)[1].split("## State now", 1)[0]
+    done_section = content.split("## Done when", 1)[1]
+    assert intent["normalized_requirement"] in goal_section
+    assert "\n> this was th\n" in goal_section
+    assert "\nthis was th\n" not in goal_section
+    assert "Quarantined trailing source fragment (verbatim; non-operative)" in goal_section
+    assert "Source-quality note" in content
+    assert "Intent classification: unconfirmed" in content
+    assert "Expected destination" in content and "chat composer" in content
+    assert "Required visual evidence" in content
+    assert "opacity" not in content.casefold()
+    assert "transparent" not in content.casefold()
+    assert "card background" not in content.casefold()
+    assert "apply only the minimum requirement-specific delta" not in content
+    assert "does not authorize a requirement-specific delta" in content
+    assert "do not edit files" in content
+    assert request not in done_section
+    assert intent["normalized_requirement"] in done_section
+    assert {item["id"] for item in contract["verification_plan"]} == {
+        "PV1",
+        "PV2",
+        "PV3",
+        "PV4",
+    }
+    assert all(f"{item['id']}:" in done_section for item in contract["verification_plan"])
+    assert all(item["evidence_locator"] for item in contract["verification_plan"])
+    assert done_section.count("Evidence locator:") == len(contract["verification_plan"])
     assert (
         session_handoff_render_issues(
             content,
@@ -833,6 +1312,998 @@ def test_vague_card_complaint_compiles_to_honest_discovery_brief() -> None:
         )
         == []
     )
+
+    contaminated = content.replace(
+        "## Start here",
+        "- Unknowns: whether transparency comes from the card background.\n\n"
+        "## Start here",
+    )
+    contamination_issues = session_handoff_render_issues(
+        contaminated,
+        request_verbatim=request,
+        handoff_contract=contract,
+        variant="compact_v2",
+    )
+    contamination_failure = next(
+        item
+        for item in contamination_issues
+        if item["code"] == "compact_session_context_critical_state_missing"
+    )
+    assert "cross_task_opacity_context" in contamination_failure["missing_fragments"]
+
+    missing_destination = content.replace(
+        "- Expected destination (derived directly from the user's contrast): chat composer.\n",
+        "",
+    )
+    destination_issues = session_handoff_render_issues(
+        missing_destination,
+        request_verbatim=request,
+        handoff_contract=contract,
+        variant="compact_v2",
+    )
+    destination_failure = next(
+        item
+        for item in destination_issues
+        if item["code"] == "compact_session_context_critical_state_missing"
+    )
+    assert "expected_destination" in destination_failure["missing_fragments"]
+
+
+def test_non_opacity_attachment_plan_does_not_invent_css_work() -> None:
+    handoff = {
+        "execution_policy": {"may_edit": True},
+        "intent": {
+            "normalized_requirements": ["Fix the prompt destination shown in screenshot."],
+            "target_resolution": {"status": "candidate"},
+            "targets": [
+                {
+                    "candidates": [
+                        {
+                            "path": "app/services/continuation_runtime.py",
+                        }
+                    ]
+                }
+            ],
+        },
+        "attachment_dependencies": [{"id": "A1", "required": True}],
+        "readiness": {"next_action": "Inspect the current prompt delivery path."},
+        "requirements": [],
+        "repository": {},
+        "files": {"modified": [], "pre_existing_at_handoff": []},
+    }
+
+    steps = " ".join(_compact_session_start_steps(handoff)).casefold()
+
+    assert "runtime route" in steps
+    assert "opacity" not in steps
+    assert "rgba" not in steps
+    assert "backdrop" not in steps
+    assert "transparent" not in steps
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        (
+            "Make OpenCode Continue paste the prompt into the chatbox instead "
+            "of the terminal."
+        ),
+        (
+            "Please paste the OpenCode Continue prompt into the chatbox instead "
+            "of the terminal."
+        ),
+        (
+            "Can you paste the OpenCode Continue prompt into the chatbox instead "
+            "of the terminal?"
+        ),
+        (
+            "Could you paste the OpenCode Continue prompt into the chatbox instead "
+            "of the terminal?"
+        ),
+        (
+            "I want you to paste the OpenCode Continue prompt into the chatbox "
+            "instead of the terminal."
+        ),
+        (
+            "Please ensure OpenCode Continue pastes the prompt into the chatbox "
+            "instead of the terminal."
+        ),
+        (
+            "Can you ensure OpenCode Continue pastes the prompt into the chatbox "
+            "instead of the terminal?"
+        ),
+        (
+            "I want you to ensure OpenCode Continue pastes the prompt into the "
+            "chatbox instead of the terminal."
+        ),
+    ],
+)
+def test_imperative_destination_request_keeps_desired_direction(
+    request_text: str,
+) -> None:
+    contract, _data = _contract(request_text)
+
+    assert contract["task_mode"] == "change"
+    assert contract["intent"]["reported_behavior"]["actual_destination"] == "terminal"
+    assert contract["intent"]["reported_behavior"]["expected_destination"] == (
+        "chat composer"
+    )
+    assert contract["intent"]["normalized_requirement"] == (
+        "Fix the OpenCode Continue so the generated prompt reaches the chat "
+        "composer and never the terminal."
+    )
+
+
+def test_question_about_destination_keeps_reported_direction() -> None:
+    request = (
+        "Why does OpenCode Continue paste the prompt into the terminal instead "
+        "of the chatbox?"
+    )
+    contract, _data = _contract(request)
+
+    assert contract["intent"]["reported_behavior"]["actual_destination"] == "terminal"
+    assert contract["intent"]["reported_behavior"]["expected_destination"] == (
+        "chat composer"
+    )
+
+
+def test_change_request_with_observed_clause_does_not_reverse_reported_direction() -> None:
+    request = (
+        "Please investigate why OpenCode Continue pastes the prompt into the terminal "
+        "instead of the chatbox, then fix it."
+    )
+    contract, _data = _contract(request)
+
+    assert contract["task_mode"] == "change"
+    assert contract["intent"]["reported_behavior"]["actual_destination"] == "terminal"
+    assert contract["intent"]["reported_behavior"]["expected_destination"] == (
+        "chat composer"
+    )
+
+
+def test_report_scoped_ensure_keeps_read_only_observed_direction() -> None:
+    request = (
+        "Please ensure the report explains why OpenCode Continue pastes the prompt "
+        "into the terminal instead of the chatbox."
+    )
+    contract, _data = _contract(request)
+
+    assert contract["task_mode"] == "report"
+    assert contract["execution_policy"]["may_edit"] is False
+    assert contract["intent"]["reported_behavior"]["authority"] == "user_reported"
+    assert contract["intent"]["reported_behavior"]["actual_destination"] == "terminal"
+    assert contract["intent"]["reported_behavior"]["expected_destination"] == (
+        "chat composer"
+    )
+
+
+def test_negated_destination_requirement_keeps_prohibited_destination_as_actual() -> None:
+    request = (
+        "Please fix OpenCode so it does not paste the prompt into the terminal "
+        "instead of the chatbox."
+    )
+    contract, _data = _contract(request)
+
+    assert contract["task_mode"] == "change"
+    assert contract["intent"]["reported_behavior"]["authority"] == "user_directed"
+    assert contract["intent"]["reported_behavior"]["actual_destination"] == "terminal"
+    assert contract["intent"]["reported_behavior"]["expected_destination"] == (
+        "chat composer"
+    )
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "OpenCode should paste the prompt into the chatbox instead of the terminal.",
+        "OpenCode must paste the prompt into the chatbox instead of the terminal.",
+        (
+            "I would like you to paste the OpenCode prompt into the chatbox instead "
+            "of the terminal."
+        ),
+        (
+            "I would really like you to paste the OpenCode prompt into the chatbox "
+            "instead of the terminal."
+        ),
+        "I'd like you to paste the OpenCode prompt into the chatbox instead of the terminal.",
+    ],
+)
+def test_modal_destination_requirement_keeps_desired_direction_without_edit_authority(
+    request_text: str,
+) -> None:
+    contract, _data = _contract(request_text)
+
+    assert contract["execution_policy"]["may_edit"] is False
+    assert contract["intent"]["reported_behavior"]["authority"] == "user_directed"
+    assert contract["intent"]["reported_behavior"]["actual_destination"] == "terminal"
+    assert contract["intent"]["reported_behavior"]["expected_destination"] == (
+        "chat composer"
+    )
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "OpenCode can paste the prompt into the terminal instead of the chatbox.",
+        "I saw OpenCode paste the prompt into the terminal instead of the chatbox.",
+    ],
+)
+def test_observed_bare_destination_clause_keeps_reported_direction(
+    request_text: str,
+) -> None:
+    contract, _data = _contract(request_text)
+
+    assert contract["intent"]["reported_behavior"]["authority"] == "user_reported"
+    assert contract["intent"]["reported_behavior"]["actual_destination"] == "terminal"
+    assert contract["intent"]["reported_behavior"]["expected_destination"] == (
+        "chat composer"
+    )
+
+
+def test_causal_destination_observation_does_not_treat_so_as_a_requirement() -> None:
+    request = (
+        "The app loses focus, so OpenCode Continue pastes the prompt into the terminal "
+        "instead of the chatbox."
+    )
+    contract, _data = _contract(request)
+
+    assert contract["intent"]["reported_behavior"]["authority"] == "user_reported"
+    assert contract["intent"]["reported_behavior"]["actual_destination"] == "terminal"
+    assert contract["intent"]["reported_behavior"]["expected_destination"] == (
+        "chat composer"
+    )
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        (
+            "Please fix this because I need OpenCode Continue to paste the prompt "
+            "into the chatbox instead of the terminal."
+        ),
+        (
+            "Please update it because I would prefer OpenCode Continue to paste "
+            "the prompt into the chatbox instead of the terminal."
+        ),
+        (
+            "We expect OpenCode Continue to paste the prompt into the chatbox "
+            "instead of the terminal."
+        ),
+        (
+            "Please fix this because I’d rather OpenCode Continue paste the prompt "
+            "into the chatbox instead of the terminal."
+        ),
+        (
+            "Please fix this because my requirement is for OpenCode Continue to "
+            "paste the prompt into the chatbox instead of the terminal."
+        ),
+        (
+            "Please fix this because OpenCode Continue is required to paste the "
+            "prompt into the chatbox instead of the terminal."
+        ),
+        (
+            "OpenCode is expected to paste the prompt into the chatbox instead of "
+            "the terminal."
+        ),
+        (
+            "Ideally, OpenCode would paste the prompt into the chatbox instead of "
+            "the terminal."
+        ),
+        (
+            "We hope OpenCode pastes the prompt into the chatbox instead of the terminal."
+        ),
+        (
+            "We prefer that OpenCode pastes the prompt into the chatbox instead of "
+            "the terminal."
+        ),
+        (
+            "The expected behavior is for OpenCode Continue to paste the prompt "
+            "into the chatbox instead of the terminal."
+        ),
+        (
+            "It is expected that OpenCode Continue pastes the prompt into the "
+            "chatbox instead of the terminal."
+        ),
+        (
+            "Ideally OpenCode Continue pastes the prompt into the chatbox instead "
+            "of the terminal."
+        ),
+    ],
+)
+def test_causal_desiderative_destination_keeps_requested_direction(
+    request_text: str,
+) -> None:
+    contract, _data = _contract(request_text)
+
+    assert contract["intent"]["reported_behavior"]["authority"] == "user_directed"
+    assert contract["intent"]["reported_behavior"]["actual_destination"] == "terminal"
+    assert contract["intent"]["reported_behavior"]["expected_destination"] == (
+        "chat composer"
+    )
+
+
+def test_negated_desiderative_keeps_prohibited_destination_as_actual() -> None:
+    contract, _data = _contract(
+        "We want OpenCode not to paste the prompt into the terminal instead of the chatbox."
+    )
+
+    assert contract["intent"]["reported_behavior"]["authority"] == "user_directed"
+    assert contract["intent"]["reported_behavior"]["actual_destination"] == "terminal"
+    assert contract["intent"]["reported_behavior"]["expected_destination"] == (
+        "chat composer"
+    )
+
+
+def test_latest_destination_clause_overrides_explicitly_historical_behavior() -> None:
+    contract, _data = _contract(
+        "Previously, OpenCode Continue would paste the prompt into the terminal "
+        "instead of the chatbox. Now it pastes the prompt into the chatbox instead "
+        "of the terminal."
+    )
+
+    assert contract["intent"]["reported_behavior"]["authority"] == "user_reported"
+    assert contract["intent"]["reported_behavior"]["actual_destination"] == (
+        "chat composer"
+    )
+    assert contract["intent"]["reported_behavior"]["expected_destination"] == "terminal"
+    assert len(contract["requirements"]) == 1
+    assert "reaches the chat composer instead of the terminal" in contract["requirements"][0][
+        "normalized_text"
+    ]
+
+
+def test_explicit_current_destination_clause_outranks_later_history() -> None:
+    contract, _data = _contract(
+        "Now OpenCode Continue pastes the prompt into the chatbox instead of the "
+        "terminal. Previously, it would paste the prompt into the terminal instead "
+        "of the chatbox."
+    )
+
+    assert contract["intent"]["reported_behavior"]["authority"] == "user_reported"
+    assert contract["intent"]["reported_behavior"]["actual_destination"] == (
+        "chat composer"
+    )
+    assert contract["intent"]["reported_behavior"]["expected_destination"] == "terminal"
+    assert len(contract["requirements"]) == 1
+    assert "reaches the chat composer instead of the terminal" in contract["requirements"][0][
+        "normalized_text"
+    ]
+
+
+@pytest.mark.parametrize(
+    "valid_paragraph",
+    [
+        "This was intentional",
+        "That behavior is expected",
+        "It happens after login",
+    ],
+)
+def test_short_complete_paragraph_is_not_quarantined_or_dropped(
+    valid_paragraph: str,
+) -> None:
+    request = f"Investigate the current behavior.\n\n{valid_paragraph}"
+    contract, _data = _contract(request)
+
+    assert _sentences(request) == ["Investigate the current behavior.", valid_paragraph]
+    assert contract["intent"]["source_quality"]["trailing_incomplete_fragment"] is None
+
+
+def test_pasted_continuation_brief_scopes_behavior_to_trailing_review_lead() -> None:
+    request = """# Continuation Brief v2
+
+## Goal
+
+Produce an evidence-backed report on the OpenCode destination mismatch.
+
+Original user request (authoritative):
+> OpenCode pastes the prompt in the terminal instead of chatbox.
+
+## State now
+
+- Reported behavior: OpenCode pastes the prompt in the terminal instead of chatbox.
+
+## Start here
+
+1. Inspect the current runtime.
+
+## Do not repeat
+
+- Do not guess.
+
+## Done when
+
+- R1: Record the destination.
+
+this is the latest session context; rate this on quality"""
+    contract, _data = _contract(request)
+
+    assert [item["text"] for item in contract["requirements"]] == [
+        "this is the latest session context; rate this on quality"
+    ]
+    assert contract["intent"]["reported_behavior"] is None
+    assert contract["intent"]["acceptance_criteria"] == []
+    assert "OpenCode destination mismatch" not in contract["intent"][
+        "normalized_requirement"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("lead", "expected_mode"),
+    [
+        ("How good is this?", "report"),
+        ("Can you score this?", "report"),
+        ("Thoughts?", "report"),
+        ("Do not edit; just explain the risks.", "report"),
+        ("Now fix this", "change"),
+    ],
+)
+def test_any_plain_trailing_lead_overrides_a_pasted_change_brief(
+    lead: str,
+    expected_mode: str,
+) -> None:
+    request = f"""# Continuation Brief v2
+
+## Goal
+
+Fix the authentication flow.
+
+## State now
+
+- Task type: change.
+
+## Done when
+
+- R1: The authentication flow works.
+{lead}"""
+    contract, _data = _contract(request)
+
+    assert [item["text"] for item in contract["requirements"]] == [lead]
+    assert contract["task_mode"] == expected_mode
+    assert contract["execution_policy"]["may_edit"] is (expected_mode == "change")
+    assert "authentication flow" not in contract["intent"]["normalized_requirement"]
+
+
+@pytest.mark.parametrize(
+    ("lead", "expected_requirements"),
+    [
+        (
+            "Please review this handoff and rate its quality.\n\nThanks!",
+            ["Please review this handoff and rate its quality."],
+        ),
+        (
+            "Please review this handoff.\n\nDo not edit files.",
+            ["Please review this handoff.", "Do not edit files."],
+        ),
+        ("- Please rate this", ["Please rate this"]),
+        ("1. Rate this", ["Rate this"]),
+        ("- Evaluate this handoff.", ["Evaluate this handoff."]),
+        ("- Assess its quality.", ["Assess its quality."]),
+        ("- Give me feedback on this.", ["Give me feedback on this."]),
+        ("- Identify the weaknesses.", ["Identify the weaknesses."]),
+        (
+            "- R1 is wrong; assess this handoff.",
+            ["R1 is wrong; assess this handoff."],
+        ),
+        (
+            "- PV1 does not prove the claim; explain why.",
+            ["PV1 does not prove the claim; explain why."],
+        ),
+        (
+            "- R1: This is wrong; assess the handoff.",
+            ["R1: This is wrong; assess the handoff."],
+        ),
+        (
+            "- PV1: This does not prove R1; explain why.",
+            ["PV1: This does not prove R1; explain why."],
+        ),
+    ],
+)
+def test_complete_trailing_lead_overrides_pasted_brief_across_formatting(
+    lead: str,
+    expected_requirements: list[str],
+) -> None:
+    request = f"""# Continuation Brief v2
+
+## Goal
+
+Fix the authentication flow.
+
+## State now
+
+- Task type: change.
+
+## Done when
+
+- R1: The authentication flow works.
+
+{lead}"""
+    contract, _data = _contract(request)
+
+    assert [item["text"] for item in contract["requirements"]] == expected_requirements
+    assert contract["execution_policy"]["may_edit"] is False
+    assert "authentication flow" not in contract["intent"]["normalized_requirement"]
+
+
+def test_blank_separated_generated_done_items_do_not_become_current_authority() -> None:
+    request = """# Continuation Brief v2
+
+## Goal
+
+Fix the authentication flow.
+
+## State now
+
+- Task type: change.
+
+## Done when
+
+- R1: The authentication flow works.
+
+- PV1: Run the focused authentication tests."""
+    contract, _data = _contract(request)
+
+    assert [item["text"] for item in contract["requirements"]] == [
+        "Fix the authentication flow."
+    ]
+    assert contract["task_mode"] == "change"
+    assert contract["execution_policy"]["may_edit"] is True
+
+
+def test_historical_fix_does_not_complete_synthesized_destination_report() -> None:
+    request = (
+        "OpenCode Continue pastes the prompt in the terminal instead of the chatbox."
+    )
+    data, comparison = _checkpoint_data(request)
+    data["sections"]["progress"] = [
+        {
+            "statement": "Fixed OpenCode Continue prompt delivery in the desktop runtime.",
+            "truth_state": "reported",
+            "state": "active",
+            "payload": {},
+            "evidence": [],
+        }
+    ]
+    contract = build_session_handoff_contract(
+        SimpleNamespace(),
+        request_verbatim=request,
+        checkpoint_data=data,
+        repository_comparison=comparison,
+    )
+
+    assert contract["intent"]["task_type_basis"] == "safety_default_unconfirmed"
+    assert contract["requirements"][0]["status"] != "reported_done"
+    assert contract["reconciliation"]["counts"]["reported_done"] == 0
+
+
+@pytest.mark.parametrize(
+    "progress_statement",
+    [
+        "Updated OpenCode review screen prompt delivery.",
+        "Completed the OpenCode review screen prompt delivery.",
+        "Finished the OpenCode audit log prompt delivery.",
+        (
+            "Completed implementation of the OpenCode review and approval screen "
+            "prompt delivery."
+        ),
+        "Finished the OpenCode audit and logging panel prompt delivery.",
+        (
+            "Completed the initial OpenCode destination analysis; final runtime "
+            "findings remain pending."
+        ),
+        "Final report: the OpenCode destination investigation is still pending.",
+        (
+            "Completed the OpenCode destination analysis, but the final report "
+            "is not ready."
+        ),
+        (
+            "Completed the OpenCode destination analysis, but the report needs "
+            "more work."
+        ),
+        (
+            "Completed the OpenCode review and approval modal prompt-routing fix."
+        ),
+        (
+            "Finished the OpenCode audit and telemetry dashboard prompt routing."
+        ),
+        (
+            "Completed the OpenCode destination analysis; final report remains pending."
+        ),
+        (
+            "Completed the OpenCode destination analysis. Final report is not ready."
+        ),
+        (
+            "Completed the OpenCode destination analysis, but its report is not yet ready."
+        ),
+        "Completed the OpenCode destination analysis, but the report needs revision.",
+        "Completed the OpenCode destination analysis, but the write-up is unfinished.",
+        (
+            "The OpenCode destination report was complete but is now incomplete."
+        ),
+        (
+            "The OpenCode destination report is complete but still needs revision."
+        ),
+        "The OpenCode destination report is complete; later it became incomplete.",
+        "The OpenCode destination report is complete; however, it became incomplete.",
+        (
+            "The OpenCode destination report is now incomplete, although it was "
+            "complete yesterday."
+        ),
+    ],
+)
+def test_report_like_implementation_noun_does_not_complete_synthesized_report(
+    progress_statement: str,
+) -> None:
+    request = (
+        "OpenCode Continue pastes the prompt in the terminal instead of the chatbox."
+    )
+    data, comparison = _checkpoint_data(request)
+    data["sections"]["progress"] = [
+        {
+            "statement": progress_statement,
+            "truth_state": "reported",
+            "state": "active",
+            "payload": {},
+            "evidence": [],
+        }
+    ]
+    contract = build_session_handoff_contract(
+        SimpleNamespace(),
+        request_verbatim=request,
+        checkpoint_data=data,
+        repository_comparison=comparison,
+    )
+
+    assert contract["requirements"][0]["status"] != "reported_done"
+    assert contract["reconciliation"]["counts"]["reported_done"] == 0
+
+
+def test_explicit_completed_analysis_can_complete_synthesized_report() -> None:
+    request = (
+        "OpenCode Continue pastes the prompt in the terminal instead of the chatbox."
+    )
+    data, comparison = _checkpoint_data(request)
+    data["sections"]["progress"] = [
+        {
+            "statement": (
+                "Completed the OpenCode Continue destination analysis and recorded "
+                "the runtime findings."
+            ),
+            "truth_state": "reported",
+            "state": "active",
+            "payload": {},
+            "evidence": [],
+        }
+    ]
+    contract = build_session_handoff_contract(
+        SimpleNamespace(),
+        request_verbatim=request,
+        checkpoint_data=data,
+        repository_comparison=comparison,
+    )
+
+    assert contract["requirements"][0]["status"] == "reported_done"
+    assert contract["reconciliation"]["counts"]["reported_done"] == 1
+
+
+@pytest.mark.parametrize(
+    "progress_statement",
+    [
+        "Completed the OpenCode report; rollout remains pending.",
+        "Completed the OpenCode report, but rollout remains pending.",
+        "Completed the OpenCode report while rollout remains pending.",
+        "Completed the OpenCode report and rollout remains pending.",
+        "The OpenCode report is complete, although rollout remains pending.",
+        (
+            "The OpenCode report is now complete, although it was incomplete "
+            "yesterday."
+        ),
+    ],
+)
+def test_completed_report_clause_is_not_negated_by_later_rollout_status(
+    progress_statement: str,
+) -> None:
+    request = (
+        "OpenCode Continue pastes the prompt in the terminal instead of the chatbox."
+    )
+    data, comparison = _checkpoint_data(request)
+    data["sections"]["progress"] = [
+        {
+            "statement": progress_statement,
+            "truth_state": "reported",
+            "state": "active",
+            "payload": {},
+            "evidence": [],
+        }
+    ]
+    contract = build_session_handoff_contract(
+        SimpleNamespace(),
+        request_verbatim=request,
+        checkpoint_data=data,
+        repository_comparison=comparison,
+    )
+
+    assert contract["requirements"][0]["status"] == "reported_done"
+    assert contract["reconciliation"]["counts"]["reported_done"] == 1
+
+
+def test_later_current_report_state_overrides_historical_incompletion() -> None:
+    request = (
+        "OpenCode Continue pastes the prompt in the terminal instead of the chatbox."
+    )
+    data, comparison = _checkpoint_data(request)
+    data["sections"]["progress"] = [
+        {
+            "statement": "The previously incomplete OpenCode report is now complete.",
+            "truth_state": "reported",
+            "state": "active",
+            "payload": {},
+            "evidence": [],
+        }
+    ]
+    contract = build_session_handoff_contract(
+        SimpleNamespace(),
+        request_verbatim=request,
+        checkpoint_data=data,
+        repository_comparison=comparison,
+    )
+
+    assert contract["requirements"][0]["status"] == "reported_done"
+    assert contract["reconciliation"]["counts"]["reported_done"] == 1
+
+
+def test_original_opencode_history_renders_one_coherent_golden_brief(tmp_path) -> None:
+    request = (
+        "the opencode continue was somewhat successful, it pastes the prompt in "
+        "the terminal instead of chatbox as shown in the screenshot\n\n"
+        "this was th"
+    )
+    paths = (
+        "README.md",
+        "app/api/continuations.py",
+        "app/services/continuation.py",
+        "app/services/continuation_runtime.py",
+        "app/services/harness_launcher.py",
+        (
+            "desktop/macos/DaemonStateOverlay/Sources/DaemonStateOverlay/"
+            "ComposerPasteCommand.swift"
+        ),
+        (
+            "desktop/macos/DaemonStateOverlay/Sources/DaemonStateOverlay/"
+            "FocusedTextPasteService.swift"
+        ),
+    )
+    data, comparison = _checkpoint_data(
+        request,
+        changed_files=paths,
+        relevant_files=paths,
+    )
+    data["sections"]["progress"] = [
+        {
+            "statement": "Fixed the OpenCode Continue desktop prompt delivery path.",
+            "truth_state": "reported",
+            "state": "active",
+            "payload": {},
+            "evidence": [],
+        },
+        {
+            "statement": (
+                "Final verification is complete: 2,279 backend tests, 98 native "
+                "Swift tests, and 444 frontend tests passed."
+            ),
+            "truth_state": "reported",
+            "state": "active",
+            "payload": {},
+            "evidence": [],
+        },
+    ]
+    data["sections"]["blockers"] = [
+        {
+            "statement": "I’m waiting for the exact final count before handing this back.",
+            "truth_state": "reported",
+            "state": "historical",
+            "payload": {},
+            "evidence": [],
+        }
+    ]
+    verification_commands = [
+        "pytest -q tests/test_harness_launcher.py",
+        (
+            ".venv/bin/pytest -q tests/test_continuations.py -k "
+            "'staged_handoff or staged_opencode or desktop_composer or target_provider'"
+        ),
+        (
+            ".venv/bin/ruff check app/services/checkpoints.py "
+            'tests/test_continuations.py --config="pyproject.toml" '
+            r"--note=C:\tmp\opencode"
+        ),
+    ]
+    data["sections"]["verification"] = [
+        {
+            "statement": f"`{command}` passed.",
+            "truth_state": "observed",
+            "state": "passed",
+            "payload": {"command": command, "passed": True, "exit_code": 0},
+            "evidence": [],
+        }
+        for command in verification_commands
+    ]
+    image_bytes = _tiny_png()
+    image_path = tmp_path / "opencode-golden.png"
+    image_path.write_bytes(image_bytes)
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    contract = build_session_handoff_contract(
+        SimpleNamespace(),
+        request_verbatim=request,
+        trusted_attachment_descriptors=(
+            TrustedRequestImageDescriptor(
+                path=str(image_path),
+                resolved_path=str(image_path),
+                sha256=digest,
+                mime_type="image/png",
+            ),
+        ),
+        allow_local_artifacts=True,
+        checkpoint_data=data,
+        repository_comparison=comparison,
+    )
+    content = render_compact_session_handoff(
+        SimpleNamespace(),
+        request_verbatim=request,
+        contract=contract,
+        checkpoint_data=data,
+    )
+
+    assert contract["requirements"][0]["status"] != "reported_done"
+    assert contract["reconciliation"]["active_reported_blockers"] == []
+    assert "Quarantined trailing source fragment (verbatim; non-operative)" in content
+    assert "Reported behavior (user-authored)" in content
+    assert "Expected destination" in content and "chat composer" in content
+    assert "A1 supports R1" in content and digest in content
+    ranked = content.split("- Ranked candidates requiring inspection:", 1)[1]
+    expected_order = (
+        "ComposerPasteCommand.swift",
+        "FocusedTextPasteService.swift",
+        "app/services/harness_launcher.py",
+        "app/services/continuation_runtime.py",
+    )
+    candidate_paths = [
+        item["path"]
+        for target in contract["intent"]["targets"]
+        for item in target.get("candidates") or []
+    ][:5]
+    assert all("/Tests/" not in path and not path.startswith("tests/") for path in candidate_paths)
+    assert all(
+        ranked.index(first) < ranked.index(second)
+        for first, second in zip(expected_order, expected_order[1:])
+    )
+    overlap_line = next(
+        line
+        for line in content.splitlines()
+        if line.startswith("- Candidate/protected-baseline overlap (inspection only):")
+    )
+    assert all(fragment in overlap_line for fragment in expected_order)
+    assert "Active blocker" not in content
+    assert "checks=V" not in content
+    assert "verification=V1" not in content
+    assert "verification=V2" in content
+    assert "verification=V3" in content
+    assert "verification=V2; requirements=unmapped" in content
+    assert "verification=V3; requirements=unmapped" in content
+    assert verification_commands[1] in content
+    assert verification_commands[2] in content
+    assert "…" not in content.split("## Done when", 1)[1]
+    assert content.count("Evidence locator:") == len(contract["verification_plan"])
+    assert "transparency comes from" not in content
+    assert "Search likely UI components and styles" not in content
+    assert "apply only the minimum requirement-specific delta" not in content
+    assert session_handoff_render_issues(
+        content,
+        request_verbatim=request,
+        handoff_contract=contract,
+        variant="compact_v2",
+    ) == []
+
+
+def test_sparse_destination_candidates_exclude_tests_and_documentation() -> None:
+    request = (
+        "OpenCode Continue pastes the prompt in the terminal instead of the chatbox."
+    )
+    paths = (
+        "app/services/continuation_runtime.py",
+        "tests/ComposerPasteCommandTest.swift",
+        "frontend/e2e/ComposerPasteCommand.ts",
+        "specs/harness_launcher.py",
+        "documentation/continuation_runtime.py",
+        "ComposerPasteCommandTests.swift",
+        (
+            "desktop/macos/DaemonStateOverlay/UITests/"
+            "ComposerPasteCommand.swift"
+        ),
+        "frontend/ComposerPasteCommand.cy.ts",
+        "frontend/ComposerPasteCommand.e2e.ts",
+        "integration_tests/ComposerPasteCommand.ts",
+        "samples/ComposerPasteCommand.swift",
+        "benchmarks/FocusedTextPasteService.swift",
+        "qa/ComposerPasteCommand.swift",
+        "test_helpers/HarnessLauncher.py",
+        "unit-tests/ComposerPasteCommand.swift",
+        "unit_tests/ComposerPasteCommand.swift",
+        "SystemTests/ComposerPasteCommand.swift",
+        "__snapshots__/ComposerPasteCommand.swift",
+        "stories/ComposerPasteCommand.swift",
+        "frontend/ComposerPasteCommand.integration.ts",
+        "androidTest/ComposerPasteCommand.swift",
+        "testFixtures/ComposerPasteCommand.swift",
+        "build/ComposerPasteCommand.swift",
+        "dist/ComposerPasteCommand.ts",
+        "out/ComposerPasteCommand.js",
+        "node_modules/ComposerPasteCommand.ts",
+        "vendor/ComposerPasteCommand.swift",
+        "DerivedData/ComposerPasteCommand.swift",
+        "frontend/ComposerPasteCommand.d.ts",
+        "README.md",
+    )
+    contract, _data = _contract(
+        request,
+        changed_files=paths,
+        relevant_files=paths,
+    )
+
+    candidate_paths = [
+        item["path"]
+        for target in contract["intent"]["targets"]
+        for item in target.get("candidates") or []
+    ]
+    assert candidate_paths == ["app/services/continuation_runtime.py"]
+
+
+def test_ui_target_candidates_exclude_generated_vendor_and_test_outputs() -> None:
+    request = "Make the cards fully opaque."
+    paths = (
+        "frontend/src/components/Card.jsx",
+        "build/components/Card.jsx",
+        "dist/components/Card.jsx",
+        "vendor/components/Card.jsx",
+        "androidTest/components/Card.jsx",
+        "frontend/components/Card.d.ts",
+        "commonTest/components/Card.jsx",
+        "jvmTest/components/Card.jsx",
+        "testDebug/components/Card.jsx",
+    )
+    contract, _data = _contract(
+        request,
+        changed_files=paths,
+        relevant_files=paths,
+    )
+
+    candidate_paths = [
+        item["path"]
+        for target in contract["intent"]["targets"]
+        for item in target.get("candidates") or []
+    ]
+    assert candidate_paths == ["frontend/src/components/Card.jsx"]
+
+
+def test_sole_inferred_destination_owner_remains_a_candidate_until_inspected() -> None:
+    request = (
+        "Make OpenCode Continue paste the prompt into the chatbox instead of the terminal."
+    )
+    paths = (
+        "desktop/macos/DaemonStateOverlay/Sources/DaemonStateOverlay/"
+        "ComposerPasteCommand.swift",
+    )
+    contract, _data = _contract(
+        request,
+        changed_files=paths,
+        relevant_files=paths,
+    )
+
+    target = contract["intent"]["targets"][0]
+    assert target["status"] == "candidate"
+    assert target["resolved_entity"] is None
+    assert contract["intent"]["target_resolution"]["status"] == "candidate"
+    assert contract["readiness"]["status"] == "discovery_required"
+    assert contract["quality_report"]["automatic_execution_ready"] is False
 
 
 def test_attachment_backed_card_complaint_renders_an_actionable_five_section_brief(

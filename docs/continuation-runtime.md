@@ -30,7 +30,7 @@ and current repository state.
 
 | Artifact | Scope and purpose | Behavior |
 |---|---|---|
-| **Session Context** | The task-specific child captured from one session's latest immutable tip. It records that session's current working state and its relationship to the Project Context parent. Repository freshness is checked at handoff time and the current snapshot is used when available. | Continue selects the newest available session by default. An explicit Continue → Execute selection flow may instead expose up to three exact, numbered session choices above their matching providers. The chosen source renders the canonical `session_handoff.v1` artifact, copies it, requests a visible composer in the selected desktop app, and waits for the user to submit. |
+| **Session Context** | The task-specific child captured from one session's latest immutable tip. It records that session's current working state and its relationship to the Project Context parent. Repository freshness is checked at handoff time and the current snapshot is used when available. | Every Continue card carries the same newest available session, regardless of destination provider. Execute can select up to three exact Session Contexts for the floating button, but those selections never replace the cards' newest-session source. Continue renders the canonical `session_handoff.v1` artifact, opens the selected desktop app, requests a native paste, and waits for the user to review and submit. |
 | **Project / Workspace Context** | The durable parent foundation shared by every session in the workspace. It is compiled from all current workspace evidence without using the current prompt, objective, file overlap, selected session, or task ranking. Durable project facts and syntax-level repository observations remain separate. | Mechanically verified, human-confirmed, and corroborated durable facts may enter the current parent. Provisional claims stay outside it; superseded or conflicting facts remain historical. Execute's direct artifact is `workspace_foundation.v2` rendered by `workspace_foundation_renderer.v2`; Continue embeds the compatible parent projection in `continuation_staging_context.v1`. |
 | **Execution Prompt** | The provider-neutral worker command rendered as `continuation_execution_prompt.v1` from the typed `continuation_execution.v1` contract. | Used only by an automatic run path that starts the worker, observes it, and applies requirement-linked verification. |
 | **Audit ContextPack** | `context_pack.v2`, with complete selection, exclusion, provenance, citation, risk, and reconciliation records. | Durable audit and advanced inspection only. Its Markdown is never the continuation worker instruction. |
@@ -102,6 +102,13 @@ completion requirements. Compact output identifies each attachment with a
 contract-local handoff reference, media type, SHA-256, receiver-availability state,
 inspection state, and linked requirement IDs. Capture-host paths remain in the
 structured provenance and are never presented as portable availability.
+For composite tasks, the compiler retains the integrity-checked user-turn
+fragments behind the rendered root/follow-up presentation. An attachment is
+linked only among outcomes derived from its declaring fragment; rendered
+`Follow-up` headings are never reparsed as authority boundaries. Reused paths,
+conflicting provider identities, descriptor-only composite images, and
+fragments with more than one plausible outcome remain fail-closed unless an
+exact source-event binding resolves them.
 Artifact infrastructure owns portable-reference resolution, materialization,
 and hash verification; the receiving agent inspects already verified bytes and
 is never told to recreate or checksum the artifact itself. Visible desktop
@@ -183,11 +190,16 @@ behavior or architectural intent.
 
 The browser actions are literal: **Preview** displays rendered context, **Copy**
 writes user-controlled context to the clipboard, and **Continue** copies the
-latest Session Context and opens a new, visible composer in the selected desktop
-app. When the native deep link is within its bounded size, the composer is also
-prefilled. Otherwise the app opens with the complete context still on the
-clipboard and an explicit paste instruction. Nothing presses Enter or submits a
-user turn.
+latest Session Context, opens a new composer through a native link, and asks the
+macOS helper to paste into the verified target application. Codex and Claude
+links are prompt-free. OpenCode's link contains only a fresh non-sensitive
+marker; the helper finds that exact marker in one chat composer, replaces it,
+and verifies the full value. Replacement targets only that AX element, then a
+single-space type/delete handshake proves OpenCode's internal draft state was
+synchronized; raw AXValue readback alone is never accepted. It never treats
+OpenCode's integrated terminal or an unverified
+app-level Command-V fallback as a valid destination. On any failure, the complete
+context remains on the clipboard. Nothing presses Enter or submits a user turn.
 
 The optional [macOS floating context control](floating-context-control.md) is a
 separate native delivery surface. It can copy and synthesize Command-V into the
@@ -289,14 +301,24 @@ macOS URL scheme:
 - Claude Desktop: `claude://code/new`
 - OpenCode Desktop: `opencode://new-session`
 
-The native link requests a new composer with the project directory and bounded
-prompt. It does not create a provider session ID that DaemonState can truthfully
-persist before submission. The API therefore returns a handoff ID, context
-hash, `execution_started=false`, `context_loaded=false`, and
-`navigation_verified=false`. It reports whether prefill was requested and
-whether the complete context was copied; it never claims that the destination
-rendered. The user checks the requested desktop composer, pastes the copied
-context if necessary, reviews it, and submits it explicitly.
+The native link requests a new composer with the project directory. Codex and
+Claude carry no prompt. OpenCode carries only a random marker, never Session
+Context; the helper scans the frontmost OpenCode window for the unique normal
+chat composer whose exact value is that marker, focuses it, and replaces the
+marker only on that AX element. It then types and deletes one harmless space,
+requiring both intermediate and final exact readback; this proves OpenCode's
+input handler synchronized the internal prompt instead of merely changing
+Chromium's rendered AXValue. Terminal, shell-mode, missing, or
+ambiguous identity fails closed, and OpenCode never uses the generic app-level
+Command-V fallback. DaemonState does not create a provider session ID that it can
+truthfully persist before submission.
+The API therefore returns a handoff ID, context hash, `execution_started=false`,
+and `navigation_verified=false`, plus separate `open_verified`,
+`paste_requested`, `paste_verified`, and `paste_method` fields.
+`context_loaded=true` is reserved for exact readback after either direct
+Accessibility insertion or OpenCode's identity-bound input-sync handshake. Generic
+Command-V remains explicitly unverified. The user reviews the destination draft
+and submits it explicitly.
 
 Submitting the unchanged Continue draft activates the carried current goal from
 its exact next action; a newer user-authored instruction overrides that goal.
@@ -307,8 +329,10 @@ reloaded same-key requests replay the stored success or failure and never
 dispatch a second desktop open request. This ledger is handoff state only: it
 does not create an `AgentRun` or invent a provider session ID.
 The browser keeps an unresolved request key in session storage across reloads
-and provider switches. It clears that key only after a known terminal result,
-or after showing the user an explicit unknown-outcome warning.
+for the exact workspace, source session, repository, and destination provider.
+Changing the destination creates a different reservation. The browser clears a
+key only after a known terminal result, or after showing the user an explicit
+unknown-outcome warning.
 
 Because dispatch is not proof that the composer rendered, a successful request
 does not permanently lock Continue. The selected card exposes an explicit
@@ -321,11 +345,13 @@ earlier open outcome as uncertain and sends nothing; after the user checks the
 desktop app, a second explicit **Request again** may create a new request.
 
 Provider readiness for the browser has
-`readiness_scope=desktop_dispatch_with_account_evidence`. Installation plus a
-registered native URL handler is the hard gate because Continue only opens a
-reviewable draft; it does not submit a request. Missing applications and URL
-handlers remain blocking. Account evidence is reported separately and never
-requires a user attestation before the desktop app can open.
+`readiness_scope=desktop_dispatch_with_account_evidence`. The desktop app, its
+registered native URL handler, and DaemonState's native paste helper are hard
+delivery gates. Missing applications, handlers, or helper capability remain
+blocking. Known signed-out or rate-limited Codex accounts are not presented as
+ready; providers whose account state cannot be probed remain actionable but are
+labelled access-unverified rather than fully ready. macOS may still request
+Accessibility permission on the first paste.
 
 For Codex, the product asks the local app-server for the signed-in account,
 account-scoped model list, and explicit rate-limit status. These methods return
@@ -334,9 +360,10 @@ credential files directly. A signed-in account with a live model list is
 recorded as
 `account_access_state=verified`,
 `account_access_basis=provider_desktop_bridge`, and
-`account_access_verified=true`. Signed-out, rate-limited, or inconclusive
-results are shown on the card but do not block loading the draft; Codex remains
-the final authority when the user sends.
+`account_access_verified=true`. Known signed-out or rate-limited results block
+the card until the account can work again. Inconclusive evidence remains
+actionable but visibly access-unverified; Codex remains the final authority
+when the user sends.
 
 Claude Desktop and OpenCode currently verify their own account or provider
 access when the user sends. OpenCode may use Go, Zen credits, another connected
@@ -344,12 +371,18 @@ provider, or a local model, so installation alone is never relabelled as
 verified account access. Neither card asks the user to attest to access before
 opening.
 
-Each local readiness probe is bounded to three seconds, and the browser aborts
-the readiness request after ten seconds rather than leaving cards in an
-indefinite Checking state. If the live Codex model probe is unavailable, model
-and reasoning-effort controls may fall back to its fresh, non-secret desktop
-model cache. Cached selector metadata is not relabelled as account proof. The
-chosen values remain delivery metadata and visible card state; they are never
+Hard desktop-dispatch readiness and optional Codex account evidence have
+independent three-second bounds, and the browser aborts the whole readiness
+request after ten seconds rather than leaving cards in an indefinite Checking
+state. A slow account/model check never erases already verified application,
+URL-handler, or native-helper evidence: the card remains runnable and reports
+access as unverified. A hard dispatch timeout is reported as undetermined and
+is not cached as proof that the app is missing. Concurrent cold checks and
+manual refreshes share one in-flight probe so they cannot multiply app-server
+processes. If the live Codex model probe is unavailable, model and
+reasoning-effort controls may fall back to its fresh, non-secret desktop model
+cache. Cached selector metadata is not relabelled as account proof. The chosen
+values remain delivery metadata and visible card state; they are never
 prepended or injected into the model-visible Session Context. Because the
 native desktop deep link cannot apply them, the card asks the user to review
 the requested settings in Codex Desktop before submitting.
@@ -534,31 +567,59 @@ no re-explanation, less discovery, and no stale-context mistake.
 
 The Continue page calls the canonical local-only staging endpoint and exposes
 one card for each target provider. Each card reports the selected desktop app's
-installation and visible-handoff readiness. By default, Continue carries the
-exact newest session identity through preparation; URL state, a Library
-selection, or a saved recovery point cannot silently replace it. The explicit
-Continue → Execute flow is the exception: after the user confirms up to three
-workspace-scoped sessions, Continue renders numbered choices above matching
-providers and stages only the exact chosen identity. Direct Execute visits do
-not activate those controls.
+installation and visible-handoff readiness. Every card carries the exact same
+newest session identity through preparation; URL state, a Library selection,
+an Execute selection, or a saved recovery point cannot silently replace it.
+Execute selections are synchronized only to the floating button.
 Provider readiness starts immediately. In parallel, Continue uses
 `POST /api/session-library/latest` to enumerate local history metadata,
 resolve newest-first, and ingest only the newest eligible root session. The
 filesystem work runs off the API event loop, the response omits the historical
 library, and checkpoint/component backfills remain outside the page-load path.
 Continue becomes runnable from that exact session identity without waiting for
-the broader digest or evidence views. If latest-session discovery fails—or
-returns no eligible session—Continue stays disabled instead of falling back to
-an older indexed session.
+the broader digest or evidence views. Browser Continue captures and verifies
+the selected session's current tip even when the provider has not compacted the
+session twice; the two-compaction maturity rule belongs to direct historical
+Session Context copy in Execute, not to this user-reviewed staging path. If
+latest-session discovery fails—or returns no eligible session—Continue stays
+disabled instead of falling back to an older indexed session.
+
+Desktop-stage eligibility is evaluated against the Session Context that the
+card actually sends. Execution Prompt overhead, Project Context renderer
+overhead, and missing legacy Project Context foundation coverage therefore do
+not veto a non-submitting Continue draft; they remain blocking on automatic
+Run or their own direct-copy surface. Continue still fails closed on Session
+Context authority, source identity, content hash, unresolved evidence,
+repository integrity, and the selected destination's explicit token limit. A
+completion-versus-continuation contradiction stays untrusted and blocks
+automatic execution, but the desktop draft may carry it as an explicit review
+warning so the receiving agent can inspect the current repository before acting.
+For an older immutable checkpoint, Continue may re-run the current dialogue
+resolver over the complete access-checked user/assistant event prefix ending at
+that checkpoint boundary. This changes only the in-memory desktop-stage goal
+projection, carries an exact authority-event digest, and never rewrites the
+stored checkpoint or admits events after its boundary. A partially visible or
+still-ambiguous prefix retains the checkpoint's blocking result.
+
 Selecting a ready card resolves the latest session task, refreshes evidence,
 compiles the audit pack and execution contract, applies task-specific quality
 gates, copies the canonical Session Context, and requests the selected Codex,
-Claude, or OpenCode desktop app's native new-composer route. A bounded native prefill is
-requested; the clipboard remains the complete, non-truncated fallback. Scheme
-registration and Launch Services dispatch do not prove route rendering. It
-does not submit a task, claim agent activity, run verifiers, or report changed
-files before the user submits the draft. Library, Memory, and Evidence remain
-optional inspection surfaces.
+Claude, or OpenCode desktop app's native new-composer route. Codex and Claude
+routes are prompt-free; OpenCode carries only a fresh composer-identity marker.
+The Project Context artifact collector resolves images independently against
+every active source user turn, so a follow-up attachment is not dropped merely
+because the task's root event had no image. Each provider descriptor is checked
+only against the request and source document from that same event. The native
+helper then verifies the frontmost bundle and requests a paste. For
+OpenCode it additionally requires a unique marker-valued chat composer and
+replaces that marker only on the exact element, followed by the bounded
+single-space input-sync handshake and exact readback; an integrated terminal or
+shell-mode prompt can never qualify. The clipboard remains the complete, non-truncated
+fallback. Scheme registration and Launch Services dispatch do not prove route
+rendering, and a generic app-level Command-V dispatch alone does not prove
+editor insertion. Continue does not submit a task, claim agent
+activity, run verifiers, or report changed files before the user submits the
+draft. Library, Memory, and Evidence remain optional inspection surfaces.
 
 ## Surface Differences
 

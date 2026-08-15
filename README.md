@@ -84,7 +84,9 @@ inspection.
 
 Requirements: Git, Python 3.12+, npm, and Node.js 20.19+ on the 20.x line,
 22.13+ on the 22.x line, or 24+. Browser-to-desktop Continue currently requires
-macOS plus an installed Codex, Claude, or OpenCode desktop app.
+macOS, the Swift toolchain supplied by Xcode Command Line Tools, and an
+installed Codex, Claude, or OpenCode desktop app. Setup prebuilds the native
+paste helper used by the cards.
 
 ```bash
 git clone https://github.com/Darshan174/DaemonState.git daemonstate
@@ -210,9 +212,13 @@ configured; it does not mean its dashboard onboarding is finished.
 
 ## Honest boundaries
 
-- Browser Continue dispatches a local macOS URL and copies the complete
-  context. The launch is reported as requested, not as a verified open or a
-  started provider turn. Nothing is submitted automatically.
+- Browser Continue copies the complete context, dispatches a local macOS URL,
+  verifies the selected provider bundle, and requests a native paste. Codex and
+  Claude links are prompt-free. OpenCode receives only a fresh, non-sensitive
+  marker used to identify and replace its normal chat composer; its terminal,
+  shell mode, and generic Command-V fallback are never accepted. For Codex and
+  Claude, Command-V remains explicitly unverified.
+  Neither path starts or submits a provider turn.
 - There is no system-wide agent monitor. Library scans when requested, Continue
   discovers the latest local session, and configured integrations report their
   own events.

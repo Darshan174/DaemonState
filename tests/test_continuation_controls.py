@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 import time
 from types import SimpleNamespace
 from uuid import uuid4
@@ -164,9 +166,8 @@ async def test_provider_readiness_uses_desktop_apps_not_cli_or_exact_sessions(
         fail_cli_probe,
     )
     monkeypatch.setattr(
-        "app.services.continuation_runtime.probe_harness_composer_readiness",
+        "app.services.continuation_runtime.probe_harness_composer_dispatch_readiness",
         lambda provider: composer_readiness[provider],
-        raising=False,
     )
 
     statuses = {
@@ -181,7 +182,7 @@ async def test_provider_readiness_uses_desktop_apps_not_cli_or_exact_sessions(
     assert statuses["claude"].code == "desktop_url_scheme_missing"
     assert statuses["claude"].desktop_handoff_supported is False
     assert statuses["opencode"].ready is True
-    assert statuses["opencode"].status == "ready"
+    assert statuses["opencode"].status == "access_unverified"
     assert statuses["opencode"].code == "desktop_dispatch_ready"
     assert statuses["opencode"].desktop_available is True
     assert statuses["opencode"].desktop_handoff_supported is True
@@ -189,14 +190,30 @@ async def test_provider_readiness_uses_desktop_apps_not_cli_or_exact_sessions(
 
 async def test_provider_readiness_reuses_recent_local_probes(monkeypatch) -> None:
     cli_calls: list[str] = []
-    composer_calls: list[str] = []
+    dispatch_calls: list[str] = []
+    account_calls: list[str] = []
 
     def fail_cli_probe(provider: str, **_kwargs) -> ProviderReadiness:
         cli_calls.append(provider)
         pytest.fail("desktop readiness must not invoke a provider CLI")
 
     def composer_dispatch_ready(provider: str) -> HarnessComposerReadiness:
-        composer_calls.append(provider)
+        dispatch_calls.append(provider)
+        return HarnessComposerReadiness(
+            provider=provider,
+            ready=True,
+            desktop_available=True,
+            url_scheme_registered=True,
+            required_url_scheme=provider,
+            code="desktop_dispatch_ready",
+            message=f"{provider} is ready to receive a desktop draft.",
+            action=f"Open {provider}.",
+            account_access_state="unverified",
+            account_access_verified=False,
+        )
+
+    def account_evidence(provider: str) -> HarnessComposerReadiness:
+        account_calls.append(provider)
         return HarnessComposerReadiness(
             provider=provider,
             ready=True,
@@ -215,8 +232,12 @@ async def test_provider_readiness_reuses_recent_local_probes(monkeypatch) -> Non
         fail_cli_probe,
     )
     monkeypatch.setattr(
-        "app.services.continuation_runtime.probe_harness_composer_readiness",
+        "app.services.continuation_runtime.probe_harness_composer_dispatch_readiness",
         composer_dispatch_ready,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.probe_harness_composer_readiness",
+        account_evidence,
     )
 
     first = await provider_readiness()
@@ -226,12 +247,13 @@ async def test_provider_readiness_reuses_recent_local_probes(monkeypatch) -> Non
     assert second == first
     assert refreshed == first
     assert cli_calls == []
-    assert sorted(composer_calls) == [
+    assert sorted(dispatch_calls) == [
         "claude", "claude", "codex", "codex", "opencode", "opencode",
     ]
+    assert account_calls == ["codex", "codex"]
 
 
-async def test_provider_readiness_times_out_stalled_desktop_probes(
+async def test_provider_readiness_times_out_stalled_dispatch_probes(
     monkeypatch,
 ) -> None:
     def stalled_probe(provider: str) -> HarnessComposerReadiness:
@@ -252,7 +274,7 @@ async def test_provider_readiness_times_out_stalled_desktop_probes(
         0.005,
     )
     monkeypatch.setattr(
-        "app.services.continuation_runtime.probe_harness_composer_readiness",
+        "app.services.continuation_runtime.probe_harness_composer_dispatch_readiness",
         stalled_probe,
     )
 
@@ -261,7 +283,265 @@ async def test_provider_readiness_times_out_stalled_desktop_probes(
     assert len(statuses) == 3
     assert all(item.ready is False for item in statuses)
     assert all(item.code == "desktop_readiness_timeout" for item in statuses)
+    assert all(item.status == "check_timed_out" for item in statuses)
+    assert all(item.desktop_available is None for item in statuses)
+    assert all(
+        item.capabilities["desktop_dispatch_available"] is None
+        and item.capabilities["native_paste_available"] is None
+        for item in statuses
+    )
     assert all(
         item.readiness_scope == "desktop_dispatch_with_account_evidence"
         for item in statuses
     )
+    assert all("Installation status was not determined" in item.message for item in statuses)
+    assert all(item.action == "Retry desktop readiness." for item in statuses)
+
+
+async def test_provider_readiness_keeps_dispatch_when_codex_account_probe_stalls(
+    monkeypatch,
+) -> None:
+    def dispatch_ready(provider: str) -> HarnessComposerReadiness:
+        return HarnessComposerReadiness(
+            provider=provider,
+            ready=True,
+            desktop_available=True,
+            url_scheme_registered=True,
+            required_url_scheme=provider,
+            code="desktop_dispatch_ready",
+            message=f"{provider} is ready to receive a desktop draft.",
+            action=f"Open {provider}.",
+            paste_automation_available=True,
+            account_access_state="unverified",
+            account_access_verified=False,
+        )
+
+    def stalled_account_probe(provider: str) -> HarnessComposerReadiness:
+        time.sleep(0.05)
+        return HarnessComposerReadiness(
+            provider=provider,
+            ready=False,
+            desktop_available=False,
+            url_scheme_registered=False,
+            required_url_scheme=provider,
+            code="late_account_result_must_not_be_used",
+            message="Late account result.",
+            action="Ignore this result.",
+        )
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.COMPOSER_ACCOUNT_EVIDENCE_TIMEOUT_SECONDS",
+        0.005,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.probe_harness_composer_dispatch_readiness",
+        dispatch_ready,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.probe_harness_composer_readiness",
+        stalled_account_probe,
+    )
+
+    statuses = {
+        item.provider: item
+        for item in await provider_readiness(force_refresh=True)
+    }
+
+    assert statuses["codex"].ready is True
+    assert statuses["codex"].status == "access_unverified"
+    assert statuses["codex"].code == "desktop_dispatch_ready"
+    assert statuses["codex"].desktop_available is True
+    assert statuses["codex"].desktop_handoff_supported is True
+
+
+async def test_provider_readiness_keeps_dispatch_when_codex_account_probe_errors(
+    monkeypatch,
+) -> None:
+    def dispatch_ready(provider: str) -> HarnessComposerReadiness:
+        return HarnessComposerReadiness(
+            provider=provider,
+            ready=True,
+            desktop_available=True,
+            url_scheme_registered=True,
+            required_url_scheme=provider,
+            code="desktop_dispatch_ready",
+            message=f"{provider} is ready to receive a desktop draft.",
+            action=f"Open {provider}.",
+            paste_automation_available=True,
+            account_access_state="unverified",
+            account_access_verified=False,
+        )
+
+    def broken_account_probe(_provider: str) -> HarnessComposerReadiness:
+        raise RuntimeError("app-server response failed")
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.probe_harness_composer_dispatch_readiness",
+        dispatch_ready,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.probe_harness_composer_readiness",
+        broken_account_probe,
+    )
+
+    statuses = {
+        item.provider: item
+        for item in await provider_readiness(force_refresh=True)
+    }
+
+    assert statuses["codex"].ready is True
+    assert statuses["codex"].status == "access_unverified"
+    assert statuses["codex"].code == "desktop_dispatch_ready"
+
+
+async def test_provider_readiness_coalesces_concurrent_cold_probes(
+    monkeypatch,
+) -> None:
+    dispatch_calls: list[str] = []
+    account_calls: list[str] = []
+
+    def dispatch_ready(provider: str) -> HarnessComposerReadiness:
+        dispatch_calls.append(provider)
+        time.sleep(0.02)
+        return HarnessComposerReadiness(
+            provider=provider,
+            ready=True,
+            desktop_available=True,
+            url_scheme_registered=True,
+            required_url_scheme=provider,
+            code="desktop_dispatch_ready",
+            message=f"{provider} is ready to receive a desktop draft.",
+            action=f"Open {provider}.",
+            paste_automation_available=True,
+            account_access_state="unverified",
+            account_access_verified=False,
+        )
+
+    def account_ready(provider: str) -> HarnessComposerReadiness:
+        account_calls.append(provider)
+        return dispatch_ready(provider)
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.probe_harness_composer_dispatch_readiness",
+        dispatch_ready,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.probe_harness_composer_readiness",
+        account_ready,
+    )
+
+    first, second = await asyncio.gather(
+        provider_readiness(force_refresh=True),
+        provider_readiness(force_refresh=True),
+    )
+
+    assert first == second
+    assert sorted(dispatch_calls) == ["claude", "codex", "codex", "opencode"]
+    assert account_calls == ["codex"]
+
+
+async def test_provider_readiness_does_not_cache_dispatch_timeouts(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    calls_lock = threading.Lock()
+    first_wave_finished = threading.Event()
+    finished_count = 0
+
+    def first_timeout_then_ready(provider: str) -> HarnessComposerReadiness:
+        nonlocal finished_count
+        with calls_lock:
+            calls.append(provider)
+            call_number = len(calls)
+        if call_number <= 3:
+            time.sleep(0.05)
+            with calls_lock:
+                finished_count += 1
+                if finished_count == 3:
+                    first_wave_finished.set()
+        return HarnessComposerReadiness(
+            provider=provider,
+            ready=True,
+            desktop_available=True,
+            url_scheme_registered=True,
+            required_url_scheme=provider,
+            code="desktop_dispatch_ready",
+            message=f"{provider} is ready to receive a desktop draft.",
+            action=f"Open {provider}.",
+            account_access_state="unverified",
+            account_access_verified=False,
+        )
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.COMPOSER_READINESS_TIMEOUT_SECONDS",
+        0.005,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.probe_harness_composer_dispatch_readiness",
+        first_timeout_then_ready,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.probe_harness_composer_readiness",
+        first_timeout_then_ready,
+    )
+
+    timed_out = await provider_readiness(force_refresh=True)
+    assert await asyncio.to_thread(first_wave_finished.wait, 1.0)
+    await asyncio.sleep(0)
+    recovered = await provider_readiness()
+
+    assert all(item.code == "desktop_readiness_timeout" for item in timed_out)
+    assert all(item.ready is True for item in recovered)
+
+
+async def test_provider_readiness_does_not_duplicate_a_timed_out_dispatch_worker(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    release = threading.Event()
+    workers_finished = threading.Event()
+    calls_lock = threading.Lock()
+    finished_count = 0
+
+    def blocked_dispatch(provider: str) -> HarnessComposerReadiness:
+        nonlocal finished_count
+        with calls_lock:
+            calls.append(provider)
+        release.wait(timeout=1.0)
+        with calls_lock:
+            finished_count += 1
+            if finished_count == 3:
+                workers_finished.set()
+        return HarnessComposerReadiness(
+            provider=provider,
+            ready=True,
+            desktop_available=True,
+            url_scheme_registered=True,
+            required_url_scheme=provider,
+            code="desktop_dispatch_ready",
+            message=f"{provider} is ready to receive a desktop draft.",
+            action=f"Open {provider}.",
+            account_access_state="unverified",
+            account_access_verified=False,
+        )
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.COMPOSER_READINESS_TIMEOUT_SECONDS",
+        0.005,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.probe_harness_composer_dispatch_readiness",
+        blocked_dispatch,
+    )
+
+    try:
+        first = await provider_readiness(force_refresh=True)
+        second = await provider_readiness(force_refresh=True)
+
+        assert all(item.code == "desktop_readiness_timeout" for item in first)
+        assert all(item.code == "desktop_readiness_timeout" for item in second)
+        assert sorted(calls) == ["claude", "codex", "opencode"]
+    finally:
+        release.set()
+        assert await asyncio.to_thread(workers_finished.wait, 1.0)
+        await asyncio.sleep(0)

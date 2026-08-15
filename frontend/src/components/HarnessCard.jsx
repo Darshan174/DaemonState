@@ -2,7 +2,6 @@ import {
   ArrowRight,
   ChevronRight,
   Loader2,
-  LockKeyhole,
   Radio,
   ShieldAlert,
 } from "lucide-react";
@@ -223,11 +222,6 @@ export function HarnessContinuationCard({
   taskReady = true,
   taskPending = false,
   taskRequirement = "",
-  contextReady = true,
-  compactionCount = 0,
-  minimumCompactions = 2,
-  sessionOrdinal = null,
-  sessionTitle = "",
   onHover,
   onContinue,
 }) {
@@ -237,9 +231,12 @@ export function HarnessContinuationCard({
   const reportedReady = provider.ready === true;
   const ready = reportedReady;
   const checking = status === "checking";
+  const timedOut = (
+    status === "check_timed_out"
+    || provider.code === "desktop_readiness_timeout"
+  );
   const taskBlocked = ready && !taskReady && !taskPending;
-  const contextBlocked = !contextReady;
-  const disabled = !ready || !taskReady || contextBlocked || workflowPending;
+  const disabled = !ready || !taskReady || workflowPending;
   const statusLabel = continuationProviderStatusLabel({
     pending,
     ready,
@@ -249,8 +246,10 @@ export function HarnessContinuationCard({
   const accountAttention = (
     status === "authentication_required"
     || status === "rate_limited"
+    || status === "access_unverified"
     || provider.code === "desktop_account_sign_in_required"
     || provider.code === "desktop_account_rate_limited"
+    || provider.code === "desktop_account_access_unverified"
   );
   const statusTone = pending || (ready && !accountAttention)
     ? "border-emerald-500/60 bg-emerald-200 text-emerald-950 shadow-[0_5px_16px_rgba(16,185,129,0.24)]"
@@ -266,22 +265,6 @@ export function HarnessContinuationCard({
   );
   const taskRequirementMessage = String(taskRequirement || "").trim()
     || "Choose a linked task before starting this provider.";
-  const normalizedMinimumCompactions = Math.max(
-    1,
-    Number.isFinite(Number(minimumCompactions))
-      ? Math.floor(Number(minimumCompactions))
-      : 2,
-  );
-  const normalizedCompactionCount = Math.max(
-    0,
-    Number.isFinite(Number(compactionCount))
-      ? Math.floor(Number(compactionCount))
-      : 0,
-  );
-  const compactionRequirementLabel = (
-    `${Math.min(normalizedCompactionCount, normalizedMinimumCompactions)}`
-    + `/${normalizedMinimumCompactions} compactions`
-  );
   const active = hovered || pending || handoffRequested;
   const fanLayout = continuationFanLayout(index, fanSize);
   const baseRotation = fanLayout.rotation;
@@ -300,9 +283,6 @@ export function HarnessContinuationCard({
       data-fan-position={fanLayout.position}
       data-provider-ready={ready ? "true" : "false"}
       data-task-ready={taskReady ? "true" : "false"}
-      data-context-ready={contextReady ? "true" : "false"}
-      data-compaction-count={normalizedCompactionCount}
-      data-selected-session-ordinal={sessionOrdinal || undefined}
       data-provider-pending={pending ? "true" : "false"}
       data-desktop-open-requested={handoffRequested ? "true" : "false"}
       aria-disabled={disabled ? "true" : undefined}
@@ -313,10 +293,10 @@ export function HarnessContinuationCard({
       accentActive={pending || handoffRequested}
       accentColor={CONTINUATION_CARD_INK}
       accentLineColor={availabilityBorder}
-      surface="glass"
+      surface="paper"
       tinted={false}
       artworkColor={ready ? CONTINUATION_ARTWORK_GOLD : CONTINUATION_CARD_INK}
-      className={`daemonstate-harness-fan-card daemonstate-provider-card h-[22rem] min-h-[22rem] w-[calc(100vw-4rem)] max-w-[260px] shrink-0 snap-center snap-always rounded-[26px] border-2 text-[#171713] sm:h-[22rem] sm:min-h-[22rem] sm:w-[260px] sm:rounded-[30px] ${ready ? "border-emerald-500" : "border-red-500"} ${workflowPending ? "cursor-wait" : disabled ? "cursor-not-allowed" : ""} ${contextBlocked && ready ? "saturate-[0.72]" : ""}`}
+      className={`daemonstate-harness-fan-card daemonstate-provider-card h-[22rem] min-h-[22rem] w-[calc(100vw-4rem)] max-w-[260px] shrink-0 snap-center snap-always rounded-[26px] border-2 text-[#171713] sm:h-[22rem] sm:min-h-[22rem] sm:w-[260px] sm:rounded-[30px] ${ready ? "border-emerald-500" : "border-red-500"} ${workflowPending ? "cursor-wait" : disabled ? "cursor-not-allowed" : ""}`}
       artworkContainerClassName="-right-[16%] top-[7%] h-[46%] w-[78%]"
       style={{
         zIndex: active ? 40 : fanLayout.zIndex,
@@ -338,8 +318,6 @@ export function HarnessContinuationCard({
         aria-busy={pending ? "true" : "false"}
         data-provider-ready={ready ? "true" : "false"}
         data-task-ready={taskReady ? "true" : "false"}
-        data-context-ready={contextReady ? "true" : "false"}
-        data-compaction-count={normalizedCompactionCount}
         data-provider-pending={pending ? "true" : "false"}
         data-desktop-open-requested={handoffRequested ? "true" : "false"}
         data-monochrome={!ready ? "true" : "false"}
@@ -353,23 +331,6 @@ export function HarnessContinuationCard({
             {meta.company}
           </span>
           <span className="flex flex-col items-end gap-1.5">
-            {sessionOrdinal ? (
-              <span
-                title={sessionTitle ? `Selected session ${sessionOrdinal}: ${sessionTitle}` : `Selected session ${sessionOrdinal}`}
-                className="inline-flex min-h-7 items-center rounded-full border border-[#171713]/15 bg-white/80 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.08em] text-[#171713] shadow-[0_5px_16px_rgba(23,23,19,0.10)] backdrop-blur-md"
-              >
-                Session
-              </span>
-            ) : null}
-            {contextBlocked ? (
-              <span
-                title={`${normalizedCompactionCount} of ${normalizedMinimumCompactions} provider compactions detected`}
-                className="inline-flex min-h-7 items-center gap-1.5 rounded-full bg-[#d9ff68] px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.08em] text-[#171713] shadow-[0_5px_16px_rgba(217,255,104,0.22)]"
-              >
-                <LockKeyhole className="h-3 w-3" aria-hidden="true" />
-                {compactionRequirementLabel}
-              </span>
-            ) : null}
             <span className={`inline-flex min-h-7 items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.12em] backdrop-blur-md sm:text-xs ${ready ? statusTone : "border-[#171713]/20 bg-white/80 text-[#171713]"}`}>
               {pending || checking
                 ? <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
@@ -392,7 +353,7 @@ export function HarnessContinuationCard({
             id={`continuation-provider-${type}-detail`}
             className="mt-1.5 block text-xs font-semibold leading-5 text-[#171713]"
           >
-            <span className={contextBlocked ? "line-clamp-1" : "line-clamp-2"}>{message}</span>
+            <span className="line-clamp-2">{message}</span>
             {taskBlocked ? (
               <span className="mt-1.5 line-clamp-2 rounded-lg border border-amber-700/20 bg-amber-600/10 px-2 py-1.5 text-[#171713]">
                 <strong>Task required:</strong> {taskRequirementMessage}
@@ -416,11 +377,9 @@ export function HarnessContinuationCard({
             {pending
               ? `Requesting ${meta.name}…`
               : !ready
-                ? "Not runnable"
+                ? (timedOut ? "Retry readiness" : "Not runnable")
                 : !taskReady
                   ? (taskPending ? "Loading session…" : "Task required")
-                  : contextBlocked
-                    ? "Session Context locked"
                   : handoffRequested
                     ? "Request again"
                   : workflowPending
@@ -428,11 +387,9 @@ export function HarnessContinuationCard({
                     : "Open desktop"}
             {pending
               ? <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-              : ready && taskReady && contextReady && !workflowPending
+              : ready && taskReady && !workflowPending
                 ? <ArrowRight className="h-4 w-4 transition-transform duration-500 motion-reduce:transition-none group-hover:translate-x-1" aria-hidden="true" />
-                : contextBlocked
-                  ? <LockKeyhole className="h-4 w-4" aria-hidden="true" />
-                  : <ShieldAlert className="h-4 w-4" aria-hidden="true" />}
+                : <ShieldAlert className="h-4 w-4" aria-hidden="true" />}
           </span>
         </span>
 
@@ -450,6 +407,9 @@ function continuationProviderStatusLabel({
 }) {
   if (pending) return "Requesting";
   if (status === "checking") return "Checking";
+  if (status === "check_timed_out" || code === "desktop_readiness_timeout") {
+    return "Check timed out";
+  }
   if (status === "staging_unsupported") return "No handoff";
   if (code === "desktop_account_access_verified") return "Account ready";
   if (code === "desktop_account_rate_limited") return "Limit reached";

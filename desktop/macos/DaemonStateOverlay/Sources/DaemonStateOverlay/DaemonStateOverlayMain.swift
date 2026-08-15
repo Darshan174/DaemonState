@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 
 @MainActor
 enum OverlayApplicationMenu {
@@ -61,7 +62,13 @@ enum OverlayApplicationMenu {
 @main
 struct DaemonStateOverlayMain {
     @MainActor
-    static func main() {
+    static func main() async {
+        let arguments = ProcessInfo.processInfo.arguments
+        if ComposerPasteCommand.isRequested(arguments: arguments) {
+            let status = await ComposerPasteCommand.run(arguments: arguments)
+            Darwin.exit(status)
+        }
+
         let application = NSApplication.shared
         let delegate = OverlayApplicationDelegate()
         application.delegate = delegate

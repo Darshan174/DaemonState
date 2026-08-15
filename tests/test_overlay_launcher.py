@@ -125,3 +125,37 @@ def test_launcher_fallback_uses_private_package_cache_and_generated_token(
         "generated-control-token-123456",
     ]
     assert cache_root.stat().st_mode & 0o077 == 0
+
+
+def test_one_shot_paste_never_falls_back_to_swift_run(
+    tmp_path: Path,
+) -> None:
+    launcher, _package = _launcher_repository(tmp_path)
+    fake_bin = tmp_path / "bin"
+    swift = fake_bin / "swift"
+    _recording_executable(swift)
+    output = tmp_path / "swift.txt"
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "OVERLAY_TEST_OUTPUT": str(output),
+        "DAEMONSTATE_OVERLAY_SWIFT_CACHE_ROOT": str(tmp_path / "cache"),
+    }
+
+    completed = subprocess.run(
+        [
+            str(launcher),
+            "--paste-stdin",
+            "--expected-bundle-id",
+            "com.openai.codex",
+            "--expected-bundle-path",
+            "/Applications/ChatGPT.app",
+        ],
+        input="private continuation context",
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    assert completed.returncode == 70
+    assert not output.exists()

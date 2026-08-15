@@ -179,6 +179,26 @@ process.exit(supported ? 0 : 1);
   else
     warn "frontend build missing; run: bash scripts/setup.sh or (cd frontend && npm run build)"
   fi
+
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    if command -v swift >/dev/null 2>&1; then
+      ok "Swift toolchain found for the native context helper"
+    else
+      warn "Swift is missing; browser-to-desktop Continue cannot paste context"
+      BARE_METAL_READY=0
+    fi
+    native_helper="desktop/macos/DaemonStateOverlay/.build/release/DaemonStateOverlay"
+    native_package="desktop/macos/DaemonStateOverlay"
+    if [[ -x "${native_helper}" ]] \
+      && [[ ! "${native_package}/Package.swift" -nt "${native_helper}" ]] \
+      && ! find "${native_package}/Sources" -type f -newer "${native_helper}" -print -quit \
+        | grep -q .
+    then
+      ok "fresh native context helper build present"
+    else
+      warn "native context helper is missing or stale; run: bash scripts/setup.sh"
+    fi
+  fi
 fi
 
 if [[ "$MODE" == "bare-metal" && "$BARE_METAL_READY" -ne 1 ]]; then

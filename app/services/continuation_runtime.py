@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import shutil
 import stat
@@ -32,9 +33,9 @@ from app.services.checkpoint_verifier import compare_checkpoint_repository
 from app.services.checkpoints import (
     SESSION_HANDOFF_SCHEMA_VERSION,
     build_session_handoff_artifact,
-    checkpoint_to_dict,
     checkpoints_to_dicts,
     get_checkpoint,
+    project_desktop_stage_checkpoint_data,
     resolve_handoff_attachment_reference,
     resolve_session_handoff_attachment_descriptors,
     resolve_session_handoff_request_verbatim,
@@ -63,7 +64,10 @@ from app.services.harness_launcher import (
     HarnessComposerReadiness,
     HarnessLaunchError,
     HarnessVisibility,
+    OPENCODE_CHAT_COMPOSER_TARGET_POLICY,
+    OPENCODE_VERIFIED_INPUT_METHOD,
     launch_harness_composer,
+    probe_harness_composer_dispatch_readiness,
     probe_harness_composer_readiness,
     probe_harness_visibility,
 )
@@ -100,16 +104,15 @@ from app.services.session_summary import (
     is_substantive_user_request,
     normalize_substantive_user_request,
 )
-from app.services.session_context_policy import (
-    SessionContextCompactionsRequiredError,
-    require_session_context_compactions,
-)
 from app.services.task_workflow import (
     TaskWorkflowService,
     complete_verified_execution_task,
 )
 from app.telemetry import traced
 from app.time import utc_now
+
+
+logger = logging.getLogger(__name__)
 
 
 CONTINUATION_RUN_SCHEMA_VERSION = "continuation.run.v1"
@@ -119,20 +122,46 @@ TARGET_PROVIDERS = frozenset((*PROVIDER_PREFERENCE, "auto"))
 MAX_BLOCKER_TASK_LENGTH = 140
 PROVIDER_READINESS_CACHE_SECONDS = 30.0
 COMPOSER_READINESS_TIMEOUT_SECONDS = 3.0
+COMPOSER_ACCOUNT_EVIDENCE_TIMEOUT_SECONDS = 3.0
 CONTINUATION_STAGE_PENDING_LEASE_SECONDS = 60.0
-_DESKTOP_STAGE_ADVISORY_QUALITY_CODES = frozenset(
+_DESKTOP_STAGE_UNUSED_ARTIFACT_QUALITY_CODES = frozenset(
     {
+        # Continue sends the independently compiled Session Context. These
+        # issues describe the automatic-execution prompt or the legacy
+        # Project Context projection, neither of which is pasted by a card.
+        # They remain blocking for their own copy/run surfaces.
+        "worker_handoff_overhead_budget_exceeded",
+        "worker_handoff_current_lead_missing",
+        "project_context_copy_current_lead_missing",
+        "project_context_copy_overhead_budget_exceeded",
+        "project_context_foundation_empty",
         "project_context_core_sections_empty",
     }
 )
 _provider_readiness_cache: (
     tuple[
         float,
-        tuple[object, object],
+        tuple[object, object, object],
         tuple[ProviderReadiness, ...],
     ]
     | None
 ) = None
+_provider_readiness_inflight: (
+    tuple[
+        asyncio.AbstractEventLoop,
+        tuple[object, object, object],
+        asyncio.Task[tuple[ProviderReadiness, ...]],
+    ]
+    | None
+) = None
+_composer_dispatch_workers: dict[
+    ProviderName,
+    tuple[
+        asyncio.AbstractEventLoop,
+        object,
+        asyncio.Task[HarnessComposerReadiness],
+    ],
+] = {}
 EXTERNAL_BLOCKER_CODES = frozenset(
     {
         "continuation_repository_changed",
@@ -185,6 +214,7 @@ class DesktopStageAttachmentBundle:
     root: Path
     deliveries: dict[str, dict[str, str]]
     baseline_delivery: dict[str, str] | None = None
+    published_now: bool = False
 
 
 @dataclass(frozen=True)
@@ -625,7 +655,7 @@ class ContinuationStageService:
             self.session,
             preparation,
         )
-        session_context = await _canonical_session_context_for_preparation(
+        session_context, attachment_bundle = await _canonical_session_context_for_preparation(
             self.session,
             preparation,
             contract=contract,
@@ -635,18 +665,23 @@ class ContinuationStageService:
             target_model=target_model,
             token_budget=token_budget,
         )
-        context_message = _staging_context_for_preparation(
-            preparation,
-            contract=contract,
-            expected_lead=contract.task.request_verbatim,
-            continuation_lead=continuation_lead,
-            session_context=session_context,
-        )
+        try:
+            context_message = _staging_context_for_preparation(
+                preparation,
+                contract=contract,
+                expected_lead=contract.task.request_verbatim,
+                continuation_lead=continuation_lead,
+                session_context=session_context,
+            )
+        except ContinuationRunError:
+            _discard_unlaunched_desktop_stage_bundle(attachment_bundle)
+            raise
 
         if expected_fingerprint is not None:
             try:
                 repository_after = await capture_repository_snapshot(effective_repo_path)
                 if repository_after.status_fingerprint != expected_fingerprint:
+                    _discard_unlaunched_desktop_stage_bundle(attachment_bundle)
                     raise RepositoryStateChangedError(
                         expected_fingerprint,
                         repository_after.status_fingerprint,
@@ -686,7 +721,7 @@ class ContinuationStageService:
         timeout_seconds = max(
             1.0,
             min(
-                request_timeout_seconds if request_timeout_seconds is not None else 20.0,
+                request_timeout_seconds if request_timeout_seconds is not None else 30.0,
                 30.0,
             ),
         )
@@ -700,11 +735,41 @@ class ContinuationStageService:
                 ),
                 timeout=timeout_seconds,
             )
-            if launch.get("open_requested") is not True or launch.get("context_copied") is not True:
+            paste_method = str(launch.get("paste_method") or "")
+            paste_verified = launch.get("paste_verified") is True
+            context_loaded = launch.get("context_loaded") is True
+            if selected_provider == "opencode":
+                canonical_paste_result = (
+                    launch.get("execution_started") is False
+                    and paste_method == OPENCODE_VERIFIED_INPUT_METHOD
+                    and paste_verified
+                    and context_loaded
+                    and _opencode_chat_composer_attestation_is_valid(launch)
+                )
+            else:
+                canonical_paste_result = launch.get("execution_started") is False and (
+                    (
+                        paste_method == "accessibility_insert"
+                        and paste_verified
+                        and context_loaded
+                    )
+                    or (
+                        paste_method == "command_v"
+                        and not paste_verified
+                        and not context_loaded
+                    )
+                )
+            if (
+                launch.get("open_requested") is not True
+                or launch.get("open_verified") is not True
+                or launch.get("context_copied") is not True
+                or launch.get("paste_requested") is not True
+                or not canonical_paste_result
+            ):
                 raise HarnessLaunchError(
                     (
-                        "The desktop open request and complete clipboard copy "
-                        "were not both confirmed."
+                        "The desktop open request, complete clipboard copy, and "
+                        "safe native paste request were not all confirmed."
                     ),
                     code="desktop_handoff_unconfirmed",
                 )
@@ -748,7 +813,8 @@ class ContinuationStageService:
                     "title": "Desktop handoff failed",
                     "provider": selected_provider,
                     "message": str(exc),
-                    "action": (
+                    "action": exc.action
+                    or (
                         f"Open {PROVIDER_DISPLAY_NAMES[selected_provider]} "
                         "Desktop, then retry Continue."
                     ),
@@ -790,9 +856,9 @@ class ContinuationStageService:
             "handoff_id": handoff_id,
             "provider": selected_provider,
             "cwd": effective_repo_path,
-            "launched": False,
+            "launched": launch.get("open_verified") is True,
             "open_requested": launch.get("open_requested") is True,
-            "open_verified": False,
+            "open_verified": launch.get("open_verified") is True,
             "navigation_requested": (launch.get("navigation_requested") is True),
             "navigation_verified": False,
             "mode": "desktop_composer",
@@ -800,7 +866,16 @@ class ContinuationStageService:
             "exact_session_supported": False,
             "awaiting_user": True,
             "execution_started": False,
-            "context_loaded": False,
+            "context_loaded": launch.get("context_loaded") is True,
+            "paste_requested": launch.get("paste_requested") is True,
+            "paste_verified": launch.get("paste_verified") is True,
+            "paste_method": launch.get("paste_method"),
+            "target_policy": launch.get("target_policy"),
+            "target_kind": launch.get("target_kind"),
+            "target_identity_verified": (
+                launch.get("target_identity_verified") is True
+            ),
+            "marker_replaced": launch.get("marker_replaced") is True,
             "prefill_requested": launch.get("prefill_requested") is True,
             "context_copied": launch.get("context_copied") is True,
             "context_delivery": launch.get("context_delivery"),
@@ -838,7 +913,7 @@ class ContinuationStageService:
                 else None
             ),
             "provider_switched": bool(source and source != selected_provider),
-            "mode": "desktop_composer_prefill",
+            "mode": "desktop_composer_native_paste",
             "context_delivery": launch.get("context_delivery"),
             "context_schema_version": SESSION_HANDOFF_SCHEMA_VERSION,
             "context_scope": "session",
@@ -868,42 +943,32 @@ class ContinuationStageService:
             "filesystem_mode": contract.authority.filesystem_mode.value,
             "harness_session": public_handoff,
             "visibility": {
-                "status": "desktop_composer_open_requested",
-                "context_loaded": False,
+                "status": str(launch.get("paste_code") or "desktop_paste_command_dispatched"),
+                "code": launch.get("paste_code"),
+                "context_loaded": launch.get("context_loaded") is True,
                 "context_copied": launch.get("context_copied") is True,
+                "paste_requested": launch.get("paste_requested") is True,
+                "paste_verified": launch.get("paste_verified") is True,
+                "paste_method": launch.get("paste_method"),
                 "prefill_requested": (launch.get("prefill_requested") is True),
                 "execution_started": False,
                 "open_requested": launch.get("open_requested") is True,
-                "open_verified": False,
+                "open_verified": launch.get("open_verified") is True,
                 "navigation_requested": (launch.get("navigation_requested") is True),
                 "navigation_verified": False,
+                "action": launch.get("paste_action"),
                 "message": (
-                    (
-                        f"{PROVIDER_DISPLAY_NAMES[selected_provider]} Desktop "
-                        "open was requested with a reviewable draft. The "
-                        "complete context is also on the clipboard. Opening is "
-                        "not verified and nothing was submitted."
+                    str(launch.get("paste_message") or "").strip()
+                    or (
+                        f"A paste command was sent to "
+                        f"{PROVIDER_DISPLAY_NAMES[selected_provider]} Desktop. "
+                        "Verify the complete draft before submitting it."
                     )
-                    + (
-                        " Requested model settings must be confirmed in the desktop app."
-                        if provider_model or provider_effort
-                        else ""
-                    )
-                    if launch.get("prefill_requested") is True
-                    else (
-                        (
-                            f"{PROVIDER_DISPLAY_NAMES[selected_provider]} "
-                            "Desktop open was requested and the complete "
-                            "context was copied. Opening is not verified; paste "
-                            "it into the composer if needed. Nothing was "
-                            "submitted."
-                        )
-                        + (
-                            " Requested model settings must be confirmed in the desktop app."
-                            if provider_model or provider_effort
-                            else ""
-                        )
-                    )
+                )
+                + (
+                    " Requested model settings must be confirmed in the desktop app."
+                    if provider_model or provider_effort
+                    else ""
                 ),
             },
         }
@@ -1877,6 +1942,7 @@ def _materialize_desktop_stage_attachments(
                 root=final_root,
                 deliveries=deliveries,
                 baseline_delivery=baseline_delivery,
+                published_now=False,
             )
         temporary_root.mkdir(mode=0o700)
         temporary_attachments.mkdir(mode=0o700)
@@ -1975,7 +2041,36 @@ def _materialize_desktop_stage_attachments(
         root=final_root,
         deliveries=deliveries,
         baseline_delivery=baseline_delivery,
+        published_now=True,
     )
+
+
+def _discard_unlaunched_desktop_stage_bundle(
+    bundle: DesktopStageAttachmentBundle | None,
+) -> None:
+    """Remove evidence published by this request when launch was never attempted."""
+
+    if bundle is None or not bundle.published_now:
+        return
+    bundle_parent = Path(settings.data_dir).expanduser().resolve() / "continuation-stage-artifacts"
+    try:
+        canonical_root = bundle.root.resolve(strict=True)
+        canonical_bundle_id = str(UUID(canonical_root.name))
+    except (OSError, TypeError, ValueError):
+        return
+    if canonical_root.parent != bundle_parent or canonical_root.name != canonical_bundle_id:
+        return
+    try:
+        for path in canonical_root.rglob("*"):
+            if path.is_symlink():
+                continue
+            path.chmod(stat.S_IRUSR | stat.S_IWUSR | (stat.S_IXUSR if path.is_dir() else 0))
+        canonical_root.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+        shutil.rmtree(canonical_root)
+    except OSError:
+        # Cleanup must never replace the truthful staging blocker. The bundle
+        # is receiver-owned, contains no provider turn, and remains immutable.
+        return
 
 
 async def _canonical_session_context_for_preparation(
@@ -1988,11 +2083,12 @@ async def _canonical_session_context_for_preparation(
     continuation_lead: str | None = None,
     target_model: str | None = None,
     token_budget: int | None = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], DesktopStageAttachmentBundle | None]:
     """Compile the canonical latest-checkpoint Session Context for Continue."""
 
     checkpoint_summary = preparation.checkpoint if isinstance(preparation.checkpoint, dict) else {}
     checkpoint_id = str(checkpoint_summary.get("id") or "").strip()
+    attachment_bundle: DesktopStageAttachmentBundle | None = None
     try:
         parsed_checkpoint_id = UUID(checkpoint_id)
     except (TypeError, ValueError) as exc:
@@ -2015,29 +2111,34 @@ async def _canonical_session_context_for_preparation(
             status_code=409,
         )
 
-    try:
-        await require_session_context_compactions(
+    current_projection = (
+        await checkpoints_to_dicts(
             session,
-            workspace_id=workspace_id,
-            provider=checkpoint.provider,
-            session_id=checkpoint.session_id,
+            [checkpoint],
             access_scope=access_scope,
         )
-    except SessionContextCompactionsRequiredError as exc:
-        raise ContinuationRunError(
-            exc.code,
-            str(exc),
-            status_code=exc.status_code,
-            blocker={
-                "code": exc.code,
-                "title": "Session Context locked",
-                "message": str(exc),
-                "action": "Continue this session through two compactions, then retry.",
-                "affected_tasks": [_bounded_task(preparation.objective)],
-            },
-        ) from exc
-
-    request_verbatim = await resolve_session_handoff_request_verbatim(
+    )[0]
+    current_boundary = current_projection.get("boundary") or {}
+    checkpoint_data = await project_desktop_stage_checkpoint_data(
+        session,
+        checkpoint,
+        access_scope=access_scope,
+        session_tip={
+            "sequence_number": current_boundary.get("session_tip_sequence"),
+            "occurred_at": current_boundary.get("session_tip_at"),
+        },
+    )
+    projected_goals = (checkpoint_data.get("sections") or {}).get("goal") or []
+    projected_goal_payload = (
+        projected_goals[0].get("payload")
+        if len(projected_goals) == 1 and isinstance(projected_goals[0], Mapping)
+        else None
+    )
+    request_verbatim = (
+        str(projected_goal_payload.get("request_verbatim") or "")
+        if isinstance(projected_goal_payload, Mapping)
+        else ""
+    ) or await resolve_session_handoff_request_verbatim(
         session,
         checkpoint,
         access_scope=access_scope,
@@ -2083,22 +2184,6 @@ async def _canonical_session_context_for_preparation(
         checkpoint,
         request_verbatim=request_verbatim,
         access_scope=access_scope,
-    )
-    current_projection = (
-        await checkpoints_to_dicts(
-            session,
-            [checkpoint],
-            access_scope=access_scope,
-        )
-    )[0]
-    current_boundary = current_projection.get("boundary") or {}
-    checkpoint_data = checkpoint_to_dict(
-        checkpoint,
-        recovered_goal=request_verbatim,
-        session_tip={
-            "sequence_number": current_boundary.get("session_tip_sequence"),
-            "occurred_at": current_boundary.get("session_tip_at"),
-        },
     )
     prepared_repository = (
         preparation.repository if isinstance(preparation.repository, Mapping) else {}
@@ -2159,8 +2244,10 @@ async def _canonical_session_context_for_preparation(
                 "retention_policy": _DESKTOP_STAGE_ATTACHMENT_RETENTION_POLICY,
             }
     except ContinuationRunError:
+        _discard_unlaunched_desktop_stage_bundle(attachment_bundle)
         raise
     except ValueError as exc:
+        _discard_unlaunched_desktop_stage_bundle(attachment_bundle)
         raise ContinuationRunError(
             "session_context_unavailable",
             f"{exc} No desktop app was opened.",
@@ -2174,6 +2261,7 @@ async def _canonical_session_context_for_preparation(
         handoff_mode != contract.task_mode.value
         or handoff_filesystem_mode != contract.authority.filesystem_mode.value
     ):
+        _discard_unlaunched_desktop_stage_bundle(attachment_bundle)
         raise ContinuationRunError(
             "continuation_authority_mismatch",
             (
@@ -2183,7 +2271,7 @@ async def _canonical_session_context_for_preparation(
             ),
             status_code=409,
         )
-    return artifact
+    return artifact, attachment_bundle
 
 
 def _staging_context_for_preparation(
@@ -2210,14 +2298,14 @@ def _staging_context_for_preparation(
         for issue in project_context.get("quality_issues", [])
         if isinstance(issue, dict) and issue.get("blocks_copy") is not False
     ]
-    # Missing foundation coverage is an absence warning, not an integrity
-    # failure. A visible desktop draft may carry that warning because it never
-    # submits or starts execution. Direct copy and automatic execution retain
-    # their stricter gates.
+    # Continue never sends the execution prompt or legacy Project Context.
+    # Their size and coverage failures therefore cannot veto a visible,
+    # non-submitting Session Context draft. Current Project Context integrity
+    # failures remain blocking, as do every Session Context gate below.
     blocking_stage_issues = [
         issue
         for issue in quality_issues
-        if str(issue.get("code") or "") not in _DESKTOP_STAGE_ADVISORY_QUALITY_CODES
+        if (str(issue.get("code") or "") not in _DESKTOP_STAGE_UNUSED_ARTIFACT_QUALITY_CODES)
     ]
     advisory_only = bool(quality_issues) and not blocking_stage_issues
     rendered_project_context = render_continuation_staging_context(contract)
@@ -2310,66 +2398,65 @@ def _staging_context_for_preparation(
     if structurally_safe and lead_matches and continuation_lead_matches and session_is_safe:
         return session_content
 
-    issue_message = next(
-        (
-            str(issue.get("message") or "").strip()
-            for issue in (*blocking_stage_issues, *session_issues)
-            if str(issue.get("message") or "").strip()
-        ),
-        "",
-    )
     destination_overflow = token_accounting.get("blocks_automatic_delivery") is True
-    message = issue_message or (
-        "The compiled Session Context does not match the supplied immediate lead."
-        if not lead_matches or not continuation_lead_matches
-        else (
-            (
-                "The Session Context exceeds the explicit destination token limit, "
-                "so it was not opened or copied into the selected desktop harness."
-                if destination_overflow
-                else "The canonical latest-session Session Context failed its "
-                "copy-safety, delivery-policy, identity, or integrity checks."
-            )
-            if not session_is_safe
-            else (
-                "Session Context could not safely inherit the compiled "
-                "Workspace Context because its copy-safety or integrity "
-                "checks failed."
-            )
+    if not lead_matches or not continuation_lead_matches:
+        code = "continuation_lead_mismatch"
+        title = "Immediate lead changed"
+        message = "The compiled Session Context does not match the supplied immediate lead."
+        action = "Refresh the latest session and retry Continue with the exact current lead."
+    elif not session_is_safe:
+        code = "session_context_staging_blocked"
+        title = (
+            "Session Context exceeds the destination limit"
+            if destination_overflow
+            else "Session Context failed a material safety check"
         )
-    )
+        session_issue_message = next(
+            (
+                str(issue.get("message") or "").strip()
+                for issue in session_issues
+                if str(issue.get("message") or "").strip()
+            ),
+            "",
+        )
+        message = session_issue_message or (
+            "The Session Context exceeds the explicit destination token limit, "
+            "so it was not opened or copied into the selected desktop harness."
+            if destination_overflow
+            else "The canonical latest-session Session Context failed its "
+            "copy-safety, delivery-policy, authority, identity, or integrity checks."
+        )
+        action = (
+            "Choose a larger explicit destination limit or compact the Session "
+            "Context without removing authority or evidence, then retry Continue."
+            if destination_overflow
+            else "Resolve the listed Session Context authority, evidence, identity, "
+            "or integrity issue, then regenerate it before retrying Continue."
+        )
+    else:
+        code = "project_context_staging_blocked"
+        title = "Current project evidence failed an integrity check"
+        message = next(
+            (
+                str(issue.get("message") or "").strip()
+                for issue in blocking_stage_issues
+                if str(issue.get("message") or "").strip()
+            ),
+            ("The compiled Project Context failed a currentness, provenance, or integrity check."),
+        )
+        action = (
+            "Refresh the verified repository and Project Context evidence, then "
+            "retry Continue; do not bypass the currentness or integrity failure."
+        )
     raise ContinuationRunError(
-        (
-            "continuation_lead_mismatch"
-            if not lead_matches or not continuation_lead_matches
-            else (
-                "session_context_staging_blocked"
-                if not session_is_safe
-                else "project_context_staging_blocked"
-            )
-        ),
+        code,
         message,
         status_code=409,
         blocker={
-            "code": (
-                "continuation_lead_mismatch"
-                if not lead_matches or not continuation_lead_matches
-                else (
-                    "session_context_staging_blocked"
-                    if not session_is_safe
-                    else "project_context_staging_blocked"
-                )
-            ),
-            "title": (
-                "Immediate lead changed"
-                if not lead_matches or not continuation_lead_matches
-                else "Session Context is not safe to stage"
-            ),
+            "code": code,
+            "title": title,
             "message": message,
-            "action": (
-                "Capture fresh Session Context for the exact immediate lead "
-                "before loading it into a harness."
-            ),
+            "action": action,
             "affected_tasks": [_bounded_task(continuation_lead or expected_lead)],
             "quality_issues": [*quality_issues, *session_issues],
         },
@@ -2851,6 +2938,65 @@ def _uncertain_continuation_stage_error(
     )
 
 
+def _opencode_chat_composer_attestation_is_valid(
+    value: Mapping[str, Any],
+) -> bool:
+    return (
+        value.get("target_policy") == OPENCODE_CHAT_COMPOSER_TARGET_POLICY
+        and value.get("target_kind") == "chat_composer"
+        and value.get("target_identity_verified") is True
+        and value.get("marker_replaced") is True
+    )
+
+
+def _stage_payload_has_safe_native_paste_envelope(
+    payload: Mapping[str, Any],
+    *,
+    provider: str | None,
+) -> bool:
+    delivery = payload.get("delivery")
+    harness_session = delivery.get("harness_session") if isinstance(delivery, Mapping) else None
+    if not isinstance(harness_session, Mapping):
+        return False
+    paste_method = str(harness_session.get("paste_method") or "").strip()
+    paste_verified = harness_session.get("paste_verified") is True
+    context_loaded = harness_session.get("context_loaded") is True
+    normalized_provider = str(provider or "").strip().lower()
+    base_safe = (
+        payload.get("status") == "awaiting_user"
+        and harness_session.get("execution_started") is False
+        and harness_session.get("open_requested") is True
+        and harness_session.get("open_verified") is True
+        and harness_session.get("context_copied") is True
+        and harness_session.get("paste_requested") is True
+        and paste_method
+        in {
+            "accessibility_insert",
+            "command_v",
+            OPENCODE_VERIFIED_INPUT_METHOD,
+        }
+        and context_loaded is paste_verified
+        and (
+            (paste_method == "accessibility_insert" and paste_verified)
+            or (paste_method == "command_v" and not paste_verified)
+            or (
+                paste_method == OPENCODE_VERIFIED_INPUT_METHOD
+                and paste_verified
+            )
+        )
+    )
+    if not base_safe:
+        return False
+    if normalized_provider != "opencode":
+        return paste_method != OPENCODE_VERIFIED_INPUT_METHOD
+    return (
+        paste_method == OPENCODE_VERIFIED_INPUT_METHOD
+        and paste_verified
+        and context_loaded
+        and _opencode_chat_composer_attestation_is_valid(harness_session)
+    )
+
+
 def _replay_continuation_stage_request(
     request: ContinuationStageRequest,
     *,
@@ -2870,6 +3016,11 @@ def _replay_continuation_stage_request(
             payload = json.loads(request.response_json)
             if not isinstance(payload, dict):
                 raise ValueError("stored response is not an object")
+            if not _stage_payload_has_safe_native_paste_envelope(
+                payload,
+                provider=request.target_provider,
+            ):
+                raise ValueError("stored desktop paste envelope is unsafe")
             return ContinuationStageResult.from_dict(payload)
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise ContinuationRunError(
@@ -3122,12 +3273,11 @@ def staged_continuation_payload(
             return None
         delivery = payload.get("delivery")
         harness_session = delivery.get("harness_session") if isinstance(delivery, dict) else None
-        if (
-            payload.get("status") != "awaiting_user"
-            or not isinstance(harness_session, dict)
-            or harness_session.get("execution_started") is not False
-            or harness_session.get("context_loaded") is not False
-        ):
+        safe_paste_envelope = _stage_payload_has_safe_native_paste_envelope(
+            payload,
+            provider=run.target_provider,
+        )
+        if payload.get("status") != "awaiting_user" or not safe_paste_envelope:
             return None
         # The durable stage response also contains the full preparation and
         # ContextPack. Returning that multi-megabyte payload from the 30-second
@@ -3298,8 +3448,9 @@ async def provider_readiness(
 ) -> list[ProviderReadiness]:
     """Return desktop dispatch readiness plus bounded account evidence."""
 
-    global _provider_readiness_cache
+    global _provider_readiness_cache, _provider_readiness_inflight
     cache_key = (
+        probe_harness_composer_dispatch_readiness,
         probe_harness_composer_readiness,
         _composer_provider_readiness,
     )
@@ -3312,26 +3463,65 @@ async def provider_readiness(
     ):
         return list(_provider_readiness_cache[2])
 
-    composer_results = await asyncio.gather(
-        *(_bounded_composer_readiness(provider) for provider in PROVIDER_PREFERENCE)
-    )
-    providers = [_composer_provider_readiness(readiness) for readiness in composer_results]
-    _provider_readiness_cache = (
-        monotonic() + PROVIDER_READINESS_CACHE_SECONDS,
-        cache_key,
-        tuple(providers),
-    )
-    return providers
+    loop = asyncio.get_running_loop()
+    if (
+        _provider_readiness_inflight is not None
+        and _provider_readiness_inflight[0] is loop
+        and _provider_readiness_inflight[1] == cache_key
+        and not _provider_readiness_inflight[2].done()
+    ):
+        task = _provider_readiness_inflight[2]
+    else:
+        task = loop.create_task(_refresh_provider_readiness(cache_key))
+        _provider_readiness_inflight = (loop, cache_key, task)
+    return list(await asyncio.shield(task))
+
+
+async def _refresh_provider_readiness(
+    cache_key: tuple[object, object, object],
+) -> tuple[ProviderReadiness, ...]:
+    """Run one shared cold probe for concurrent tabs and refresh requests."""
+
+    global _provider_readiness_cache, _provider_readiness_inflight
+    current_task = asyncio.current_task()
+    try:
+        composer_results = await asyncio.gather(
+            *(
+                _bounded_composer_readiness(provider)
+                for provider in PROVIDER_PREFERENCE
+            )
+        )
+        providers = tuple(
+            _composer_provider_readiness(readiness)
+            for readiness in composer_results
+        )
+        if any(
+            provider.code == "desktop_readiness_timeout"
+            for provider in providers
+        ):
+            # A timeout is unknown state, not durable evidence that a desktop
+            # app is absent. Let the next ordinary poll recover immediately.
+            _provider_readiness_cache = None
+        else:
+            _provider_readiness_cache = (
+                monotonic() + PROVIDER_READINESS_CACHE_SECONDS,
+                cache_key,
+                providers,
+            )
+        return providers
+    finally:
+        if (
+            _provider_readiness_inflight is not None
+            and _provider_readiness_inflight[2] is current_task
+        ):
+            _provider_readiness_inflight = None
 
 
 async def _bounded_composer_readiness(
     provider: ProviderName,
 ) -> HarnessComposerReadiness:
     try:
-        return await asyncio.wait_for(
-            asyncio.to_thread(probe_harness_composer_readiness, provider),
-            timeout=COMPOSER_READINESS_TIMEOUT_SECONDS,
-        )
+        dispatch = await _bounded_composer_dispatch_readiness(provider)
     except TimeoutError:
         label = PROVIDER_DISPLAY_NAMES[provider]
         return HarnessComposerReadiness(
@@ -3342,11 +3532,76 @@ async def _bounded_composer_readiness(
             required_url_scheme=provider,
             code="desktop_readiness_timeout",
             message=(
-                f"{label} Desktop readiness could not be checked within "
-                f"{COMPOSER_READINESS_TIMEOUT_SECONDS:g} seconds."
+                f"{label} Desktop launch readiness could not be verified "
+                f"within {COMPOSER_READINESS_TIMEOUT_SECONDS:g} seconds. "
+                "Installation status was not determined."
             ),
-            action="Check that the desktop app is installed, then try again.",
+            action="Retry desktop readiness.",
         )
+
+    if not dispatch.ready or provider != "codex":
+        return dispatch
+
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(probe_harness_composer_readiness, provider),
+            timeout=COMPOSER_ACCOUNT_EVIDENCE_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        # Account/model evidence is useful but opening a reviewable desktop
+        # draft does not submit anything. Keep the independently verified app,
+        # URL scheme, and native-paste result instead of inventing absence.
+        return dispatch
+    except Exception:
+        logger.exception(
+            "Codex desktop account enrichment failed after dispatch was verified"
+        )
+        return dispatch
+
+
+async def _bounded_composer_dispatch_readiness(
+    provider: ProviderName,
+) -> HarnessComposerReadiness:
+    """Share a hard-gate worker until its actual thread has exited."""
+
+    loop = asyncio.get_running_loop()
+    probe = probe_harness_composer_dispatch_readiness
+    existing = _composer_dispatch_workers.get(provider)
+    if (
+        existing is not None
+        and existing[0] is loop
+        and existing[1] is probe
+        and not existing[2].cancelled()
+    ):
+        worker = existing[2]
+    else:
+        worker = loop.create_task(asyncio.to_thread(probe, provider))
+        _composer_dispatch_workers[provider] = (loop, probe, worker)
+        worker.add_done_callback(
+            lambda completed, provider=provider: _release_composer_dispatch_worker(
+                provider,
+                completed,
+            )
+        )
+    return await asyncio.wait_for(
+        asyncio.shield(worker),
+        timeout=COMPOSER_READINESS_TIMEOUT_SECONDS,
+    )
+
+
+def _release_composer_dispatch_worker(
+    provider: ProviderName,
+    worker: asyncio.Task[HarnessComposerReadiness],
+) -> None:
+    """Forget a completed worker and consume an otherwise unobserved error."""
+
+    existing = _composer_dispatch_workers.get(provider)
+    if existing is not None and existing[2] is worker:
+        _composer_dispatch_workers.pop(provider, None)
+    try:
+        worker.exception()
+    except asyncio.CancelledError:
+        pass
 
 
 def _composer_provider_readiness(
@@ -3354,13 +3609,7 @@ def _composer_provider_readiness(
 ) -> ProviderReadiness:
     provider = readiness.provider
     if readiness.ready:
-        status = (
-            "authentication_required"
-            if readiness.code == "desktop_account_sign_in_required"
-            else "rate_limited"
-            if readiness.code == "desktop_account_rate_limited"
-            else "ready"
-        )
+        status = "access_unverified" if readiness.account_access_verified is not True else "ready"
         return ProviderReadiness(
             provider=provider,
             ready=True,
@@ -3381,18 +3630,20 @@ def _composer_provider_readiness(
             model_catalog_source=None,
             capabilities={
                 "desktop_dispatch_available": True,
+                "native_paste_available": readiness.paste_automation_available,
                 "account_access_probe_supported": provider == "codex",
             },
         )
+    timed_out = readiness.code == "desktop_readiness_timeout"
     return ProviderReadiness(
         provider=provider,
         ready=False,
-        status="unavailable",
+        status="check_timed_out" if timed_out else "unavailable",
         code=readiness.code,
         message=readiness.message,
         action=readiness.action,
         models=(),
-        desktop_available=readiness.desktop_available,
+        desktop_available=None if timed_out else readiness.desktop_available,
         exact_session_supported=False,
         context_staging_supported=False,
         desktop_handoff_supported=False,
@@ -3402,7 +3653,12 @@ def _composer_provider_readiness(
         model_catalog_source=None,
         capabilities={
             "desktop_dispatch_available": (
-                readiness.desktop_available and readiness.url_scheme_registered
+                None
+                if timed_out
+                else readiness.desktop_available and readiness.url_scheme_registered
+            ),
+            "native_paste_available": (
+                None if timed_out else readiness.paste_automation_available
             ),
             "account_access_probe_supported": provider == "codex",
         },

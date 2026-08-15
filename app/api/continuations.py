@@ -420,7 +420,7 @@ async def stage_continuation(
                 task_mode=payload.task_mode,
                 artifacts=payload.artifacts,
                 sync_sessions=False,
-                request_timeout_seconds=20.0,
+                request_timeout_seconds=30.0,
             ),
             timeout=DESKTOP_HANDOFF_REQUEST_TIMEOUT_SECONDS,
         )

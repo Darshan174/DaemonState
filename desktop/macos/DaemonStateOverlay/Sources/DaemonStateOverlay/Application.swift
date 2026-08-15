@@ -287,7 +287,9 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
                     to: target
                 )
                 switch outcome {
-                case .pasted:
+                case .insertedWithAccessibility,
+                     .markerReplacedWithVerifiedInputSync,
+                     .commandVDispatched:
                     self.setVisualState(.success, resetAfter: 1.1)
                     self.statusController.show(
                         "\(requestedDisplayName) pasted",
@@ -295,7 +297,8 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
                         relativeTo: panel,
                         dismissAfter: 1.8
                     )
-                case let .notPasted(message):
+                case let .accessibilityInsertionUnverified(message),
+                     let .notPasted(message):
                     self.setVisualState(.failure, resetAfter: 1.35)
                     self.statusController.show(
                         message,
@@ -367,7 +370,9 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
                 }
                 self.setVisualState(.success, resetAfter: 1.1)
                 switch outcome {
-                case .pasted:
+                case .insertedWithAccessibility,
+                     .markerReplacedWithVerifiedInputSync,
+                     .commandVDispatched:
                     self.statusController.show(
                         selection.count == 1
                             ? "Selected prompt pasted"
@@ -376,7 +381,8 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
                         relativeTo: panel,
                         dismissAfter: 1.8
                     )
-                case let .notPasted(message):
+                case let .accessibilityInsertionUnverified(message),
+                     let .notPasted(message):
                     self.setVisualState(.failure, resetAfter: 1.35)
                     self.statusController.show(
                         message,
