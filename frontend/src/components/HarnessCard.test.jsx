@@ -5,7 +5,7 @@ import { HarnessArchiveCard, HarnessContinuationCard } from "./HarnessCard";
 
 describe("HarnessContinuationCard", () => {
   it.each(["codex", "claude", "opencode"])(
-    "keeps gold artwork and a colored ready tag on the glass %s continuation card",
+    "keeps gold artwork and a colored ready tag on the opaque %s continuation card",
     (provider) => {
       render(
         <HarnessContinuationCard
@@ -27,13 +27,14 @@ describe("HarnessContinuationCard", () => {
       expect(artwork?.tagName).toBe("svg");
       expect(artwork).toHaveStyle({ color: "#D4AF37" });
       expect(article).toHaveAttribute("data-card-tone", "neutral");
-      expect(article).toHaveAttribute("data-card-surface", "glass");
+      expect(article).toHaveAttribute("data-card-surface", "paper");
       expect(article).toHaveClass(
-        "bg-[#fbfbf6]/50",
-        "backdrop-blur-xl",
-        "backdrop-saturate-150",
+        "bg-[#fbfbf6]",
         "text-[#171713]",
       );
+      expect(article).not.toHaveClass("bg-[#fbfbf6]/50");
+      expect(article).not.toHaveClass("backdrop-blur-xl");
+      expect(article).not.toHaveClass("backdrop-saturate-150");
       expect(article.querySelector("[data-card-tint]")).not.toBeInTheDocument();
       expect(article.querySelector("[data-card-glass-body]")).toHaveClass(
         "from-[#fbfbf6]/55",
@@ -53,7 +54,7 @@ describe("HarnessContinuationCard", () => {
     },
   );
 
-  it("removes card and session numbering while retaining the session label", () => {
+  it("removes card and session numbering from destination cards", () => {
     render(
       <HarnessContinuationCard
         index={1}
@@ -72,7 +73,7 @@ describe("HarnessContinuationCard", () => {
 
     expect(screen.queryByText("02", { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByText("7", { exact: true })).not.toBeInTheDocument();
-    expect(screen.getByText("Session", { exact: true })).toBeVisible();
+    expect(screen.queryByText("Session", { exact: true })).not.toBeInTheDocument();
     expect(screen.getByText("Anthropic")).toHaveClass("text-[#171713]");
   });
 
@@ -203,7 +204,7 @@ describe("HarnessContinuationCard", () => {
     expect(onContinue).not.toHaveBeenCalled();
   });
 
-  it("locks a ready provider until the session reaches two compactions", () => {
+  it("does not apply Execute's compaction policy to a Continue card", () => {
     const onContinue = vi.fn();
     render(
       <HarnessContinuationCard
@@ -232,23 +233,24 @@ describe("HarnessContinuationCard", () => {
     const button = screen.getByRole("button", {
       name: "Open desktop handoff in Codex",
     });
-    expect(article).toHaveAttribute("aria-disabled", "true");
-    expect(article).toHaveAttribute("data-context-ready", "false");
-    expect(article).toHaveAttribute("data-compaction-count", "1");
-    expect(article).toHaveClass("bg-[#fbfbf6]/50", "backdrop-blur-xl", "text-[#171713]");
+    expect(article).not.toHaveAttribute("aria-disabled");
+    expect(article).not.toHaveAttribute("data-context-ready");
+    expect(article).not.toHaveAttribute("data-compaction-count");
+    expect(article).toHaveClass("bg-[#fbfbf6]", "text-[#171713]");
+    expect(article).not.toHaveClass("backdrop-blur-xl");
     expect(article).not.toHaveClass("opacity-[0.78]");
-    expect(button).toBeDisabled();
-    expect(button).toHaveAttribute("data-context-ready", "false");
+    expect(button).toBeEnabled();
+    expect(button).not.toHaveAttribute("data-context-ready");
     expect(button).toHaveClass("disabled:pointer-events-none");
-    expect(screen.getByText("1/2 compactions")).toBeVisible();
-    expect(screen.getByText("Session Context locked")).toBeVisible();
+    expect(screen.queryByText("1/2 compactions")).not.toBeInTheDocument();
+    expect(screen.queryByText("Session Context locked")).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
 
     fireEvent.click(button);
-    expect(onContinue).not.toHaveBeenCalled();
+    expect(onContinue).toHaveBeenCalledWith("codex");
   });
 
-  it("keeps hover motion active while a provider is locked", () => {
+  it("keeps hover motion active on a Continue card", () => {
     render(
       <HarnessContinuationCard
         provider={{
@@ -306,10 +308,10 @@ describe("HarnessContinuationCard", () => {
       expect(artwork).not.toHaveClass("grayscale");
       expect(artwork).toHaveStyle({ color: "#171713" });
       expect(screen.getByRole("article")).toHaveClass(
-        "bg-[#fbfbf6]/50",
-        "backdrop-blur-xl",
+        "bg-[#fbfbf6]",
         "text-[#171713]",
       );
+      expect(screen.getByRole("article")).not.toHaveClass("backdrop-blur-xl");
       expect(screen.getByText("Desktop missing")).toHaveClass(
         "bg-white/80",
         "text-[#171713]",
@@ -442,37 +444,62 @@ describe("HarnessContinuationCard", () => {
     ["authentication_required", "desktop_account_sign_in_required", "Sign in"],
     ["rate_limited", "desktop_account_rate_limited", "Limit reached"],
   ])(
-    "keeps the Codex draft openable when account status is %s",
+    "blocks the Codex draft when account status is %s",
     (status, code, label) => {
       const onContinue = vi.fn();
       render(
         <HarnessContinuationCard
           provider={{
             provider: "codex",
-            ready: true,
+            ready: false,
             status,
             code,
-            message: "Codex will resolve account access in the desktop app.",
+            message: "Codex cannot work until account access is restored.",
           }}
           taskReady
           onContinue={onContinue}
         />,
       );
 
-      expect(screen.getByText(label)).toHaveClass(
-        "border-amber-500/60",
-        "bg-amber-200",
-        "text-amber-950",
-      );
+      expect(screen.getByText(label)).toBeVisible();
       const handoff = screen.getByRole("button", {
         name: "Open desktop handoff in Codex",
       });
-      expect(handoff).toBeEnabled();
+      expect(handoff).toBeDisabled();
       expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
       fireEvent.click(handoff);
-      expect(onContinue).toHaveBeenCalledWith("codex");
+      expect(onContinue).not.toHaveBeenCalled();
     },
   );
+
+  it("keeps an access-unverified provider actionable but visibly amber", () => {
+    const onContinue = vi.fn();
+    render(
+      <HarnessContinuationCard
+        provider={{
+          provider: "opencode",
+          ready: true,
+          status: "access_unverified",
+          code: "desktop_account_access_unverified",
+          message: "OpenCode account access could not be checked automatically.",
+        }}
+        taskReady
+        onContinue={onContinue}
+      />,
+    );
+
+    expect(screen.getByText("Access unverified")).toHaveClass(
+      "border-amber-500/60",
+      "bg-amber-200",
+      "text-amber-950",
+    );
+    const handoff = screen.getByRole("button", {
+      name: "Open desktop handoff in OpenCode",
+    });
+    expect(handoff).toBeEnabled();
+    fireEvent.click(handoff);
+    expect(onContinue).toHaveBeenCalledWith("opencode");
+  });
 
   it("gives both card variants the same left-center-right fan positions", () => {
     const { unmount } = render(

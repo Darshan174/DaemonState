@@ -21,15 +21,18 @@ export CLANG_MODULE_CACHE_PATH="${SWIFT_CACHE_ROOT}/module-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="${SWIFT_CACHE_ROOT}/module-cache"
 
 HAS_CONTROL_TOKEN=0
+ONE_SHOT_PASTE=0
 for argument in "$@"; do
   if [[ "${argument}" == "--control-token" ]]; then
     HAS_CONTROL_TOKEN=1
-    break
+  fi
+  if [[ "${argument}" == "--paste-stdin" ]]; then
+    ONE_SHOT_PASTE=1
   fi
 done
 
 OVERLAY_ARGUMENTS=("$@")
-if [[ "${HAS_CONTROL_TOKEN}" -eq 0 ]]; then
+if [[ "${HAS_CONTROL_TOKEN}" -eq 0 && "${ONE_SHOT_PASTE}" -eq 0 ]]; then
   CONTROL_TOKEN="${DAEMONSTATE_OVERLAY_CONTROL_TOKEN:-$(/usr/bin/uuidgen)}"
   OVERLAY_ARGUMENTS+=(--control-token "${CONTROL_TOKEN}")
 fi
@@ -57,6 +60,13 @@ done
 
 if [[ -n "${FRESH_BINARY}" ]]; then
   exec "${FRESH_BINARY}" "${OVERLAY_ARGUMENTS[@]}"
+fi
+
+if [[ "${ONE_SHOT_PASTE}" -eq 1 ]]; then
+  # Continue context arrives on stdin. Never forward it to a toolchain or
+  # compile on the critical paste path if the prebuilt helper became stale
+  # after readiness was checked.
+  exit 70
 fi
 
 exec swift run \

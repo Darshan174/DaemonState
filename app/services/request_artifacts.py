@@ -292,7 +292,7 @@ def resolve_trusted_request_image_artifacts(
             continue
         seen.add(path)
         paths.append(path)
-    trusted: dict[str, TrustedRequestImageDescriptor] = {}
+    trusted_groups: dict[str, list[TrustedRequestImageDescriptor]] = {}
     for raw in trusted_descriptors:
         descriptor = (
             raw
@@ -320,8 +320,32 @@ def resolve_trusted_request_image_artifacts(
                 binding_error=(str(raw.get("binding_error") or "").strip() or None),
             )
         )
-        if descriptor.path and descriptor.path not in trusted:
-            trusted[descriptor.path] = descriptor
+        if descriptor.path:
+            trusted_groups.setdefault(descriptor.path, []).append(descriptor)
+    trusted: dict[str, TrustedRequestImageDescriptor] = {}
+    for path, descriptors in trusted_groups.items():
+        identities = {
+            (
+                str(descriptor.sha256 or "").casefold(),
+                str(descriptor.mime_type or "").casefold(),
+                descriptor.size_bytes,
+                descriptor.binding_valid,
+            )
+            for descriptor in descriptors
+        }
+        if len(identities) == 1:
+            trusted[path] = descriptors[0]
+            continue
+        # A path is not an attachment identity. If two exact provider records
+        # claim different bytes or binding states for it, choosing either one
+        # would silently authenticate the other declaration.
+        trusted[path] = TrustedRequestImageDescriptor(
+            path=path,
+            binding_valid=False,
+            binding_error=(
+                "Conflicting provider attachment identities reuse the same source path."
+            ),
+        )
     if include_unreferenced_trusted_descriptors:
         # Structured provider attachments remain part of the original user
         # turn even when the provider omits transport tags from normalized

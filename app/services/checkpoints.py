@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import shlex
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -114,7 +115,7 @@ SESSION_HANDOFF_RENDERED_ITEM_LIMIT = 2
 SESSION_HANDOFF_RENDERED_COMMAND_LIMIT = 2
 SESSION_HANDOFF_RENDERED_VERIFICATION_LIMIT = 2
 SESSION_HANDOFF_RENDERED_STATEMENT_CHARS = 300
-SESSION_HANDOFF_RENDERED_COMMAND_CHARS = 240
+SESSION_HANDOFF_RENDERED_COMPLETE_COMMAND_CHARS = 4_000
 SESSION_HANDOFF_RENDERED_RESULT_CHARS = 160
 MAX_CONTINUATION_LEAD_CHARS = 12_000
 SESSION_HANDOFF_TOKEN_ESTIMATION_METHOD = "chars_div_4.v1"
@@ -127,7 +128,7 @@ _DECISION_SIGNAL = re.compile(
     re.IGNORECASE,
 )
 _PROGRESS_SIGNAL = re.compile(
-    r"\b(?:added|built|captured|completed|confirmed|created|fixed|implemented|"
+    r"\b(?:added|built|captured|complet(?:e|ed)|confirmed|created|fixed|implemented|"
     r"in place|passed|removed|replaced|updated|wired|working)\b",
     re.IGNORECASE,
 )
@@ -446,6 +447,9 @@ _SESSION_ATTACHMENT_EXACT_DEPENDENCY_RE = re.compile(
 )
 _SESSION_ATTACHMENT_VISUAL_DEPENDENCY_RE = re.compile(
     r"(?:"
+    r"\b(?:as\s+)?shown\s+in\s+(?:the\s+)?(?:attached\s+)?"
+    r"(?:design|diagram|image|mock[- ]?up|photo|picture|prototype|reference|"
+    r"screenshot|visual|wireframe)\b|"
     r"\b(?:inspect|look\s+at|analy[sz]e|examine|review|check|compare|"
     r"debug|diagnose|explain|tell\s+me)\b"
     r".{0,140}\b(?:attached|image|screenshot|reference|mockup|design|visual)\b|"
@@ -724,21 +728,94 @@ _UI_IMPLEMENTATION_SUFFIXES = frozenset(
 _UI_IMPLEMENTATION_PATH_PARTS = frozenset({"components", "pages", "screens", "ui", "views"})
 _NON_UI_IMPLEMENTATION_PATH_PARTS = frozenset(
     {
+        ".build",
         "__tests__",
+        "__snapshots__",
+        "androidtest",
         "api",
+        "benchmark",
+        "benchmarks",
+        "build",
+        "cypress",
         "data",
+        "deriveddata",
+        "dist",
+        "docs",
+        "documentation",
+        "e2e",
+        "examples",
         "fixtures",
         "generated",
+        "commontest",
+        "integration-tests",
+        "integration_tests",
+        "integrationtests",
+        "jvmtest",
         "mocks",
         "models",
+        "node_modules",
+        "out",
+        "playwright",
+        "qa",
+        "sample",
+        "samples",
         "scripts",
+        "spec",
+        "specs",
+        "stories",
+        "storybook",
+        "system-tests",
+        "system_tests",
+        "systemtests",
         "test",
+        "test-helpers",
+        "test_helpers",
+        "testdata",
+        "testfixtures",
+        "testdebug",
+        "testrelease",
+        "testhelpers",
         "tests",
         "types",
+        "ui-tests",
+        "ui_tests",
+        "uitests",
+        "unit-tests",
+        "unit_tests",
+        "unittests",
+        "vendor",
     }
 )
 _DEICTIC_PRODUCT_TARGET_RE = re.compile(
     r"\b(?:this|that|these|those|it|the\s+thing)\b",
+    re.IGNORECASE,
+)
+_DESTINATION_MISMATCH_RE = re.compile(
+    r"\b(?P<verb>pastes?|inserts?|routes?|sends?|writes?)\b"
+    r"(?P<object>.{0,120}?)"
+    r"\b(?:in|into|to)\s+(?:the\s+)?"
+    r"(?P<actual>terminal(?:\s+shell)?|shell(?:\s+prompt)?|command\s+line|"
+    r"chat\s*box|chat\s+composer|composer|editor)\s+"
+    r"instead\s+of\s+(?:the\s+)?"
+    r"(?P<expected>terminal(?:\s+shell)?|shell(?:\s+prompt)?|command\s+line|"
+    r"chat\s*box|chat\s+composer|composer|editor)\b",
+    re.IGNORECASE,
+)
+_NAMED_CONTINUATION_FLOW_RE = re.compile(
+    r"\b(?P<provider>opencode|codex|claude(?:\s+code)?)\s+"
+    r"(?P<flow>continue|continuation|handoff)\b",
+    re.IGNORECASE,
+)
+_SUPPLEMENTAL_VISUAL_REFERENCE_RE = re.compile(
+    r"\b(?:as\s+)?shown\s+in\s+(?:the\s+)?(?:attached\s+)?"
+    r"(?:image|screenshot|picture|visual)\b",
+    re.IGNORECASE,
+)
+_TRANSIENT_REPORTING_BLOCKER_RE = re.compile(
+    r"^(?:i(?:['’]m|\s+am)\s+)?waiting\s+for\s+(?:the\s+)?"
+    r"(?:(?:exact|final|complete)\s+){1,3}"
+    r"(?:count|counts|result|results|total|totals)\b"
+    r".{0,120}\b(?:hand(?:ing)?\s+(?:this|it)\s+back|report(?:ing)?|return(?:ing)?)\b",
     re.IGNORECASE,
 )
 _OPAQUE_OUTCOME_INTENT_RE = re.compile(
@@ -1538,6 +1615,280 @@ def checkpoint_to_dict(
     }
 
 
+async def project_desktop_stage_checkpoint_data(
+    session: AsyncSession,
+    checkpoint: WorkCheckpoint,
+    *,
+    access_scope: AccessScope,
+    session_tip: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Re-project dialogue-derived Continue state at the saved boundary.
+
+    Checkpoints are immutable audit records, but dialogue classification can
+    improve after they were captured. Continue is a visible, non-submitting
+    desktop draft, so it may replay the exact access-checked session prefix and
+    use the current resolver without rewriting the checkpoint. The replay
+    refreshes the goal plus transient blocker resolution and any next action
+    that was synthesized solely from such a blocker. All other sections remain
+    the stored projection.
+    """
+
+    stored = checkpoint_to_dict(checkpoint, session_tip=session_tip)
+    boundary_sequence = (stored.get("boundary") or {}).get("sequence_number")
+    if not isinstance(boundary_sequence, int):
+        return stored
+    normalized_session = normalize_session_key(
+        checkpoint.provider,
+        checkpoint.session_id,
+    ) or (checkpoint.provider, checkpoint.session_id)
+    provider, session_id = normalized_session
+    dialogue_event_predicate = or_(
+        SessionEvent.event_type.in_(("user_request", "assistant_update")),
+        and_(
+            SessionEvent.event_type == "runtime_instruction",
+            SessionEvent.role == "user",
+        ),
+    )
+    complete_event_ids = list(
+        await session.scalars(
+            select(SessionEvent.id)
+            .where(
+                SessionEvent.workspace_id == checkpoint.workspace_id,
+                SessionEvent.provider.in_(session_provider_values(provider)),
+                SessionEvent.session_id == session_id,
+                SessionEvent.sequence_number <= boundary_sequence,
+                dialogue_event_predicate,
+            )
+            .order_by(SessionEvent.sequence_number, SessionEvent.id)
+        )
+    )
+    events = list(
+        await session.scalars(
+            select(SessionEvent)
+            .join(
+                SourceDocument,
+                SessionEvent.source_document_id == SourceDocument.id,
+            )
+            .where(
+                SessionEvent.workspace_id == checkpoint.workspace_id,
+                SessionEvent.provider.in_(session_provider_values(provider)),
+                SessionEvent.session_id == session_id,
+                SessionEvent.sequence_number <= boundary_sequence,
+                dialogue_event_predicate,
+                source_access_predicate(
+                    access_scope,
+                    workspace_id=checkpoint.workspace_id,
+                ),
+            )
+            .order_by(SessionEvent.sequence_number, SessionEvent.id)
+        )
+    )
+    boundary_accessible = await session.scalar(
+        select(SessionEvent.id)
+        .join(
+            SourceDocument,
+            SessionEvent.source_document_id == SourceDocument.id,
+        )
+        .where(
+            SessionEvent.id == checkpoint.boundary_event_id,
+            SessionEvent.workspace_id == checkpoint.workspace_id,
+            SessionEvent.provider.in_(session_provider_values(provider)),
+            SessionEvent.session_id == session_id,
+            SessionEvent.sequence_number == boundary_sequence,
+            source_access_predicate(
+                access_scope,
+                workspace_id=checkpoint.workspace_id,
+            ),
+        )
+    )
+    if (
+        not events
+        or [event.id for event in events] != complete_event_ids
+        or boundary_accessible != checkpoint.boundary_event_id
+    ):
+        return stored
+
+    replayed_sections = _build_sections(events, snapshot=None)
+    replayed_goal = replayed_sections.get("goal") or []
+    if len(replayed_goal) != 1:
+        return stored
+    goal = replayed_goal[0]
+    replay_digest_bindings = [
+        {
+            "session_event_id": str(event.id),
+            "provider_event_id": event.provider_event_id,
+            "sequence_number": event.sequence_number,
+            "event_type": event.event_type,
+            "content_sha256": event.content_sha256,
+        }
+        for event in events
+    ]
+    conversation_state = goal.payload.get("conversation_state") or {}
+    active_goal = conversation_state.get("active_goal") or {}
+    fragments = active_goal.get("fragments") or []
+    authority_event_ids = {
+        str(value)
+        for fragment in fragments
+        if isinstance(fragment, dict)
+        for value in (
+            fragment.get("event_id"),
+            fragment.get("assistant_event_id"),
+        )
+        if value
+    }
+    authority_events = [
+        event for event in events if str(event.provider_event_id or event.id) in authority_event_ids
+    ]
+    authority_bindings = [
+        {
+            "session_event_id": str(event.id),
+            "source_document_id": str(event.source_document_id),
+            "provider_event_id": event.provider_event_id,
+            "sequence_number": event.sequence_number,
+            "event_type": event.event_type,
+            "content_sha256": event.content_sha256,
+        }
+        for event in authority_events
+    ]
+    goal_payload = deepcopy(goal.payload)
+    goal_payload["desktop_stage_projection"] = {
+        "schema_version": "desktop_stage_dialogue_projection.v1",
+        "checkpoint_id": str(checkpoint.id),
+        "boundary_event_id": str(checkpoint.boundary_event_id),
+        "boundary_sequence": boundary_sequence,
+        "method": "access_checked_bounded_session_event_replay",
+        "replay_event_count": len(replay_digest_bindings),
+        "replay_first_sequence": events[0].sequence_number,
+        "replay_last_sequence": events[-1].sequence_number,
+        "replay_bindings_sha256": _sha256(_canonical_json(replay_digest_bindings)),
+        "authority_event_bindings": authority_bindings,
+        "authority_event_bindings_sha256": _sha256(_canonical_json(authority_bindings)),
+        "stored_checkpoint_unchanged": True,
+    }
+    projected_goal = {
+        "id": None,
+        "item_key": "goal:desktop-stage-event-replay",
+        "statement": goal.statement,
+        "state": goal.state,
+        "truth_state": "derived",
+        "payload": goal_payload,
+        "evidence": [
+            {
+                "id": None,
+                "type": "session_event_read_time_projection",
+                "session_event_id": str(event.id),
+                "source_document_id": str(event.source_document_id),
+                "supports": True,
+                "observed_at": event.occurred_at,
+                "locator": {
+                    "provider_event_id": event.provider_event_id,
+                    "sequence_number": event.sequence_number,
+                    "event_type": event.event_type,
+                    "source_cursor": event.source_cursor,
+                    "content_sha256": event.content_sha256,
+                    "projection": "desktop_stage_dialogue_projection.v1",
+                },
+            }
+            for event in authority_events
+        ],
+    }
+    projected = deepcopy(stored)
+    projected["sections"] = deepcopy(stored["sections"])
+    projected["sections"]["goal"] = [projected_goal]
+    historical_transient_event_ids = {
+        str(event.id)
+        for blocker in replayed_sections.get("blockers") or []
+        if blocker.state.strip().casefold() in _INACTIVE_BLOCKER_STATES
+        and _TRANSIENT_REPORTING_BLOCKER_RE.search(blocker.statement)
+        for event in blocker.events
+    }
+    refreshed_transient_blockers: list[str] = []
+    for blocker in projected["sections"].get("blockers") or []:
+        statement = str(blocker.get("statement") or "")
+        if (
+            blocker.get("state", "active").strip().casefold()
+            in _INACTIVE_BLOCKER_STATES
+            or _TRANSIENT_REPORTING_BLOCKER_RE.search(statement) is None
+        ):
+            continue
+        blocker_event_ids = {
+            str(evidence.get("session_event_id") or "")
+            for evidence in blocker.get("evidence") or []
+            if evidence.get("session_event_id")
+        }
+        if not blocker_event_ids.intersection(historical_transient_event_ids):
+            continue
+        blocker["state"] = "historical"
+        blocker["payload"] = {
+            **(blocker.get("payload") or {}),
+            "desktop_stage_transient_resolution_replayed": True,
+        }
+        refreshed_transient_blockers.append(statement)
+
+    stale_blocker_next_action = any(
+        _DERIVED_BLOCKER_NEXT_ACTION.match(
+            str(item.get("statement") or "").strip()
+        )
+        and any(
+            statement in str(item.get("statement") or "")
+            for statement in refreshed_transient_blockers
+        )
+        for item in projected["sections"].get("exact_next_action") or []
+    )
+    replayed_next_actions = replayed_sections.get("exact_next_action") or []
+    if stale_blocker_next_action and replayed_next_actions:
+        replayed_next_action = replayed_next_actions[-1]
+        next_action_events = _unique_events(replayed_next_action.events)
+        projected["sections"]["exact_next_action"] = [
+            {
+                "id": None,
+                "item_key": "exact_next_action:desktop-stage-event-replay",
+                "statement": replayed_next_action.statement,
+                "state": replayed_next_action.state,
+                "truth_state": "derived",
+                "payload": {
+                    **replayed_next_action.payload,
+                    "desktop_stage_projection": True,
+                },
+                "evidence": [
+                    {
+                        "id": None,
+                        "type": "session_event_read_time_projection",
+                        "session_event_id": str(event.id),
+                        "source_document_id": str(event.source_document_id),
+                        "supports": True,
+                        "observed_at": event.occurred_at,
+                        "locator": {
+                            "provider_event_id": event.provider_event_id,
+                            "sequence_number": event.sequence_number,
+                            "event_type": event.event_type,
+                            "source_cursor": event.source_cursor,
+                            "content_sha256": event.content_sha256,
+                            "projection": "desktop_stage_dialogue_projection.v1",
+                        },
+                    }
+                    for event in next_action_events
+                ],
+            }
+        ]
+    if projected.get("continuation_status") == "blocked" and not any(
+        str(item.get("state") or "active").strip().casefold()
+        not in _INACTIVE_BLOCKER_STATES
+        for item in projected["sections"].get("blockers") or []
+    ):
+        projected["continuation_status"] = "review_required"
+    projected["desktop_stage_projection"] = {
+        "schema_version": "desktop_stage_dialogue_projection.v1",
+        "status": "applied",
+        "stored_checkpoint_unchanged": True,
+        "refreshed_transient_blocker_count": len(refreshed_transient_blockers),
+        "replay_bindings_sha256": goal_payload["desktop_stage_projection"][
+            "replay_bindings_sha256"
+        ],
+    }
+    return projected
+
+
 def _boundary_context(
     checkpoint: WorkCheckpoint,
     payload: dict[str, Any],
@@ -2034,8 +2385,10 @@ def _is_low_signal_failed_attempt(item: dict[str, Any]) -> bool:
         return False
     lowered = command.casefold()
     if lowered in {
+        "exec",
         "js",
         "node_repl.js",
+        "wait",
         "write_stdin",
     } or lowered.startswith(
         (
@@ -3321,14 +3674,387 @@ def _self_contained_goal(request_verbatim: str) -> str:
     ).strip()
 
 
+@dataclass(frozen=True)
+class _SessionRequestFragment:
+    """One integrity-checked user turn and its resolved requirement text."""
+
+    source_request: str
+    requirement_request: str
+    provider_event_id: str | None = None
+    sequence_number: int | None = None
+
+
+def _visual_reference_local_context(
+    request_text: str,
+    *,
+    reference_start: int,
+    reference_end: int,
+) -> str:
+    """Return the coordinated phrase that governs one visual reference."""
+
+    boundaries = list(
+        re.finditer(
+            r"[.;!?\n,]+|\b(?:and|but|whereas|while)\b",
+            request_text,
+            re.IGNORECASE,
+        )
+    )
+    local_start = max(
+        (boundary.end() for boundary in boundaries if boundary.end() <= reference_start),
+        default=0,
+    )
+    local_end = min(
+        (boundary.start() for boundary in boundaries if boundary.start() >= reference_end),
+        default=len(request_text),
+    )
+    return request_text[local_start:local_end].strip()
+
+
+def _session_attachment_ordinal_dependency_role(
+    request_text: str,
+    *,
+    ordinal: int,
+) -> str | None:
+    """Resolve explicit first/second image instructions within one user turn."""
+
+    ordinal_words = {
+        1: ("first", "1st"),
+        2: ("second", "2nd"),
+        3: ("third", "3rd"),
+        4: ("fourth", "4th"),
+        5: ("fifth", "5th"),
+    }.get(ordinal, (f"{ordinal}th",))
+    word_alternatives = "|".join(re.escape(word) for word in ordinal_words)
+    reference_re = re.compile(
+        rf"\b(?:the\s+)?(?:{word_alternatives})\s+"
+        r"(?:screenshots?|images?|pictures?|visuals?)\b|"
+        r"\b(?:screenshots?|images?|pictures?|visuals?)\s*"
+        rf"(?:number\s*|#\s*)?{ordinal}\b|"
+        r"\b(?:analy[sz]e|check|compare|discard|ignore|inspect|match|not|review|use)\s+"
+        rf"(?:the\s+)?(?:{word_alternatives})\b",
+        re.IGNORECASE,
+    )
+    grouped_reference_re = re.compile(
+        r"\b(?:screenshots?|images?|pictures?|visuals?)\s*"
+        r"(?:numbers?\s*)?"
+        rf"(?:#?\d+\s*(?:,\s*(?:and\s+)?|\s+and\s+))*#?{ordinal}\b",
+        re.IGNORECASE,
+    )
+    first_count_match = re.search(
+        r"\bfirst\s+(?P<count>two|three|four|five|\d+)\s+"
+        r"(?:screenshots?|images?|pictures?|visuals?)\b",
+        request_text,
+        re.IGNORECASE,
+    )
+    count_values = {
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+    }
+    first_count = count_values.get(
+        str(first_count_match.group("count") if first_count_match else "").casefold(),
+        int(first_count_match.group("count"))
+        if first_count_match and first_count_match.group("count").isdigit()
+        else 0,
+    )
+    references = [
+        *reference_re.finditer(request_text),
+        *grouped_reference_re.finditer(request_text),
+    ]
+    if first_count_match is not None and ordinal <= first_count:
+        references.append(first_count_match)
+    other_count_match = re.search(
+        r"\b(?:discard|ignore|omit|skip|use\s+only)\s+(?:the\s+)?other\s+"
+        r"(?P<count>two|three|four|five|\d+)\b"
+        r"(?:\s+(?:screenshots?|images?|pictures?|visuals?))?",
+        request_text,
+        re.IGNORECASE,
+    )
+    if other_count_match is not None:
+        other_count_text = other_count_match.group("count").casefold()
+        other_count = count_values.get(
+            other_count_text,
+            int(other_count_text) if other_count_text.isdigit() else 0,
+        )
+        explicit_ordinals = {
+            number
+            for number, words in {
+                1: ("first", "1st"),
+                2: ("second", "2nd"),
+                3: ("third", "3rd"),
+                4: ("fourth", "4th"),
+                5: ("fifth", "5th"),
+            }.items()
+            if re.search(
+                rf"\b(?:the\s+)?(?:{'|'.join(words)})\s+"
+                r"(?:screenshots?|images?|pictures?|visuals?)\b",
+                request_text[: other_count_match.start()],
+                re.IGNORECASE,
+            )
+        }
+        inferred_total = other_count + len(explicit_ordinals)
+        if ordinal <= inferred_total and ordinal not in explicit_ordinals:
+            references.append(other_count_match)
+    resolved: list[tuple[int, str]] = []
+    for reference in references:
+        clause = _visual_reference_local_context(
+            request_text,
+            reference_start=reference.start(),
+            reference_end=reference.end(),
+        )
+        negated_ignore = re.search(
+            r"\b(?:do\s+not|don['’]?t|never)\s+ignore\b",
+            clause,
+            re.IGNORECASE,
+        )
+        role = (
+            "historical_evidence"
+            if negated_ignore is None
+            and re.search(
+                r"\b(?:discard|historical|ignore|obsolete|old|previous|"
+                r"do\s+not\s+use|don['’]?t\s+use)\b|"
+                r"\bnot\s+(?:the\s+)?(?:first|second|third|fourth|fifth|"
+                r"\d+(?:st|nd|rd|th)?)?\s*"
+                r"(?:screenshots?|images?|pictures?|visuals?)\b",
+                clause,
+                re.IGNORECASE,
+            )
+            else "active_input"
+            if negated_ignore is not None
+            or re.search(
+                r"\b(?:analy[sz]e|check|compare|current|debug|diagnose|"
+                r"examine|inspect|latest|match|new|review|use)\b",
+                clause,
+                re.IGNORECASE,
+            )
+            else None
+        )
+        if role is not None:
+            resolved.append((reference.start(), role))
+    return max(resolved, default=(0, None), key=lambda item: item[0])[1]
+
+
+def _session_attachment_declaration_dependency_role(
+    fragment_text: str,
+    *,
+    ordinal: int,
+    name: str,
+    local_context: str = "",
+) -> str:
+    ordinal_role = _session_attachment_ordinal_dependency_role(
+        _self_contained_goal(fragment_text),
+        ordinal=ordinal,
+    )
+    if ordinal_role is not None:
+        return ordinal_role
+    normalized_name = re.sub(r"\s+", " ", str(name or "")).strip().casefold()
+    semantic_name_tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]+", normalized_name, re.IGNORECASE)
+        if token
+        not in {
+            "attachment",
+            "image",
+            "jpeg",
+            "jpg",
+            "picture",
+            "png",
+            "screenshot",
+            "visual",
+        }
+        and not token.isdigit()
+    }
+    if semantic_name_tokens:
+        named_roles: list[tuple[int, str]] = []
+        goal_text = _self_contained_goal(fragment_text)
+        full_name_re = re.compile(
+            r"\b" + r"\s+".join(re.escape(token) for token in normalized_name.split()) + r"\b",
+            re.IGNORECASE,
+        )
+        for name_match in full_name_re.finditer(goal_text):
+            named_context = _visual_reference_local_context(
+                goal_text,
+                reference_start=name_match.start(),
+                reference_end=name_match.end(),
+            )
+            if re.search(
+                r"\b(?:screenshots?|images?|ones?|pictures?|visuals?)\b",
+                named_context,
+                re.IGNORECASE,
+            ):
+                named_roles.append(
+                    (
+                        name_match.start(),
+                        _session_attachment_dependency_role(named_context),
+                    )
+                )
+        if named_roles:
+            return max(named_roles, key=lambda item: item[0])[1]
+        for token in semantic_name_tokens:
+            for token_match in re.finditer(
+                rf"\b{re.escape(token)}\b",
+                goal_text,
+                re.IGNORECASE,
+            ):
+                named_context = _visual_reference_local_context(
+                    goal_text,
+                    reference_start=token_match.start(),
+                    reference_end=token_match.end(),
+                )
+                if re.search(
+                    r"\b(?:screenshots?|images?|pictures?|visuals?)\b",
+                    named_context,
+                    re.IGNORECASE,
+                ):
+                    named_roles.append(
+                        (
+                            token_match.start(),
+                            _session_attachment_dependency_role(named_context),
+                        )
+                    )
+        if named_roles:
+            return max(named_roles, key=lambda item: item[0])[1]
+    local_without_markup = _self_contained_goal(local_context)
+    if local_without_markup and re.search(
+        r"\b(?:attached|current|historical|ignore|image|inspect|latest|new|old|"
+        r"picture|previous|review|screenshot|shown|use|visual)\b",
+        local_without_markup,
+        re.IGNORECASE,
+    ):
+        return _session_attachment_dependency_role(local_without_markup)
+    if re.search(
+        r"\b(?:baseline|before|historical|ignored|obsolete|old|previous)\b",
+        normalized_name,
+    ):
+        return "historical_evidence"
+    if re.search(
+        r"\b(?:after|attached|current|desired|latest|new|target)\b",
+        normalized_name,
+    ):
+        return "active_input"
+    return _session_attachment_dependency_role(fragment_text)
+
+
 def _session_attachment_dependency_role(request_verbatim: str) -> str:
     """Classify whether the next agent still needs the visual itself."""
 
     goal_without_markup = _self_contained_goal(request_verbatim)
     words = re.findall(r"[a-z0-9]+", goal_without_markup.casefold())
+    historical_or_negated_reference = re.search(
+        r"(?:"
+        r"\b(?:historical|old|previous|prior)\s+(?:attached\s+)?"
+        r"(?:screenshot|image|picture|visual)\b|"
+        r"\b(?:screenshot|image|picture|visual)\b.{0,32}"
+        r"\b(?:historical\s+context|context\s+only)\b|"
+        r"\bnot\s+(?:as\s+)?shown\s+in\b.{0,32}"
+        r"\b(?:screenshot|image|picture|visual)\b"
+        r")",
+        goal_without_markup,
+        re.IGNORECASE,
+    )
+    ignored_reference = re.search(
+        r"\bignore(?:d)?\b.{0,48}?\b(?:screenshot|image|picture|visual)\b",
+        goal_without_markup,
+        re.IGNORECASE,
+    )
+    ignore_is_negated = re.search(
+        r"\b(?:do\s+not|don['’]?t|never)\s+ignore\b",
+        goal_without_markup,
+        re.IGNORECASE,
+    )
+    active_visual_directives = [
+        match
+        for match in re.finditer(
+            r"\b(?:analy[sz]e|check|compare|debug|diagnose|examine|inspect|"
+            r"look\s+at|match|review|use)\b.{0,100}?"
+            r"\b(?:(?:the|this|that)\s+)?"
+            r"(?:(?:attached|current|latest|new|second)\s+)?"
+            r"(?:screenshot|image|picture|visual)\b"
+            r"(?:\s+(?:(?:i\s+)?(?:just\s+)?attached|attached\s+below|below))?|"
+            r"\b(?:screenshot|image|picture|visual)\b\s+"
+            r"(?:(?:i\s+)?(?:just\s+)?attached|attached\s+below|below)\b|"
+            r"\b(?:as\s+)?shown\s+in\s+(?:the\s+)?"
+            r"(?:attached\s+)?(?:screenshot|image|picture|visual)\b",
+            goal_without_markup,
+            re.IGNORECASE,
+        )
+        if re.search(
+            r"\bnot\s+(?:as\s+)?$",
+            goal_without_markup[max(0, match.start() - 16) : match.start()],
+            re.IGNORECASE,
+        )
+        is None
+    ]
+    inactive_visual_directives = []
+    if ignore_is_negated is None:
+        inactive_visual_directives.extend(
+            re.finditer(
+                r"\b(?:discard|ignore|stop\s+using|do\s+not\s+use|don['’]?t\s+use)\b"
+                r".{0,80}?\b(?:(?:the|this|that)\s+)?"
+                r"(?:(?:attached|current|first|historical|latest|new|old|previous|prior)\s+)?"
+                r"(?:screenshot|image|picture|visual)\b",
+                goal_without_markup,
+                re.IGNORECASE,
+            )
+        )
+    active_current_directives = [
+        match
+        for match in active_visual_directives
+        if re.search(
+            r"\b(?:attached|below|current|just\s+attached|latest|new|second|this)\b",
+            match.group(0),
+            re.IGNORECASE,
+        )
+    ]
+    decisive_inactive_directives = [
+        match
+        for match in inactive_visual_directives
+        if not active_current_directives
+        or re.search(
+            r"\b(?:first|historical|old|previous|prior)\b",
+            match.group(0),
+            re.IGNORECASE,
+        )
+        is None
+    ]
+    decisive_directives = [
+        *((match.start(), "active_input") for match in active_visual_directives),
+        *((match.start(), "historical_evidence") for match in decisive_inactive_directives),
+    ]
+    if decisive_directives:
+        return max(decisive_directives, key=lambda item: item[0])[1]
+    explicit_current_references = list(
+        re.finditer(
+            r"\b(?:attached|current|latest|new|this(?:\s+(?:attached|current|latest|new))?)\s+"
+            r"(?:screenshot|image|picture|visual)\b",
+            goal_without_markup,
+            re.IGNORECASE,
+        )
+    )
+    inactive_reference_matches = [
+        match
+        for match in (historical_or_negated_reference,)
+        if match is not None
+    ]
+    if ignored_reference is not None and ignore_is_negated is None:
+        inactive_reference_matches.append(ignored_reference)
+    has_independent_current_reference = any(
+        not any(
+            current.start() < inactive.end() and inactive.start() < current.end()
+            for inactive in inactive_reference_matches
+        )
+        for current in explicit_current_references
+    )
+    if has_independent_current_reference:
+        return "active_input"
+    if inactive_reference_matches:
+        return "historical_evidence"
     if _SESSION_ATTACHMENT_EXACT_DEPENDENCY_RE.search(goal_without_markup):
         return "active_input"
-    if len(words) <= 30 and _SESSION_ATTACHMENT_VISUAL_DEPENDENCY_RE.search(goal_without_markup):
+    if _SUPPLEMENTAL_VISUAL_REFERENCE_RE.search(goal_without_markup):
+        return "active_input"
+    if _SESSION_ATTACHMENT_VISUAL_DEPENDENCY_RE.search(goal_without_markup):
         return "active_input"
     if len(words) <= 16 and _REQUIREMENT_ACTION_RE.search(goal_without_markup):
         # Short deictic requests such as "fix this" do not contain enough
@@ -3337,100 +4063,143 @@ def _session_attachment_dependency_role(request_verbatim: str) -> str:
     return "historical_evidence"
 
 
-def _session_attachment_request_fragment(
-    request_verbatim: str,
-    *,
-    attachment_offset: int,
-) -> str:
-    """Return the root/follow-up fragment that declared one attachment."""
-
-    value = str(request_verbatim or "")
-    start = 0
-    end = len(value)
-    for heading in _SESSION_COMPOSITE_REQUEST_HEADING_RE.finditer(value):
-        if heading.start() <= attachment_offset:
-            start = heading.end()
-            continue
-        end = heading.start()
-        break
-    return value[start:end].strip()
-
-
 def _session_attachment_dependencies(
     request_verbatim: str,
     *,
+    request_fragments: Iterable[_SessionRequestFragment | str] = (),
     trusted_descriptors: Iterable[TrustedRequestImageDescriptor] = (),
     allow_local_files: bool = False,
 ) -> list[dict[str, Any]]:
     """Describe exact-turn images without treating request markup as authority."""
 
+    fragment_values = tuple(
+        fragment
+        if isinstance(fragment, _SessionRequestFragment)
+        else _SessionRequestFragment(
+            source_request=str(fragment),
+            requirement_request=str(fragment),
+        )
+        for fragment in request_fragments
+        if isinstance(fragment, _SessionRequestFragment) or str(fragment).strip()
+    ) or (
+        _SessionRequestFragment(
+            source_request=str(request_verbatim or ""),
+            requirement_request=str(request_verbatim or ""),
+        ),
+    )
     fragment_roles = [
-        _session_attachment_dependency_role(fragment)
-        for fragment in _SESSION_COMPOSITE_REQUEST_HEADING_RE.split(str(request_verbatim or ""))
-        if fragment.strip()
+        _session_attachment_dependency_role(fragment.source_request)
+        for fragment in fragment_values
+        if fragment.source_request.strip()
     ]
     fallback_dependency_role = (
         "active_input" if "active_input" in fragment_roles else "historical_evidence"
     )
     descriptor_values = tuple(trusted_descriptors)
-    descriptors_by_path = {
-        descriptor.path: descriptor for descriptor in descriptor_values if descriptor.path
-    }
-    declarations: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    request_tag_paths: set[str] = set()
-    for match in _SESSION_IMAGE_TAG_RE.finditer(str(request_verbatim or "")):
-        attributes_text = (
-            match.group("attributes")
-            if match.group("attributes") is not None
-            else match.group("self_closing_attributes") or ""
-        )
-        attributes: dict[str, str] = {}
-        for attribute in _SESSION_IMAGE_ATTRIBUTE_RE.finditer(attributes_text):
-            key = attribute.group(1).casefold()
-            value = next(
-                (group for group in attribute.groups()[1:] if group is not None),
-                "",
-            ).strip()
-            attributes[key] = value
-        for attribute in _SESSION_IMAGE_BRACKET_ATTRIBUTE_RE.finditer(attributes_text):
-            attributes[attribute.group(1).casefold()] = attribute.group(2).strip()
-        path = str(attributes.get("path") or attributes.get("src") or "").strip()
-        name = str(
-            attributes.get("name") or attributes.get("alt") or f"Image {len(declarations) + 1}"
-        ).strip()
-        identity = (path, name)
-        if identity in seen:
-            continue
-        seen.add(identity)
-        if path:
-            request_tag_paths.add(path)
-        declarations.append(
-            {
-                "name": name,
-                "path": path or None,
-                "source": "user_request_attachment_markup",
-                "declaration_sha256": _sha256(match.group(0)),
-                "dependency_role": _session_attachment_dependency_role(
-                    _session_attachment_request_fragment(
-                        request_verbatim,
-                        attachment_offset=match.start(),
-                    )
-                ),
-            }
+    descriptor_groups: dict[str, list[TrustedRequestImageDescriptor]] = {}
+    for descriptor in descriptor_values:
+        if descriptor.path:
+            descriptor_groups.setdefault(descriptor.path, []).append(descriptor)
+
+    def descriptor_identity(
+        descriptor: TrustedRequestImageDescriptor,
+    ) -> tuple[Any, ...]:
+        return (
+            descriptor.sha256,
+            str(descriptor.mime_type or "").casefold(),
+            descriptor.resolved_path,
+            descriptor.size_bytes,
+            descriptor.binding_valid,
+            descriptor.binding_error,
         )
 
+    descriptors_by_path = {
+        path: values[0]
+        for path, values in descriptor_groups.items()
+        if len({descriptor_identity(value) for value in values}) == 1
+    }
+    trusted_paths = set(descriptor_groups)
+    declarations: list[dict[str, Any]] = []
+    request_tag_paths: set[str] = set()
+    for fragment_index, fragment in enumerate(fragment_values):
+        fragment_image_matches = list(_SESSION_IMAGE_TAG_RE.finditer(fragment.source_request))
+        for fragment_image_index, match in enumerate(fragment_image_matches):
+            attributes_text = (
+                match.group("attributes")
+                if match.group("attributes") is not None
+                else match.group("self_closing_attributes") or ""
+            )
+            attributes: dict[str, str] = {}
+            for attribute in _SESSION_IMAGE_ATTRIBUTE_RE.finditer(attributes_text):
+                key = attribute.group(1).casefold()
+                value = next(
+                    (group for group in attribute.groups()[1:] if group is not None),
+                    "",
+                ).strip()
+                attributes[key] = value
+            for attribute in _SESSION_IMAGE_BRACKET_ATTRIBUTE_RE.finditer(attributes_text):
+                attributes[attribute.group(1).casefold()] = attribute.group(2).strip()
+            path = str(attributes.get("path") or attributes.get("src") or "").strip()
+            name = str(
+                attributes.get("name")
+                or attributes.get("alt")
+                or f"Image {len(declarations) + 1}"
+            ).strip()
+            if path:
+                request_tag_paths.add(path)
+            previous_end = (
+                fragment_image_matches[fragment_image_index - 1].end()
+                if fragment_image_index > 0
+                else 0
+            )
+            next_start = (
+                fragment_image_matches[fragment_image_index + 1].start()
+                if fragment_image_index + 1 < len(fragment_image_matches)
+                else len(fragment.source_request)
+            )
+            preceding_context = fragment.source_request[previous_end : match.start()].strip()
+            following_context = fragment.source_request[match.end() : next_start].strip()
+            local_context = preceding_context or following_context
+            declarations.append(
+                {
+                    "name": name,
+                    "path": path or None,
+                    "source": "user_request_attachment_markup",
+                    "declaration_sha256": _sha256(match.group(0)),
+                    "dependency_role": _session_attachment_declaration_dependency_role(
+                        fragment.source_request,
+                        ordinal=fragment_image_index + 1,
+                        name=name,
+                        local_context=local_context,
+                    ),
+                    "_source_fragment_index": fragment_index,
+                }
+            )
+
     declared_paths = {str(item.get("path") or "") for item in declarations if item.get("path")}
+    declaration_path_counts: dict[str, int] = {}
+    for declaration in declarations:
+        declaration_path = str(declaration.get("path") or "")
+        if declaration_path:
+            declaration_path_counts[declaration_path] = (
+                declaration_path_counts.get(declaration_path, 0) + 1
+            )
     for descriptor in descriptor_values:
         if not descriptor.path or descriptor.path in declared_paths:
             continue
+        declaration_ordinal = len(declarations) + 1
         declarations.append(
             {
-                "name": f"[Image #{len(declarations) + 1}]",
+                "name": f"[Image #{declaration_ordinal}]",
                 "path": descriptor.path,
                 "source": "structured_provider_attachment",
                 "declaration_sha256": None,
-                "dependency_role": fallback_dependency_role,
+                "dependency_role": _session_attachment_declaration_dependency_role(
+                    request_verbatim,
+                    ordinal=declaration_ordinal,
+                    name=f"[Image #{declaration_ordinal}]",
+                ),
+                "_source_fragment_index": None,
             }
         )
         declared_paths.add(descriptor.path)
@@ -3460,9 +4229,10 @@ def _session_attachment_dependencies(
         attachment_id = f"A{len(dependencies) + 1}"
         dependency_role = str(declaration.get("dependency_role") or fallback_dependency_role)
         path = str(declaration.get("path") or "")
-        artifact = artifacts_by_path.get(path)
-        descriptor = descriptors_by_path.get(path)
-        trusted = path in descriptors_by_path
+        declaration_identity_ambiguous = declaration_path_counts.get(path, 0) > 1
+        artifact = None if declaration_identity_ambiguous else artifacts_by_path.get(path)
+        descriptor = None if declaration_identity_ambiguous else descriptors_by_path.get(path)
+        trusted = path in trusted_paths
         available = bool(artifact and artifact.available and artifact.sha256)
         visual_inspection = (
             validated_trusted_image_inspection(descriptor)
@@ -3472,6 +4242,8 @@ def _session_attachment_dependencies(
         resolution = (
             "hash_verified_exact_provider_attachment"
             if available
+            else "source_event_attachment_identity_ambiguous"
+            if declaration_identity_ambiguous and trusted
             else "trusted_provider_attachment_unavailable"
             if trusted
             else "trusted_attachment_descriptor_required"
@@ -3517,9 +4289,17 @@ def _session_attachment_dependencies(
                     else "historical_evidence_only"
                 ),
                 "unavailable_reason": (
-                    artifact.visual_summary if artifact is not None and not available else None
+                    (
+                        "The same provider attachment path is declared by multiple "
+                        "source fragments without an exact source-event binding."
+                    )
+                    if declaration_identity_ambiguous and trusted
+                    else artifact.visual_summary
+                    if artifact is not None and not available
+                    else None
                 ),
                 "declaration_sha256": declaration["declaration_sha256"],
+                "_source_fragment_index": declaration["_source_fragment_index"],
                 "requirement_ids": [],
                 "visual_inspection": visual_inspection,
                 "visual_anchors": [
@@ -3616,7 +4396,10 @@ def _link_session_attachments_to_requirements(
 
     Inspecting an attachment is an evidence prerequisite, not a separate user
     outcome.  Keeping that distinction prevents a one-requirement visual task
-    from turning into a generic multi-requirement goal.
+    from turning into a generic multi-requirement goal. Declaration-backed
+    attachments are scoped by the integrity-checked source-fragment index
+    captured while parsing their exact user turn. Composite Markdown headings
+    are presentation only and are never reparsed as provenance boundaries.
     """
 
     outcomes = [
@@ -3626,25 +4409,38 @@ def _link_session_attachments_to_requirements(
         and not requirement.get("explicit_acceptance")
         and requirement.get("completion_relevant") is not False
     ]
-    visual_outcomes = [
-        requirement
-        for requirement in outcomes
-        if re.search(
-            r"\b(?:attachment|image|screenshot|mockup|wireframe|visual|photo|picture|reference)\b",
-            str(requirement.get("text") or ""),
-            flags=re.IGNORECASE,
-        )
-    ]
-    linked_ids = (
-        [str(outcomes[0]["id"])]
-        if len(outcomes) == 1
-        else [str(visual_outcomes[0]["id"])]
-        if len(visual_outcomes) == 1
-        else []
-    )
+
     for attachment in attachments:
+        if attachment.get("required") is not True:
+            attachment["requirement_ids"] = []
+            continue
+        source_fragment_index = attachment.get("_source_fragment_index")
+        candidate_outcomes = (
+            [
+                outcome
+                for outcome in outcomes
+                if source_fragment_index
+                in tuple(outcome.get("_source_fragment_indexes") or ())
+            ]
+            if isinstance(source_fragment_index, int)
+            and not isinstance(source_fragment_index, bool)
+            else outcomes
+        )
+        visual_outcomes = [
+            requirement
+            for requirement in candidate_outcomes
+            if re.search(
+                r"\b(?:attachment|image|screenshot|mockup|wireframe|visual|photo|picture|reference)\b",
+                str(requirement.get("text") or ""),
+                flags=re.IGNORECASE,
+            )
+        ]
         attachment["requirement_ids"] = (
-            list(linked_ids) if attachment.get("required") is True else []
+            [str(candidate_outcomes[0]["id"])]
+            if len(candidate_outcomes) == 1
+            else [str(visual_outcomes[0]["id"])]
+            if len(visual_outcomes) == 1
+            else []
         )
 
 
@@ -3935,14 +4731,32 @@ def _derive_session_requirements(
     supporting_context: Iterable[dict[str, str]] = (),
     allow_fallback: bool = True,
 ) -> list[dict[str, Any]]:
-    candidates = _requirement_candidates(
-        _self_contained_goal(request_verbatim),
-        source="user_request",
-        authority="user_authored",
+    effective_request = (
+        _pasted_session_handoff_current_directive(request_verbatim)
+        or request_verbatim
+    )
+    self_contained_request = _self_contained_goal(effective_request)
+    destination_matches = list(_DESTINATION_MISMATCH_RE.finditer(self_contained_request))
+    candidates = (
+        [
+            {
+                "text": self_contained_request,
+                "source": "user_request",
+                "authority": "user_authored",
+                "source_heading": None,
+                "explicit_acceptance": False,
+            }
+        ]
+        if len(destination_matches) > 1
+        else _requirement_candidates(
+            self_contained_request,
+            source="user_request",
+            authority="user_authored",
+        )
     )
     if _request_accepts_materialized_reference(
-        request_verbatim
-    ) and _request_requires_materialized_context(request_verbatim):
+        effective_request
+    ) and _request_requires_materialized_context(effective_request):
         for item in supporting_context:
             if str(item.get("role") or "") != "assistant":
                 continue
@@ -3959,7 +4773,16 @@ def _derive_session_requirements(
     for candidate in candidates:
         text = re.sub(r"\s+", " ", str(candidate["text"])).strip()
         key = re.sub(r"\W+", " ", text.casefold()).strip()
-        if not key or key in seen:
+        if (
+            not key
+            or key in seen
+            or re.fullmatch(
+                r"(?:many\s+)?thanks|thank\s+you(?:\s+very\s+much)?|cheers|"
+                r"appreciate\s+it",
+                key,
+                re.IGNORECASE,
+            )
+        ):
             continue
         seen.add(key)
         explicit_acceptance = bool(candidate.get("explicit_acceptance"))
@@ -3983,7 +4806,7 @@ def _derive_session_requirements(
     fallback_text = re.sub(
         r"\s+",
         " ",
-        _self_contained_goal(request_verbatim),
+        _self_contained_goal(effective_request),
     ).strip()
     execution_guidance = is_non_verifiable_execution_guidance(fallback_text)
     return [
@@ -4005,20 +4828,27 @@ def _derive_session_requirements_from_fragments(
     *,
     request_fragments: Iterable[str] = (),
     supporting_context: Iterable[dict[str, str]] = (),
+    include_source_fragment_provenance: bool = False,
 ) -> list[dict[str, Any]]:
     """Keep requirements from separate user turns separate in the handoff."""
 
     fragments = [str(fragment) for fragment in request_fragments if str(fragment).strip()]
     if len(fragments) <= 1:
-        return _derive_session_requirements(
+        derived = _derive_session_requirements(
             request_verbatim,
             supporting_context=supporting_context,
         )
+        if include_source_fragment_provenance and fragments:
+            return [
+                {**requirement, "_source_fragment_indexes": (0,)}
+                for requirement in derived
+            ]
+        return derived
 
     normalized_supporting = list(supporting_context)
     requirements: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for fragment in fragments:
+    requirement_by_key: dict[str, dict[str, Any]] = {}
+    for fragment_index, fragment in enumerate(fragments):
         for requirement in _derive_session_requirements(
             fragment,
             supporting_context=normalized_supporting,
@@ -4026,16 +4856,25 @@ def _derive_session_requirements_from_fragments(
         ):
             text = re.sub(r"\s+", " ", str(requirement.get("text") or "")).strip()
             key = re.sub(r"\W+", " ", text.casefold()).strip()
-            if not key or key in seen:
+            if not key:
                 continue
-            seen.add(key)
-            requirements.append(
-                {
-                    **requirement,
-                    "id": f"R{len(requirements) + 1}",
-                    "text": text,
-                }
-            )
+            existing = requirement_by_key.get(key)
+            if existing is not None:
+                if include_source_fragment_provenance:
+                    existing["_source_fragment_indexes"] = (
+                        *tuple(existing.get("_source_fragment_indexes") or ()),
+                        fragment_index,
+                    )
+                continue
+            projected = {
+                **requirement,
+                "id": f"R{len(requirements) + 1}",
+                "text": text,
+            }
+            if include_source_fragment_provenance:
+                projected["_source_fragment_indexes"] = (fragment_index,)
+            requirement_by_key[key] = projected
+            requirements.append(projected)
     return requirements or _derive_session_requirements(
         request_verbatim,
         supporting_context=normalized_supporting,
@@ -4046,7 +4885,7 @@ def _stored_session_request_fragments(
     sections: dict[str, list[dict[str, Any]]],
     *,
     request_verbatim: str,
-) -> list[str]:
+) -> list[_SessionRequestFragment]:
     """Return source-bound fragments only when they match the active request."""
 
     goals = sections.get("goal") or []
@@ -4061,7 +4900,7 @@ def _stored_session_request_fragments(
     raw_fragments = payload.get("request_fragments")
     if not isinstance(raw_fragments, list):
         return []
-    fragments: list[str] = []
+    fragments: list[_SessionRequestFragment] = []
     for raw_fragment in raw_fragments:
         if not isinstance(raw_fragment, dict):
             return []
@@ -4074,9 +4913,22 @@ def _stored_session_request_fragments(
         if resolved:
             if resolved_sha256 and resolved_sha256 != _sha256(resolved):
                 return []
-            fragments.append(resolved)
-        else:
-            fragments.append(fragment)
+        sequence_number = raw_fragment.get("sequence_number")
+        fragments.append(
+            _SessionRequestFragment(
+                source_request=fragment,
+                requirement_request=resolved or fragment,
+                provider_event_id=(
+                    str(raw_fragment.get("provider_event_id") or "").strip() or None
+                ),
+                sequence_number=(
+                    sequence_number
+                    if isinstance(sequence_number, int)
+                    and not isinstance(sequence_number, bool)
+                    else None
+                ),
+            )
+        )
     return fragments
 
 
@@ -4325,7 +5177,238 @@ def _infer_session_task_mode(request_verbatim: str) -> str:
     """Classify handoff authority with the shared execution classifier."""
 
     directive = _session_task_directive_text(request_verbatim)
+    if re.search(
+        r"\b(?:ensure|make\s+sure)\s+(?:the\s+)?"
+        r"(?:analysis|audit|diagnosis|report|review|summary)\b.{0,80}"
+        r"\b(?:describes?|documents?|explains?|identifies?|records?|summari[sz]es?)\b",
+        directive,
+        re.IGNORECASE,
+    ):
+        return "report"
     return infer_task_mode(directive).value
+
+
+def _normalized_destination_label(value: str) -> str:
+    normalized = re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+    if normalized in {"chatbox", "chat box", "chat composer", "composer"}:
+        return "chat composer"
+    if normalized in {
+        "command line",
+        "shell",
+        "shell prompt",
+        "terminal",
+        "terminal shell",
+    }:
+        return "terminal"
+    return normalized
+
+
+def _reported_destination_mismatch(value: Any) -> dict[str, str] | None:
+    """Extract a user-reported delivery mismatch without granting edit authority."""
+
+    source = _session_task_directive_text(_self_contained_goal(str(value or "")))
+    matches = list(_DESTINATION_MISMATCH_RE.finditer(source))
+    if not matches:
+        return None
+    def temporal_score(candidate: re.Match[str]) -> int:
+        clause_start = max(
+            (source.rfind(delimiter, 0, candidate.start()) for delimiter in ".;!?\n"),
+            default=-1,
+        )
+        clause_ends = [
+            position
+            for delimiter in ".;!?\n"
+            if (position := source.find(delimiter, candidate.end())) >= 0
+        ]
+        clause = source[clause_start + 1 : min(clause_ends, default=len(source))]
+        current = bool(
+            re.search(
+                r"\b(?:at\s+present|currently|latest|now|presently|today)\b",
+                clause,
+                re.IGNORECASE,
+            )
+        )
+        historical = bool(
+            re.search(
+                r"\b(?:before|formerly|historically|old|previously|prior|used\s+to)\b",
+                clause,
+                re.IGNORECASE,
+            )
+        )
+        return int(current) - int(historical)
+
+    # Explicit current/historical markers outrank textual order; otherwise the
+    # last destination clause is the best available statement of current intent.
+    match = max(
+        enumerate(matches),
+        key=lambda item: (temporal_score(item[1]), item[0]),
+    )[1]
+    actual = _normalized_destination_label(match.group("actual"))
+    expected = _normalized_destination_label(match.group("expected"))
+    # Bare verbs describe the requested destination ("paste into the chatbox
+    # instead of the terminal"); third-person verbs describe observed behavior
+    # ("it pastes ... into the terminal instead of the chatbox"). Normalize
+    # both forms into actual -> expected before compiling outcomes.
+    prefix = source[: match.start()]
+    directive_framing_matches = list(
+        re.finditer(
+            r"(?:^|[.!?;]\s*)(?:please\s+)?(?:"
+            r"(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?"
+            r"(?:ensure|make\s+sure|have)|"
+            r"(?:i|we|you)\s+(?:want|need)(?:\s+[a-z0-9_-]+){0,3}\s+to\s+"
+            r"(?:ensure|make\s+sure)|"
+            r"(?:i|we|you)\s+(?:should|must)\s+(?:ensure|make\s+sure)|"
+            r"(?:(?:i|we)\s+would|(?:i|we)['’]d)\s+"
+            r"(?:really\s+|very\s+much\s+)?"
+            r"like(?:\s+[a-z0-9_-]+){0,3}\s+to\s+(?:ensure|make\s+sure)"
+            r")\b",
+            prefix,
+            re.IGNORECASE,
+        )
+    )
+    purpose_framing_matches = list(
+        re.finditer(
+            r"\b(?:change|configure|fix|make|route|update)\b[^.!?;]{0,120}"
+            r"\bso(?:\s+that)?\b",
+            prefix,
+            re.IGNORECASE,
+        )
+    )
+    desiderative_framing_matches = list(
+        re.finditer(
+            r"\b(?:should|must|ought\s+to|need(?:s)?\s+to|is\s+supposed\s+to|"
+            r"(?:is|are)\s+(?:expected|required|supposed)\s+to|"
+            r"(?:(?:i|we)\s+would|(?:i|we)['’]d)\s+"
+            r"(?:really\s+|very\s+much\s+)?like"
+            r"(?:\s+[a-z0-9_-]+){0,4}\s+to|"
+            r"(?:i|we)['’]?d\s+(?:really\s+)?rather"
+            r"(?:\s+[a-z0-9_-]+){0,4}|"
+            r"(?:expect|need|prefer|want)(?:s)?"
+            r"(?:\s+[a-z0-9_-]+){0,4}\s+to|"
+            r"would\s+(?:really\s+|strongly\s+)?prefer"
+            r"(?:\s+[a-z0-9_-]+){0,4}\s+to|"
+            r"(?:my|our|the)\s+requirement\s+is\s+(?:for\s+)?"
+            r"(?:[a-z0-9_-]+\s+){0,4}to|"
+            r"(?:the\s+)?expected\s+behavio(?:u)?r\s+is\s+(?:for\s+)?"
+            r"(?:[a-z0-9_-]+\s+){0,4}to|"
+            r"it\s+is\s+expected\s+that\s+(?:[a-z0-9_-]+\s+){0,4}|"
+            r"ideally\b[^.!?;]{0,80}(?:\b(?:should|would)\b|(?=\s*$))|"
+            r"(?:i|we)\s+(?:expect|hope|prefer)\s+(?:that\s+)?"
+            r"(?:[a-z0-9_-]+\s+){0,4})\b",
+            prefix,
+            re.IGNORECASE,
+        )
+    )
+    observation_framing_matches = list(
+        re.finditer(
+            r"\b(?:why|how|because|noticed|observed|saw)\b|"
+            r"(?:^|[.!?;]\s*)(?:does|did|do|may|might|can(?!\s+you\b))\b",
+            prefix,
+            re.IGNORECASE,
+        )
+    )
+    local_negation = re.search(
+        r"\b(?:(?:can|could|did|do|does|must|should|will|would)\s+not|"
+        r"cannot|can['’]?t|didn['’]?t|doesn['’]?t|don['’]?t|never|not\s+to)\b"
+        r"[^.!?;]{0,100}$",
+        prefix,
+        re.IGNORECASE,
+    )
+    prescriptive_positions = [
+        match.start()
+        for match in (
+            *directive_framing_matches,
+            *purpose_framing_matches,
+            *desiderative_framing_matches,
+        )
+    ]
+    last_prescriptive_position = max(prescriptive_positions, default=-1)
+    last_observation_position = max(
+        (match.start() for match in observation_framing_matches),
+        default=-1,
+    )
+    bare_verb = not match.group("verb").casefold().endswith("s")
+    user_directed_clause = (
+        last_prescriptive_position > last_observation_position
+        or (
+            bare_verb
+            and last_observation_position < 0
+            and _infer_session_task_mode(source) == "change"
+        )
+    )
+    direction_is_desired = user_directed_clause and local_negation is None
+    if direction_is_desired:
+        actual, expected = expected, actual
+    if not actual or not expected or actual == expected:
+        return None
+    flow_match = _NAMED_CONTINUATION_FLOW_RE.search(source)
+    if flow_match is None:
+        flow_label = "reported delivery flow"
+    else:
+        provider = re.sub(r"\s+", " ", flow_match.group("provider")).casefold()
+        provider_label = {
+            "claude code": "Claude Code",
+            "codex": "Codex",
+            "opencode": "OpenCode",
+        }.get(provider, provider.title())
+        flow = flow_match.group("flow").casefold()
+        flow_label = (
+            f"{provider_label} Continue"
+            if flow == "continue"
+            else f"{provider_label} {flow}"
+        )
+    object_text = re.sub(r"\s+", " ", match.group("object")).strip(" ,;:-")
+    object_label = (
+        "generated prompt"
+        if re.search(r"\bprompts?\b", object_text, re.IGNORECASE)
+        else "continuation context"
+        if re.search(r"\b(?:context|handoff)\b", object_text, re.IGNORECASE)
+        else "content"
+    )
+    return {
+        "kind": (
+            "destination_requirement"
+            if user_directed_clause
+            else "destination_mismatch"
+        ),
+        "flow": flow_label,
+        "object": object_label,
+        "actual_destination": actual,
+        "expected_destination": expected,
+        "authority": "user_directed" if user_directed_clause else "user_reported",
+    }
+
+
+def _trailing_incomplete_request_fragment(value: Any) -> str | None:
+    """Identify a short, visibly unfinished final paragraph without rewriting source."""
+
+    paragraphs = [
+        re.sub(r"\s+", " ", part).strip()
+        for part in re.split(r"(?:\r?\n){2,}", str(value or "").strip())
+        if part.strip()
+    ]
+    if len(paragraphs) < 2:
+        return None
+    candidate = paragraphs[-1]
+    words = re.findall(r"[A-Za-z0-9']+", candidate)
+    if (
+        not words
+        or len(words) > 6
+        or re.search(r"[.!?:;]\s*$", candidate)
+        or _REQUIREMENT_ACTION_RE.search(candidate)
+        or candidate.rstrip().endswith("?")
+    ):
+        return None
+    terminal_fragment = words[-1].casefold() in {
+        "bec",
+        "beca",
+        "shou",
+        "th",
+        "thi",
+        "wha",
+        "wou",
+    }
+    return candidate if terminal_fragment else None
 
 
 def _normalized_session_requirement(value: Any, *, task_mode: str) -> str:
@@ -4339,8 +5422,26 @@ def _normalized_session_requirement(value: Any, *, task_mode: str) -> str:
     source = re.sub(r"\s+", " ", str(value or "")).strip()
     if not source:
         return source
+    destination_mismatch = _reported_destination_mismatch(source)
+    if destination_mismatch is not None and task_mode == "report":
+        return (
+            "Produce an evidence-backed report on the "
+            f"{destination_mismatch['flow']} destination mismatch: the "
+            f"{destination_mismatch['object']} reaches the "
+            f"{destination_mismatch['actual_destination']} instead of the "
+            f"{destination_mismatch['expected_destination']}. Confirm whether it "
+            "reproduces, identify the responsible targeting and delivery path, and "
+            "record any remaining blocker."
+        )
     if task_mode != "change":
         return source
+    if destination_mismatch is not None:
+        return (
+            f"Fix the {destination_mismatch['flow']} so the "
+            f"{destination_mismatch['object']} reaches the "
+            f"{destination_mismatch['expected_destination']} and never the "
+            f"{destination_mismatch['actual_destination']}."
+        )
     transparent = _NEGATED_TRANSPARENCY_REQUIREMENT_RE.search(source)
     if transparent is None:
         transparent = _PROHIBITED_TRANSPARENCY_STATE_RE.search(source)
@@ -4539,11 +5640,38 @@ def _session_handoff_intent(
         requirements=requirements,
         infer_outcomes=task_mode == "change",
     )
+    reported_behavior = _reported_destination_mismatch(request_verbatim)
+    task_type_basis = _session_handoff_task_type_basis(
+        request_verbatim,
+        task_mode=task_mode,
+    )
+    evidence_gaps: list[dict[str, Any]] = []
+    if _SUPPLEMENTAL_VISUAL_REFERENCE_RE.search(request_verbatim) and not attachment_dependencies:
+        evidence_gaps.append(
+            {
+                "id": "E1",
+                "kind": "referenced_visual_unavailable",
+                "blocking": False,
+                "message": (
+                    "The user referenced screenshot evidence, but no hash-bound image "
+                    "was captured in this handoff. Runtime reproduction may proceed; "
+                    "reattach the exact image only if visual reinspection is needed."
+                ),
+            }
+        )
+    incomplete_fragment = _trailing_incomplete_request_fragment(request_verbatim)
     return {
         "task_type": task_mode,
+        "task_type_basis": task_type_basis,
         "normalized_requirement": normalized_goal,
         "normalized_requirements": normalized_requirements,
         "source_request_sha256": _sha256(request_verbatim),
+        "reported_behavior": reported_behavior,
+        "evidence_gaps": evidence_gaps,
+        "source_quality": {
+            "trailing_incomplete_fragment": incomplete_fragment,
+            "operational_goal_excludes_trailing_fragment": bool(incomplete_fragment),
+        },
         "targets": targets["items"],
         "target_resolution": {
             "required": targets["required"],
@@ -4572,6 +5700,17 @@ def _session_handoff_intent(
     }
 
 
+def _session_handoff_task_type_basis(request_verbatim: str, *, task_mode: str) -> str:
+    task_directive = _session_task_directive_text(request_verbatim)
+    if task_mode == "report" and re.search(
+        r"\b(?:audit|check|diagnose|explain|inspect|report|review|summari[sz]e|verify)\b",
+        task_directive,
+        re.IGNORECASE,
+    ) is None:
+        return "safety_default_unconfirmed"
+    return "explicit_user_directive"
+
+
 def _session_handoff_targets(
     request_verbatim: str,
     *,
@@ -4579,6 +5718,9 @@ def _session_handoff_targets(
 ) -> dict[str, Any]:
     source = _session_task_directive_text(_self_contained_goal(request_verbatim))
     phrases: list[str] = []
+    destination_mismatch = _reported_destination_mismatch(source)
+    if destination_mismatch is not None:
+        phrases.append(destination_mismatch["expected_destination"])
     explicit_paths = _extract_paths(source)
     explicit_path_spans = [
         (match.start(), match.end())
@@ -4638,6 +5780,19 @@ def _session_handoff_targets(
             if path != "" and all(existing[0] != path for existing in file_records):
                 file_records.append((path, category))
 
+    request_tokens = _target_match_tokens(source) - _GENERIC_UI_TARGET_TOKENS
+    if destination_mismatch is not None:
+        request_tokens.update(
+            {
+                "composer",
+                "delivery",
+                "focus",
+                "harness",
+                "launcher",
+                "paste",
+                "runtime",
+            }
+        )
     items: list[dict[str, Any]] = []
     for phrase in deduped:
         phrase_key = phrase.casefold()
@@ -4645,12 +5800,20 @@ def _session_handoff_targets(
         phrase_tokens = _target_match_tokens(phrase_key)
         candidates: list[dict[str, Any]] = []
         for path, category in file_records:
+            path_tokens = _target_match_tokens(path)
             entity_tokens = _target_match_tokens(Path(path).stem)
-            path_match = bool(phrase_tokens and phrase_tokens <= _target_match_tokens(path))
+            path_match = bool(phrase_tokens and phrase_tokens <= path_tokens)
             entity_match = bool(phrase_tokens and phrase_tokens <= entity_tokens)
             exact_entity_match = bool(phrase_tokens and phrase_tokens == entity_tokens)
             generic_ui_target = bool(phrase_tokens and phrase_tokens <= _GENERIC_UI_TARGET_TOKENS)
             ui_implementation_evidence = _path_has_ui_implementation_evidence(path)
+            runtime_implementation_evidence = _path_has_runtime_implementation_evidence(path)
+            request_overlap = request_tokens & path_tokens
+            destination_role_score = (
+                _destination_delivery_role_score(path)
+                if destination_mismatch is not None and runtime_implementation_evidence
+                else 0
+            )
             exact_entity_supported = bool(
                 exact_entity_match and (not generic_ui_target or ui_implementation_evidence)
             )
@@ -4658,30 +5821,71 @@ def _session_handoff_targets(
                 category == "pre_existing_at_handoff"
                 and not path_match
                 and not (explicit_path and path == phrase)
+                and not (request_overlap and runtime_implementation_evidence)
+            ):
+                continue
+            if (
+                destination_mismatch is not None
+                and not runtime_implementation_evidence
+                and not (explicit_path and path == phrase)
             ):
                 continue
             confidence = (
                 0.99
                 if explicit_path and path == phrase
+                else 0.93
+                if destination_role_score >= 4
+                else 0.88
+                if destination_role_score == 3
+                else 0.8
+                if destination_role_score == 2
                 else 0.9
                 if exact_entity_supported
+                else 0.78
+                if len(request_overlap) >= 2 and runtime_implementation_evidence
+                else 0.62
+                if request_overlap and runtime_implementation_evidence
                 else 0.7
                 if entity_match
                 else 0.55
                 if path_match
                 else 0.5
-                if category == "modified"
-                else 0.4
+                if category == "modified" and runtime_implementation_evidence
+                else 0.46
+                if category == "relevant" and runtime_implementation_evidence
+                else 0.2
             )
             candidates.append(
                 {
                     "path": path,
                     "confidence": confidence,
+                    "_production_evidence": bool(
+                        (
+                            ui_implementation_evidence
+                            if generic_ui_target
+                            else runtime_implementation_evidence
+                            or ui_implementation_evidence
+                        )
+                        or (explicit_path and path == phrase)
+                    ),
                     "evidence": (
                         "Explicitly named by the current user."
                         if explicit_path and path == phrase
+                        else (
+                            "The filename identifies a destination-delivery owner "
+                            "for composer insertion, focus targeting, provider launch, "
+                            "or continuation runtime validation. Inspect its call path "
+                            "before relying on it."
+                        )
+                        if destination_role_score >= 2
                         else "Target phrase exactly matches the current file entity name."
                         if exact_entity_supported
+                        else (
+                            "Current request terms overlap this production-source filename: "
+                            + ", ".join(sorted(request_overlap))
+                            + ". Inspect the implementation before relying on it."
+                        )
+                        if request_overlap and runtime_implementation_evidence
                         else "A file entity contains only the generic target phrase; inspect before relying on it."
                         if entity_match
                         else "Target phrase matches only the file's directory path; inspect before relying on it."
@@ -4690,6 +5894,12 @@ def _session_handoff_targets(
                     ),
                 }
             )
+        if any(candidate["_production_evidence"] for candidate in candidates):
+            candidates = [
+                candidate for candidate in candidates if candidate["_production_evidence"]
+            ]
+        for candidate in candidates:
+            candidate.pop("_production_evidence", None)
         candidates.sort(
             key=lambda item: (-float(item["confidence"]), str(item["path"])),
         )
@@ -4698,7 +5908,7 @@ def _session_handoff_targets(
             candidates[0]
             if explicit_path and candidates and candidates[0]["path"] == phrase
             else strong[0]
-            if len(strong) == 1
+            if len(strong) == 1 and destination_mismatch is None
             else None
         )
         status = "resolved" if resolved else "candidate" if candidates else "unresolved"
@@ -4737,19 +5947,91 @@ def _session_handoff_targets(
 
 def _target_match_tokens(value: str) -> set[str]:
     camel_split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(value or ""))
-    return {
-        token.removesuffix("s")
-        for token in re.findall(r"[A-Za-z0-9]+", camel_split.casefold())
-        if token not in {"a", "an", "the", "this", "that", "these", "those"}
+    result: set[str] = set()
+    aliases = {
+        "buttons": "button",
+        "cards": "card",
+        "chatbox": "composer",
+        "components": "component",
+        "continue": "continuation",
+        "continuations": "continuation",
+        "files": "file",
+        "focused": "focus",
+        "pastes": "paste",
+        "prompts": "prompt",
+        "services": "service",
+        "sources": "source",
+        "tests": "test",
     }
+    stopwords = {
+        "a",
+        "an",
+        "are",
+        "as",
+        "at",
+        "be",
+        "been",
+        "being",
+        "by",
+        "for",
+        "from",
+        "in",
+        "instead",
+        "into",
+        "is",
+        "it",
+        "of",
+        "on",
+        "screenshot",
+        "shown",
+        "somewhat",
+        "successful",
+        "that",
+        "the",
+        "these",
+        "this",
+        "those",
+        "to",
+        "was",
+        "were",
+        "with",
+    }
+    for raw_token in re.findall(r"[A-Za-z0-9]+", camel_split.casefold()):
+        if raw_token == "chat" or raw_token in stopwords:
+            continue
+        token = aliases.get(raw_token, raw_token)
+        if token:
+            result.add(token)
+    return result
+
+
+def _destination_delivery_role_score(value: str) -> int:
+    """Rank filename evidence for a reported composer-delivery mismatch."""
+
+    tokens = _target_match_tokens(value)
+    if {"composer", "paste"} <= tokens or {"focus", "paste"} <= tokens:
+        return 4
+    if {"harness", "launcher"} <= tokens:
+        return 3
+    if {"continuation", "runtime"} <= tokens:
+        return 2
+    return 0
 
 
 def _path_has_ui_implementation_evidence(value: str) -> bool:
     path = Path(str(value or ""))
     parts = {part.casefold() for part in path.parts[:-1]}
+    normalized_filename = re.sub(
+        r"(?<=[a-z0-9])(?=[A-Z])",
+        "_",
+        path.name,
+    ).casefold()
+    if normalized_filename.endswith((".d.cts", ".d.mts", ".d.ts")):
+        return False
     non_runtime_filename = re.search(
-        r"(?:^|[._-])(?:snapshot|spec|stories|story|test)(?:[._-]|$)",
-        path.name.casefold(),
+        r"(?:^|[._-])(?:cy|e2e|integration|snapshots?|specs?|stories|story|tests?)"
+        r"(?:[._-]|$)",
+        normalized_filename,
     )
     if parts & _NON_UI_IMPLEMENTATION_PATH_PARTS or non_runtime_filename:
         return False
@@ -4758,6 +6040,102 @@ def _path_has_ui_implementation_evidence(value: str) -> bool:
     return bool(parts & _UI_IMPLEMENTATION_PATH_PARTS) and path.suffix.casefold() in {
         ".js",
         ".ts",
+    }
+
+
+def _path_has_runtime_implementation_evidence(value: str) -> bool:
+    path = Path(str(value or ""))
+    lowered_parts = {part.casefold() for part in path.parts[:-1]}
+    if lowered_parts & {
+        ".build",
+        "__tests__",
+        "__snapshots__",
+        "androidtest",
+        "benchmark",
+        "benchmarks",
+        "build",
+        "cypress",
+        "data",
+        "deriveddata",
+        "dist",
+        "documentation",
+        "docs",
+        "e2e",
+        "examples",
+        "fixtures",
+        "generated",
+        "commontest",
+        "integration-tests",
+        "integration_tests",
+        "integrationtests",
+        "jvmtest",
+        "mocks",
+        "node_modules",
+        "out",
+        "playwright",
+        "qa",
+        "sample",
+        "samples",
+        "scripts",
+        "selenium",
+        "spec",
+        "specs",
+        "storybook",
+        "stories",
+        "system-tests",
+        "system_tests",
+        "systemtests",
+        "test",
+        "test-helpers",
+        "test_helpers",
+        "testhelpers",
+        "testfixtures",
+        "testdebug",
+        "testrelease",
+        "testdata",
+        "tests",
+        "ui-tests",
+        "ui_tests",
+        "uitests",
+        "unit-tests",
+        "unit_tests",
+        "unittests",
+        "vendor",
+    }:
+        return False
+    if path.name.casefold().startswith(("readme", "changelog", "license")):
+        return False
+    normalized_filename = re.sub(
+        r"(?<=[a-z0-9])(?=[A-Z])",
+        "_",
+        path.name,
+    ).casefold()
+    if normalized_filename.endswith((".d.cts", ".d.mts", ".d.ts")):
+        return False
+    if re.search(
+        r"(?:^|[._-])(?:cy|e2e|integration|snapshots?|specs?|stories|story|tests?)"
+        r"(?:[._-]|$)",
+        normalized_filename,
+    ):
+        return False
+    return path.suffix.casefold() in {
+        ".c",
+        ".cc",
+        ".cpp",
+        ".cs",
+        ".go",
+        ".java",
+        ".js",
+        ".jsx",
+        ".kt",
+        ".m",
+        ".mm",
+        ".py",
+        ".rb",
+        ".rs",
+        ".swift",
+        ".ts",
+        ".tsx",
     }
 
 
@@ -4827,6 +6205,53 @@ def _session_handoff_acceptance_criteria(
                 "source": "explicit_acceptance",
             }
         )
+    destination_mismatch = _reported_destination_mismatch(request_verbatim)
+    if destination_mismatch is not None:
+        linked_ids = [
+            str(item.get("id") or "")
+            for item in outcome_requirements
+            if str(item.get("id") or "")
+        ]
+        behavior_criteria = (
+            (
+                "Current-runtime evidence records whether the "
+                f"{destination_mismatch['flow']} sends the "
+                f"{destination_mismatch['object']} to the "
+                f"{destination_mismatch['actual_destination']} or the "
+                f"{destination_mismatch['expected_destination']}."
+            ),
+            (
+                "The active application and window, focused input element, and "
+                "actual delivery destination are identified from observed evidence."
+            ),
+            (
+                "The owning launch, focus, target-selection, and delivery call path "
+                "is identified, or the remaining blocker and evidence needed to "
+                "resolve it are explicitly recorded."
+            ),
+            (
+                f"If the {destination_mismatch['expected_destination']} cannot be "
+                "positively identified, automatic delivery does not reach the "
+                f"{destination_mismatch['actual_destination']}."
+            ),
+        )
+        existing = {
+            re.sub(r"\W+", " ", str(item.get("text") or "").casefold()).strip()
+            for item in criteria
+        }
+        for criterion_text in behavior_criteria:
+            key = re.sub(r"\W+", " ", criterion_text.casefold()).strip()
+            if key in existing:
+                continue
+            existing.add(key)
+            criteria.append(
+                {
+                    "text": criterion_text,
+                    "requirement_ids": linked_ids,
+                    "authority": "inferred_acceptance",
+                    "source": "behavior_compiler",
+                }
+            )
     if not infer_outcomes:
         return criteria
     for item in requirements:
@@ -4979,7 +6404,7 @@ def _acceptance_criterion_is_testable(item: dict[str, Any]) -> bool:
     ).strip(" .,!?:;")
     if not text or _GENERIC_UNTESTABLE_ACCEPTANCE_RE.fullmatch(text):
         return False
-    if item.get("source") == "intent_compiler":
+    if item.get("source") in {"behavior_compiler", "intent_compiler"}:
         return True
     if _is_inline_observable_acceptance_clause(text) or _INLINE_TEST_PASS_OUTCOME_RE.search(text):
         return True
@@ -5145,6 +6570,7 @@ def _session_handoff_readiness(
     else:
         status = "insufficient_recovery"
     target_items = intent.get("targets") or []
+    reported_behavior = intent.get("reported_behavior") or {}
     candidate_paths = [
         str(candidate.get("path") or "")
         for item in target_items
@@ -5168,6 +6594,13 @@ def _session_handoff_readiness(
                 "Validate whether each reported blocker still exists in the "
                 "current runtime, record the evidence, and resolve or explicitly "
                 "carry the blocker before continuing."
+            )
+        elif reported_behavior and task_type != "change":
+            next_action = (
+                "Verify whether the reported destination mismatch still reproduces "
+                "in the current runtime. Record the active application and window, "
+                "focused input element, actual delivery destination, and the owning "
+                "launch/focus/targeting/delivery call path; do not edit files."
             )
         elif task_type == "change" and not repository_baseline_ready:
             next_action = (
@@ -5275,7 +6708,8 @@ def _session_handoff_readiness(
 def _session_task_directive_text(request_verbatim: str) -> str:
     """Return only user directive text that may grant task authority."""
 
-    value = str(request_verbatim or "")
+    raw_value = str(request_verbatim or "")
+    value = _pasted_session_handoff_current_directive(raw_value) or raw_value
     lines: list[str] = []
     fence_marker: str | None = None
     ignore_section = False
@@ -5322,6 +6756,96 @@ def _session_task_directive_text(request_verbatim: str) -> str:
     return "\n".join(lines)
 
 
+def _pasted_session_handoff_current_directive(value: str) -> str | None:
+    """Scope a pasted compact handoff to its trailing lead or Goal.
+
+    A handoff can be pasted back for review. Nested Goal/State/Done text is
+    evidence in that case, not a second current instruction. If the user adds
+    a plain trailing paragraph, it wins; otherwise the handoff's generated
+    operational Goal is the directive being continued.
+    """
+
+    lines = str(value or "").splitlines()
+    try:
+        root_index = next(
+            index
+            for index, line in enumerate(lines)
+            if line.strip() == "# Continuation Brief v2"
+        )
+        goal_index = next(
+            index
+            for index in range(root_index + 1, len(lines))
+            if lines[index].strip() == "## Goal"
+        )
+        state_index = next(
+            index
+            for index in range(goal_index + 1, len(lines))
+            if lines[index].strip() == "## State now"
+        )
+        done_index = next(
+            index
+            for index in range(state_index + 1, len(lines))
+            if lines[index].strip() == "## Done when"
+        )
+    except StopIteration:
+        return None
+
+    tail_lines = lines[done_index + 1 :]
+    current_lead_index: int | None = None
+    saw_generated_structure = False
+    list_marker_re = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)(?P<text>.+)$")
+    generated_done_item_re = re.compile(
+        r"^(?:(?:[ARCV]\d+|PV\d+)\s*(?:\[[^\]]+\]\s*)?:|"
+        r"\[prior\s+(?:failed|passed)\s+check\b)",
+        re.IGNORECASE,
+    )
+    generated_item_critique_re = re.compile(
+        r"\b(?:assess\s+(?:this|the)\s+handoff|does\s+not\s+prove|"
+        r"fails?\s+to\s+prove|explain\s+why|is\s+(?:incorrect|missing|wrong)|"
+        r"identify\s+the\s+weakness(?:es)?|rate\s+(?:this|the)\s+handoff)\b",
+        re.IGNORECASE,
+    )
+    for index, raw_line in enumerate(tail_lines):
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        list_match = list_marker_re.match(raw_line)
+        structured = bool(list_match or re.match(r"^\s*[>#]", raw_line))
+        if structured:
+            list_text = list_match.group("text").strip() if list_match else ""
+            separated = index > 0 and not tail_lines[index - 1].strip()
+            if (
+                saw_generated_structure
+                and separated
+                and list_text
+                and (
+                    generated_done_item_re.match(list_text) is None
+                    or generated_item_critique_re.search(list_text) is not None
+                )
+            ):
+                current_lead_index = index
+                break
+            saw_generated_structure = True
+            continue
+        if raw_line != raw_line.lstrip():
+            saw_generated_structure = True
+            continue
+        if saw_generated_structure or index == 0:
+            current_lead_index = index
+            break
+    if current_lead_index is not None:
+        candidate = "\n".join(tail_lines[current_lead_index:]).strip()
+        if candidate:
+            return candidate
+
+    for raw_line in lines[goal_index + 1 : state_index]:
+        candidate = raw_line.strip()
+        if not candidate or candidate.startswith(">") or candidate.endswith(":"):
+            continue
+        return candidate
+    return None
+
+
 def validate_continuation_lead(value: str | None) -> str | None:
     if value is None:
         return None
@@ -5347,9 +6871,13 @@ def build_session_handoff_contract(
     repository_comparison: dict[str, Any] | None = None,
     receiver_attachment_deliveries: dict[str, dict[str, str]] | None = None,
     receiver_baseline_delivery: dict[str, str] | None = None,
+    delivery_mode: str = "direct_copy",
 ) -> dict[str, Any]:
     """Build the typed, reconciled contract used by the copyable rendering."""
 
+    normalized_delivery_mode = str(delivery_mode or "").strip().casefold()
+    if normalized_delivery_mode not in {"direct_copy", "desktop_stage"}:
+        raise ValueError("delivery_mode must be direct_copy or desktop_stage")
     normalized_continuation_lead = validate_continuation_lead(continuation_lead)
     effective_request = normalized_continuation_lead or request_verbatim
     trusted_descriptor_values = tuple(trusted_attachment_descriptors)
@@ -5391,17 +6919,27 @@ def build_session_handoff_contract(
         if isinstance(goal_payload.get("conversation_state"), dict)
         else None
     )
+    stored_request_fragments = (
+        _stored_session_request_fragments(
+            sections,
+            request_verbatim=request_verbatim,
+        )
+        if not normalized_continuation_lead or lead_matches_historical_request
+        else []
+    )
+    request_fragment_records = stored_request_fragments or [
+        _SessionRequestFragment(
+            source_request=effective_request,
+            requirement_request=effective_request,
+        )
+    ]
     derived_requirements = _derive_session_requirements_from_fragments(
         effective_request,
         request_fragments=(
-            []
-            if normalized_continuation_lead
-            else _stored_session_request_fragments(
-                sections,
-                request_verbatim=request_verbatim,
-            )
+            fragment.requirement_request for fragment in request_fragment_records
         ),
         supporting_context=normalized_supporting,
+        include_source_fragment_provenance=True,
     )
     requirements: list[dict[str, Any]] = []
     execution_guidance: list[dict[str, Any]] = []
@@ -5422,6 +6960,7 @@ def build_session_handoff_contract(
         )
     attachment_dependencies = _session_attachment_dependencies(
         effective_request,
+        request_fragments=request_fragment_records,
         trusted_descriptors=(
             trusted_descriptor_values
             if not normalized_continuation_lead or lead_matches_historical_request
@@ -5437,7 +6976,17 @@ def build_session_handoff_contract(
         attachment_dependencies,
         requirements=requirements,
     )
+    for attachment in attachment_dependencies:
+        attachment.pop("_source_fragment_index", None)
+    for requirement in requirements:
+        requirement.pop("_source_fragment_indexes", None)
+    for item in execution_guidance:
+        item.pop("_source_fragment_indexes", None)
     task_mode = _infer_session_task_mode(effective_request)
+    task_type_basis = _session_handoff_task_type_basis(
+        effective_request,
+        task_mode=task_mode,
+    )
     effective_progress = [] if normalized_continuation_lead else sections["progress"]
     effective_next_actions = [] if normalized_continuation_lead else sections["exact_next_action"]
     effective_blockers = [] if normalized_continuation_lead else sections["blockers"]
@@ -5446,6 +6995,7 @@ def build_session_handoff_contract(
         effective_verification,
         requirements=requirements,
         progress=effective_progress,
+        default_report_intent=task_type_basis == "safety_default_unconfirmed",
     )
     reconciliation = _reconcile_session_handoff(
         requirements=requirements,
@@ -5455,6 +7005,7 @@ def build_session_handoff_contract(
         verification=verification,
         task_mode=task_mode,
         fresh_user_lead=normalized_continuation_lead is not None,
+        default_report_intent=task_type_basis == "safety_default_unconfirmed",
     )
     requirement_status = {item["requirement_id"]: item for item in reconciliation["requirements"]}
     verification_by_requirement: dict[str, list[str]] = {}
@@ -5575,6 +7126,7 @@ def build_session_handoff_contract(
         task_mode=task_mode,
         readiness=readiness,
         conversation_state=conversation_state,
+        delivery_mode=normalized_delivery_mode,
     )
     if quality.get("status") == "blocked":
         if readiness.get("status") == "execution_ready":
@@ -5671,15 +7223,31 @@ def _session_handoff_verification(
     *,
     requirements: list[dict[str, Any]],
     progress: Iterable[dict[str, Any]] = (),
+    default_report_intent: bool = False,
 ) -> list[dict[str, Any]]:
     progress_items = tuple(progress)
     reported_completion_requirement_ids = {
         requirement["id"]
         for requirement in requirements
         if any(
-            _positive_completion_claim(str(progress_item.get("statement") or ""))
+            (
+                _progress_completes_synthesized_report(
+                    str(progress_item.get("statement") or "")
+                )
+                if default_report_intent
+                else _positive_completion_claim(
+                    str(progress_item.get("statement") or "")
+                )
+            )
             and _statements_overlap(
-                requirement["text"],
+                (
+                    _normalized_session_requirement(
+                        requirement["text"],
+                        task_mode="report",
+                    )
+                    if default_report_intent
+                    else requirement["text"]
+                ),
                 str(progress_item.get("statement") or ""),
             )
             for progress_item in progress_items
@@ -5699,6 +7267,13 @@ def _session_handoff_verification(
                 requirement["text"],
             )
         ]
+        if default_report_intent and re.search(
+            r"\b(?:analysis|audit|diagnos(?:is|tic)|findings|observ(?:ed|ation)|"
+            r"report|reproduc(?:e|ed|tion)|runtime\s+evidence|trace)\b",
+            command or statement,
+            re.IGNORECASE,
+        ) is None:
+            requirement_ids = []
         passed = payload.get("passed")
         exit_code = payload.get("exit_code")
         status = (
@@ -5831,6 +7406,7 @@ def _reconcile_session_handoff(
     verification: list[dict[str, Any]],
     task_mode: str,
     fresh_user_lead: bool = False,
+    default_report_intent: bool = False,
 ) -> dict[str, Any]:
     progress_items = list(progress)
     all_next_items = list(next_actions)
@@ -5891,10 +7467,25 @@ def _reconcile_session_handoff(
             item
             for item in progress_items
             if (
-                _positive_completion_claim(str(item.get("statement") or ""))
+                (
+                    _progress_completes_synthesized_report(
+                        str(item.get("statement") or "")
+                    )
+                    if default_report_intent
+                    else _positive_completion_claim(
+                        str(item.get("statement") or "")
+                    )
+                )
                 and _statements_overlap(
                     str(item.get("statement") or ""),
-                    requirement["text"],
+                    (
+                        _normalized_session_requirement(
+                            requirement["text"],
+                            task_mode="report",
+                        )
+                        if default_report_intent
+                        else requirement["text"]
+                    ),
                 )
             )
         ]
@@ -6135,6 +7726,177 @@ def _recovered_next_action_superseded_by_progress(
     )
 
 
+def _reported_blocker_satisfied_by_progress(
+    blocker_statement: str,
+    progress_statement: str,
+    *,
+    scope_text: str = "",
+) -> bool:
+    """Resolve a transient awaited-result blocker only with explicit later evidence."""
+
+    if _TRANSIENT_REPORTING_BLOCKER_RE.search(blocker_statement) is None:
+        return False
+    if re.match(
+        r"^\s*final\s+verification\s+(?:is\s+)?complete(?:d)?\s*:",
+        progress_statement,
+        re.IGNORECASE,
+    ) is None:
+        return False
+    suite_count_re = re.compile(
+        r"\b\d[\d,._]*\s+(?:[a-z][a-z0-9+._-]*\s+){0,3}tests?\b",
+        re.IGNORECASE,
+    )
+    result_text = progress_statement.split(":", 1)[1].strip()
+    all_suite_matches = list(suite_count_re.finditer(result_text))
+    if not all_suite_matches:
+        return False
+    if re.search(
+        r"\b(?:no\s+(?:tests?\s+)?passed|0+\s+(?:tests?\s+)?passed|"
+        r"passed\s*:\s*0+|(?:did|does|do)\s+not\s+pass)\b",
+        result_text,
+        re.IGNORECASE,
+    ):
+        return False
+    negative_status_probe = re.sub(
+        r"\b0+\s+(?:blocked|errors?|failed|failures?|pending)\b|"
+        r"\b(?:blocked|errors?|failed|failures?|pending)\s*:\s*0+\b|"
+        r"\bno\s+(?:errors?|failures?|pending\s+(?:checks?|suites?|tests?)|"
+        r"(?:checks?|suites?|tests?)\s+(?:failed|failing|pending))\b",
+        " ",
+        progress_statement,
+        flags=re.IGNORECASE,
+    )
+    if re.search(
+        r"\b(?:blocked|cancelled|canceled|errored|errors?|failed|failing|failures?|"
+        r"incomplete|not\s+(?:executed|(?:yet\s+)?run)|outstanding|pending|"
+        r"timed\s+out|"
+        r"unfinished)\b|"
+        r"\b(?:did|does|have|has|were|was)\s+not\s+run\b|"
+        r"\b(?:checks?|suites?|tests?|verification)\b.{0,48}"
+        r"\b(?:blocked|errored|failing|incomplete|not\s+(?:yet\s+)?run|"
+        r"outstanding|pending|unfinished)\b|"
+        r"\b(?:blocked|errored|failing|incomplete|outstanding|pending|unfinished)\b"
+        r".{0,48}\b(?:checks?|suites?|tests?|verification)\b|"
+        r"\btests?\s+(?:(?:are|have|has|were)\s+)?"
+        r"(?:flaky|ignored|not\s+executed|skipped)\b",
+        negative_status_probe,
+        re.IGNORECASE,
+    ):
+        return False
+    suite_counts: list[str] = []
+    result_clauses = [
+        clause.strip(" ,")
+        for clause in re.split(
+            r"[;\n]+|,?\s+\b(?:although|but|while)\b\s+",
+            result_text,
+            flags=re.IGNORECASE,
+        )
+        if clause.strip(" ,")
+    ]
+    for clause in result_clauses:
+        clause_suite_matches = list(suite_count_re.finditer(clause))
+        if not clause_suite_matches:
+            continue
+        suite_counts.extend(match.group(0) for match in clause_suite_matches)
+        before_first = clause[: clause_suite_matches[0].start()]
+        after_last = clause[clause_suite_matches[-1].end() :]
+        shared_pass_before = re.search(
+            r"\bpassed\s*$",
+            before_first,
+            re.IGNORECASE,
+        ) is not None
+        shared_pass_after = re.match(
+            r"^\s*,?\s*passed\b(?!\s*:\s*0+)",
+            after_last,
+            re.IGNORECASE,
+        ) is not None
+        every_suite_passed_directly = all(
+            re.match(
+                r"^\s+passed\b(?!\s*:\s*0+)",
+                clause[
+                    suite_match.end() : (
+                        clause_suite_matches[index + 1].start()
+                        if index + 1 < len(clause_suite_matches)
+                        else len(clause)
+                    )
+                ],
+                re.IGNORECASE,
+            )
+            is not None
+            for index, suite_match in enumerate(clause_suite_matches)
+        )
+        if not (shared_pass_before or shared_pass_after or every_suite_passed_directly):
+            return False
+    has_structured_status_totals = bool(
+        suite_counts
+        and re.search(r"\bpassed\b", result_text, re.IGNORECASE)
+        and re.search(r"\b\d[\d,._]*\s+skipped\b", result_text, re.IGNORECASE)
+        and re.search(r"\b\d[\d,._]*\s+failed\b", result_text, re.IGNORECASE)
+    )
+    recognized_suite_scopes = {
+        token.casefold()
+        for token in re.findall(
+            r"\b(?:api|backend|desktop|e2e|end[- ]to[- ]end|frontend|integration|"
+            r"native|swift|system|unit|web)\b",
+            " ".join(suite_counts),
+            re.IGNORECASE,
+        )
+    }
+    suite_label_tokens = {
+        token
+        for suite_count in suite_counts
+        for token in _target_match_tokens(suite_count)
+        if token
+        not in {
+            "api",
+            "backend",
+            "desktop",
+            "e2e",
+            "end",
+            "frontend",
+            "integration",
+            "native",
+            "swift",
+            "system",
+            "test",
+            "unit",
+            "web",
+        }
+        and not token.isdigit()
+    }
+    if suite_label_tokens:
+        scope_tokens = _target_match_tokens(scope_text)
+        if not scope_tokens or not suite_label_tokens.intersection(scope_tokens):
+            return False
+    leading_result_text = result_text[: all_suite_matches[0].start()]
+    qualifier_matches = re.findall(
+        r"\bpassed\b.{0,24}?\b(?:for|in|on)\s+([^.;]+)",
+        result_text,
+        re.IGNORECASE,
+    )
+    qualifier_matches.extend(
+        re.findall(
+            r"\b(?:for|in|on)\s+([^,:;]+)",
+            leading_result_text,
+            re.IGNORECASE,
+        )
+    )
+    qualifier_tokens = {
+        token
+        for qualifier in qualifier_matches
+        for token in _target_match_tokens(qualifier)
+        if token not in {"all", "check", "suite", "test", "verification"}
+    }
+    if qualifier_tokens:
+        scope_tokens = _target_match_tokens(scope_text)
+        if not scope_tokens or not qualifier_tokens.intersection(scope_tokens):
+            return False
+    return bool(
+        (len(suite_counts) >= 2 and len(recognized_suite_scopes) >= 2)
+        or (has_structured_status_totals and recognized_suite_scopes)
+    )
+
+
 def _mode_safe_next_action(
     task_mode: str,
     *,
@@ -6147,6 +7909,130 @@ def _mode_safe_next_action(
 def _positive_completion_claim(statement: str) -> bool:
     return bool(
         _COMPLETION_CLAIM_RE.search(statement) and not _NEGATED_COMPLETION_RE.search(statement)
+    )
+
+
+def _progress_completes_synthesized_report(statement: str) -> bool:
+    """Require an explicit completed report artifact, not a report-like noun."""
+
+    artifact = r"(?:analysis|audit|diagnosis|findings|report|review|summary|write[- ]?up)"
+    artifact_head = (
+        rf"\b{artifact}\b(?=\s*(?:$|[.,;:!?)]|"
+        r"\b(?:about|and|covering|for|from|of|on|that|which|with)\b))"
+    )
+    clauses = [
+        clause.strip()
+        for clause in re.split(
+            r";|(?<=[.!?])\s+|,?\s+\b(?:although|but|though|while)\b\s+|"
+            r",\s*however,?\s*|"
+            r",\s*and\s+|"
+            r"\s+and\s+(?=(?:the\s+)?(?:final\s+)?[a-z][a-z -]{0,40}"
+            r"\b(?:is|are|was|were|remain(?:s|ing)?)\b)",
+            statement,
+            flags=re.IGNORECASE,
+        )
+        if clause.strip()
+    ]
+    artifact_events: list[tuple[int, int, int, str]] = []
+    previous_clause_named_artifact = False
+    for clause_index, clause in enumerate(clauses):
+        names_artifact = re.search(rf"\b{artifact}\b", clause, re.IGNORECASE) is not None
+        refers_to_previous_artifact = previous_clause_named_artifact and re.match(
+            r"^\s*(?:(?:after\s+that|afterwards?|however|later|nevertheless|"
+            r"subsequently|then)\s*,?\s+)?"
+            r"(?:are|became|becomes?|is|it|needs?|no\s+longer|now|remain(?:s|ing)?|"
+            r"requires?|still|that|this|was|were)\b",
+            clause,
+            re.IGNORECASE,
+        ) is not None
+        related_to_artifact = names_artifact or refers_to_previous_artifact
+        previous_clause_named_artifact = related_to_artifact
+        if not related_to_artifact:
+            continue
+        temporal_priority = int(
+            re.search(
+                r"\b(?:at\s+present|currently|later|now|presently|still|"
+                r"subsequently|then|today)\b",
+                clause,
+                re.IGNORECASE,
+            )
+            is not None
+        ) - int(
+            re.search(
+                r"\b(?:earlier|formerly|historically|once|previously|prior|"
+                r"used\s+to|yesterday)\b",
+                clause,
+                re.IGNORECASE,
+            )
+            is not None
+        )
+        state_events: list[tuple[int, str]] = [
+            (match.start(), "incomplete")
+            for match in re.finditer(
+                r"\b(?:drafting|incomplete|isn['’]?t\s+ready|aren['’]?t\s+ready|"
+                r"wasn['’]?t\s+ready|not\s+(?:yet\s+)?(?:complete|ready)|"
+                r"no\s+longer\s+(?:complete|ready)|outstanding|pending|"
+                r"remain(?:s|ing)?|still\s+needs?|needs?\s+(?:more\s+work|revision)|"
+                r"requires?\s+revision|unfinished)\b",
+                clause,
+                re.IGNORECASE,
+            )
+        ]
+        current_preliminary = re.search(
+            r"\b(?:draft|initial|partial|preliminary)\b.{0,64}"
+            rf"\b{artifact}\b",
+            clause,
+            re.IGNORECASE,
+        )
+        non_report_compound = re.search(
+            r"\b(?:completed|delivered|finished|finalized|produced|submitted|wrote)\b"
+            r".{0,48}\bimplementation\b|"
+            rf"\b{artifact}\b\s+and\s+(?!"
+            r"(?:recorded|documented|identified|summari[sz]ed|delivered|submitted|"
+            r"finalized|produced|wrote)\b|"
+            rf"(?:an?\s+|the\s+)?{artifact}\b)",
+            clause,
+            re.IGNORECASE,
+        )
+        if current_preliminary is not None:
+            state_events.append((len(clause), "incomplete"))
+        elif non_report_compound is None:
+            positive_patterns = (
+                re.compile(
+                    rf"\b(?:completed|delivered|finished|finalized|produced|submitted|wrote)\b"
+                    rf".{{0,64}}{artifact_head}",
+                    re.IGNORECASE,
+                ),
+                re.compile(
+                    rf"\b{artifact}\b"
+                    rf"(?:\s+(?:about|covering|for|from|of|on)\b.{{0,48}})?\s+"
+                    r"(?:(?:is|are|was|were)\s+(?:now\s+)?)?"
+                    r"(?:complete|completed|delivered|finished|finalized|ready|submitted)\b",
+                    re.IGNORECASE,
+                ),
+            )
+            for pattern in positive_patterns:
+                state_events.extend(
+                    (match.start(), "complete") for match in pattern.finditer(clause)
+                )
+            if refers_to_previous_artifact:
+                state_events.extend(
+                    (match.start(), "complete")
+                    for match in re.finditer(
+                        r"\b(?:are|is|was|were)\s+(?:now\s+)?"
+                        r"(?:complete|completed|delivered|finished|finalized|ready|submitted)\b",
+                        clause,
+                        re.IGNORECASE,
+                    )
+                )
+        if state_events:
+            artifact_events.extend(
+                (temporal_priority, clause_index, position, state)
+                for position, state in state_events
+            )
+    return bool(
+        artifact_events
+        and max(artifact_events, key=lambda item: item[:3])[3] == "complete"
     )
 
 
@@ -6537,9 +8423,13 @@ def _session_handoff_files(
     repository: dict[str, Any],
 ) -> dict[str, Any]:
     relevant_entries = list(relevant_items)
-    progress_paths = {
-        path for item in progress_items for path in _extract_paths(str(item.get("statement") or ""))
-    }
+    progress_paths = list(
+        dict.fromkeys(
+            path
+            for item in progress_items
+            for path in _extract_paths(str(item.get("statement") or ""))
+        )
+    )
     changed_paths = {str(path) for path in repository.get("changed_files") or [] if str(path) != ""}
     baseline_manifest = repository.get("protected_baseline_manifest") or {}
     manifest_records_by_path: dict[str, list[dict[str, Any]]] = {}
@@ -6549,14 +8439,19 @@ def _session_handoff_files(
         path = str(item.get("path") or "")
         if path != "":
             manifest_records_by_path.setdefault(path, []).append(item)
-    modified = sorted(progress_paths & changed_paths)
-    relevant = sorted(
-        {
+    modified = [path for path in progress_paths if path in changed_paths]
+    relevant = list(
+        dict.fromkeys(
             str(item.get("payload", {}).get("path") or item.get("statement") or "").strip()
             for item in relevant_entries
-            if str(item.get("payload", {}).get("path") or item.get("statement") or "").strip()
-        }
-        - set(modified)
+            if str(
+                item.get("payload", {}).get("path") or item.get("statement") or ""
+            ).strip()
+            and str(
+                item.get("payload", {}).get("path") or item.get("statement") or ""
+            ).strip()
+            not in modified
+        )
     )
     return {
         "modified": [
@@ -6757,7 +8652,12 @@ def _session_handoff_verification_plan(
     ]
     plan: list[dict[str, Any]] = []
 
-    def add(text: str, *, links: list[str] | None = None) -> None:
+    def add(
+        text: str,
+        *,
+        links: list[str] | None = None,
+        evidence_locator: str | None = None,
+    ) -> None:
         plan.append(
             {
                 "id": f"PV{len(plan) + 1}",
@@ -6765,6 +8665,7 @@ def _session_handoff_verification_plan(
                 "status": "planned",
                 "requirement_ids": list(requirement_ids if links is None else links),
                 "source": "session_handoff_policy",
+                "evidence_locator": evidence_locator,
             }
         )
 
@@ -6772,7 +8673,41 @@ def _session_handoff_verification_plan(
         attachment_ids = ", ".join(str(item.get("id") or "") for item in required_attachments)
         add(
             f"Inspect required attachment {attachment_ids} before choosing the affected "
-            "component, and compare the finished result against that exact evidence."
+            "component, and compare the finished result against that exact evidence.",
+            evidence_locator=f"hash-bound handoff attachment(s): {attachment_ids}",
+        )
+    reported_behavior = intent.get("reported_behavior") or {}
+    if reported_behavior:
+        add(
+            "Exercise the current runtime path and record the active application and "
+            "window, focused input element, actual delivery destination, and whether "
+            + (
+                "the required destination behavior is satisfied."
+                if reported_behavior.get("authority") == "user_directed"
+                else "the reported mismatch reproduces."
+            ),
+            evidence_locator=(
+                "current desktop runtime observation: provider application, window, "
+                "focused input, and final delivery destination"
+            ),
+        )
+        add(
+            "Trace the provider launch, focus acquisition, target identification, and "
+            "delivery path to the owning files and functions; distinguish current "
+            "runtime evidence from historical implementation claims.",
+            evidence_locator=(
+                "source trace: provider launch -> focus acquisition -> target "
+                "identification -> composer delivery"
+            ),
+        )
+        add(
+            f"Confirm that an unverified {reported_behavior['expected_destination']} "
+            "causes a safe no-delivery result rather than delivery to the "
+            f"{reported_behavior['actual_destination']}.",
+            evidence_locator=(
+                "negative runtime observation with the expected composer target "
+                "unavailable or unverified"
+            ),
         )
     opacity_requirements = [
         item
@@ -6786,16 +8721,19 @@ def _session_handoff_verification_plan(
         add(
             f"Verify the affected {opacity_target} in the running UI and confirm "
             f"the page behind {opacity_pronoun} is not visible through "
-            f"{'their backgrounds' if opacity_plural else 'its background'}."
+            f"{'their backgrounds' if opacity_plural else 'its background'}.",
+            evidence_locator=f"running UI state for the affected {opacity_target}",
         )
         add(
             "Check default, hover, selected, and focus states where those states "
-            "exist; record any state that could not be exercised."
+            "exist; record any state that could not be exercised.",
+            evidence_locator="runtime state matrix: default, hover, selected, focus",
         )
     elif task_mode == "change":
         add(
             "Exercise every observable acceptance criterion against the current "
-            "implementation and record the result."
+            "implementation and record the result.",
+            evidence_locator="current runtime observations mapped to each criterion",
         )
     if task_mode == "change":
         if repository.get("root"):
@@ -6805,6 +8743,7 @@ def _session_handoff_verification_plan(
                 "style changed, inspect and report every affected usage. Preserve the "
                 "captured index and working-tree state of unrelated work.",
                 links=[],
+                evidence_locator="final repository diff and protected-baseline manifest",
             )
         else:
             add(
@@ -6813,10 +8752,12 @@ def _session_handoff_verification_plan(
                 "changed, inspect and report every affected usage. Preserve unrelated "
                 "workspace files; no Git snapshot is available for diff guarantees.",
                 links=[],
+                evidence_locator="edited-file inventory and current workspace contents",
             )
         add(
             "Report the exact files changed and the checks performed; do not claim "
-            "completion for an uninspected state or unavailable artifact."
+            "completion for an uninspected state or unavailable artifact.",
+            evidence_locator="final handoff summary with file paths and check results",
         )
     return plan
 
@@ -6835,6 +8776,7 @@ def _session_handoff_quality(
     task_mode: str,
     readiness: dict[str, Any] | None = None,
     conversation_state: dict[str, Any] | None = None,
+    delivery_mode: str = "direct_copy",
 ) -> dict[str, Any]:
     readiness = readiness if isinstance(readiness, dict) else {}
     currentness = currentness if isinstance(currentness, dict) else {}
@@ -7046,17 +8988,21 @@ def _session_handoff_quality(
             }
         )
     if reconciliation["conflicts"]:
-        blocking.append(
-            {
-                "code": "completion_continuation_conflict_reconciled",
-                "status": "fail",
-                "count": len(reconciliation["conflicts"]),
-                "message": (
-                    "Reported completion conflicts with a continuation instruction; "
-                    "inspect the preview and recapture after the conflict is resolved."
-                ),
-            }
-        )
+        issue = {
+            "code": "completion_continuation_conflict_reconciled",
+            "status": "warning" if delivery_mode == "desktop_stage" else "fail",
+            "count": len(reconciliation["conflicts"]),
+            "message": (
+                "Reported completion conflicts with a continuation instruction; "
+                "this non-submitting Session Context remains safe to review, but "
+                "the current repository must be inspected before either claim is "
+                "trusted or execution begins."
+                if delivery_mode == "desktop_stage"
+                else "Reported completion conflicts with a continuation instruction; "
+                "inspect the preview and recapture after the conflict is resolved."
+            ),
+        }
+        (warnings if delivery_mode == "desktop_stage" else blocking).append(issue)
     if repository.get("freshness", {}).get("status") == "changed":
         warnings.append(
             {
@@ -7708,9 +9654,8 @@ def render_legacy_session_handoff(
                 item["statement"],
                 SESSION_HANDOFF_RENDERED_STATEMENT_CHARS,
             )
-            command = _historical_single_line(
-                payload.get("command"),
-                SESSION_HANDOFF_RENDERED_COMMAND_CHARS,
+            command, command_omission = _rendered_historical_command(
+                payload.get("command")
             )
             if not command or not _presentation_duplicate(statement, command):
                 _append_session_context_quote(
@@ -7730,7 +9675,11 @@ def render_legacy_session_handoff(
                 )
             evidence_bits = []
             if command:
-                evidence_bits.append(f"command=`{command}`")
+                evidence_bits.append(
+                    f"command={_compact_markdown_literal_code(command)}"
+                )
+            elif command_omission:
+                evidence_bits.append(command_omission)
             if payload.get("exit_code") is not None:
                 evidence_bits.append(f"exit={payload['exit_code']}")
             if not evidence_bits and payload.get("evidence_summary"):
@@ -7818,6 +9767,7 @@ def render_legacy_session_handoff(
     commands = handoff.get("useful_commands") or []
     if commands:
         for item in commands[-SESSION_HANDOFF_RENDERED_COMMAND_LIMIT:]:
+            command, command_omission = _rendered_historical_command(item.get("command"))
             details = [
                 f"purpose={item.get('purpose') or 'discovery'}",
                 f"status={item.get('status') or 'observed'}",
@@ -7830,12 +9780,11 @@ def render_legacy_session_handoff(
                 lines,
                 (
                     f"{item['id']} [{'; '.join(details)}]: "
-                    f"`{
-                        _historical_single_line(
-                            item.get('command'),
-                            SESSION_HANDOFF_RENDERED_COMMAND_CHARS,
-                        )
-                    }`"
+                    + (
+                        _compact_markdown_literal_code(command)
+                        if command
+                        else command_omission or "No command text was captured."
+                    )
                 ),
                 label="historical data; observed command",
             )
@@ -8033,14 +9982,14 @@ def render_legacy_session_handoff(
             linked = ", ".join(item["requirement_ids"]) or "unmapped"
             details: list[str] = []
             if item.get("command"):
+                command, command_omission = _rendered_historical_command(item["command"])
                 details.append(
                     "command="
-                    f"`{
-                        _historical_single_line(
-                            item['command'],
-                            SESSION_HANDOFF_RENDERED_COMMAND_CHARS,
-                        )
-                    }`"
+                    + (
+                        _compact_markdown_literal_code(command)
+                        if command
+                        else command_omission or "unavailable"
+                    )
                 )
             elif item.get("statement"):
                 details.append(
@@ -8118,6 +10067,33 @@ def _append_compact_request_quote(
         lines.append(f"> {line}" if line else ">")
 
 
+def _append_compact_authoritative_request_quote(
+    lines: list[str],
+    text: str,
+    *,
+    label: str,
+    trailing_fragment: str,
+) -> None:
+    source = str(text or "")
+    fragment = str(trailing_fragment or "").strip()
+    main = source
+    if fragment:
+        match = re.search(
+            rf"(?:\r?\n){{2,}}{re.escape(fragment)}\s*$",
+            source,
+        )
+        if match is not None:
+            main = source[: match.start()].rstrip()
+    _append_compact_request_quote(lines, main, label=label)
+    if main != source:
+        lines.append("")
+        _append_compact_request_quote(
+            lines,
+            fragment,
+            label="Quarantined trailing source fragment (verbatim; non-operative)",
+        )
+
+
 def _compact_markdown_code(value: Any, *, fallback: str = "unavailable") -> str:
     """Render repository-controlled text as reversible, injection-safe inline code."""
 
@@ -8128,6 +10104,21 @@ def _compact_markdown_code(value: Any, *, fallback: str = "unavailable") -> str:
         raw = fallback
     escaped = json.dumps(raw, ensure_ascii=False)[1:-1].replace("`", r"\u0060")
     return f"`{escaped}`"
+
+
+def _compact_markdown_literal_code(value: str) -> str:
+    """Render a single-line command without changing its copied bytes."""
+
+    raw = str(value or "")
+    if "\n" in raw or "\r" in raw:
+        raise ValueError("literal command code spans must be single-line")
+    longest_run = max((len(match.group(0)) for match in re.finditer(r"`+", raw)), default=0)
+    delimiter = "`" * max(1, longest_run + 1)
+    return (
+        f"{delimiter} {raw} {delimiter}"
+        if longest_run
+        else f"{delimiter}{raw}{delimiter}"
+    )
 
 
 def _compact_session_task_type_label(handoff: dict[str, Any]) -> str:
@@ -8235,6 +10226,10 @@ def _compact_session_start_steps(handoff: dict[str, Any]) -> list[str]:
             "from this stale brief.",
         ]
     if may_edit and required_attachments and target.get("status") != "resolved":
+        opacity_related = any(
+            re.search(r"\b(?:opaque|opacity|transparent|transparency)\b", text, re.I)
+            for text in intent.get("normalized_requirements") or []
+        )
         candidate_paths = [
             str(candidate.get("path") or "")
             for item in intent.get("targets") or []
@@ -8253,19 +10248,33 @@ def _compact_session_start_steps(handoff: dict[str, Any]) -> list[str]:
                 "and search route/component names visible in the attachment."
             )
         )
+        evidence_search_step = (
+            "Search likely UI components and styles for transparent or alpha "
+            "backgrounds, `opacity`, `rgba`/`hsla`, transparent gradients, "
+            "ancestor opacity, and `backdrop-blur`."
+            if opacity_related
+            else (
+                "Trace the runtime route and owning implementation from the "
+                "attachment's visible anchors and the current request; keep every "
+                "candidate unconfirmed until source and runtime evidence agree."
+            )
+        )
+        target_match_step = (
+            "Match the candidates against the required visual evidence and "
+            "identify the exact route, component, and style rule."
+            if opacity_related
+            else (
+                "Match the candidates against the required attachment evidence and "
+                "identify the exact route, owning component or function, and "
+                "observable behavior."
+            )
+        )
         return [
             action,
             _compact_session_baseline_compare_step(handoff),
             inspect_step,
-            (
-                "Search likely UI components and styles for transparent or alpha "
-                "backgrounds, `opacity`, `rgba`/`hsla`, transparent gradients, "
-                "ancestor opacity, and `backdrop-blur`."
-            ),
-            (
-                "Match the candidates against the required visual evidence and "
-                "identify the exact route, component, and style rule."
-            ),
+            evidence_search_step,
+            target_match_step,
             (
                 "Edit only after the target is grounded, then execute every item "
                 "under Verification required."
@@ -8284,6 +10293,45 @@ def _compact_session_start_steps(handoff: dict[str, Any]) -> list[str]:
             else "Inspect the live workspace files; do not edit files."
         )
     return steps
+
+
+def _compact_session_goal_lines(handoff: dict[str, Any]) -> list[str]:
+    """Render the complete Goal body from contract-owned fields only."""
+
+    continuation_lead = handoff.get("continuation_lead") or {}
+    intent = handoff.get("intent") or {}
+    normalized_goal = _compact_requirement_text(
+        intent.get("normalized_requirement")
+        or continuation_lead.get("text")
+        or (handoff.get("current_goal") or {}).get("text")
+    )
+    lines = [normalized_goal, ""]
+    trailing_fragment = str(
+        (intent.get("source_quality") or {}).get("trailing_incomplete_fragment") or ""
+    ).strip()
+    if continuation_lead.get("text"):
+        _append_compact_authoritative_request_quote(
+            lines,
+            continuation_lead["text"],
+            label="Current user instruction (authoritative)",
+            trailing_fragment=trailing_fragment,
+        )
+        current_goal = str((handoff.get("current_goal") or {}).get("text") or "")
+        if _sha256(continuation_lead["text"]) != _sha256(current_goal):
+            lines.append("")
+            _append_compact_request_quote(
+                lines,
+                current_goal,
+                label="Prior carried request (historical reference)",
+            )
+    else:
+        _append_compact_authoritative_request_quote(
+            lines,
+            str((handoff.get("current_goal") or {}).get("text") or ""),
+            label="Original user request (authoritative)",
+            trailing_fragment=trailing_fragment,
+        )
+    return lines
 
 
 def render_compact_session_handoff(
@@ -8319,14 +10367,8 @@ def render_compact_session_handoff(
     )
     repository = handoff["repository"]
     protected = handoff["files"].get("pre_existing_at_handoff") or []
-    continuation_lead = handoff.get("continuation_lead") or {}
     intent = handoff.get("intent") or {}
     readiness = handoff.get("readiness") or {}
-    normalized_goal = _compact_requirement_text(
-        intent.get("normalized_requirement")
-        or continuation_lead.get("text")
-        or handoff["current_goal"]["text"]
-    )
     readiness_label = str(readiness.get("label") or "Readiness not evaluated")
     may_edit = bool(handoff.get("execution_policy", {}).get("may_edit"))
     lines = [
@@ -8341,27 +10383,7 @@ def render_compact_session_handoff(
         f"Status: **{readiness_label}**",
         "",
     ]
-    if continuation_lead.get("text"):
-        lines.extend(["## Goal", "", normalized_goal, ""])
-        _append_compact_request_quote(
-            lines,
-            continuation_lead["text"],
-            label="Current user instruction (authoritative)",
-        )
-        if _sha256(continuation_lead["text"]) != _sha256(handoff["current_goal"]["text"]):
-            lines.append("")
-            _append_compact_request_quote(
-                lines,
-                handoff["current_goal"]["text"],
-                label="Prior carried request (historical reference)",
-            )
-    else:
-        lines.extend(["## Goal", "", normalized_goal, ""])
-        _append_compact_request_quote(
-            lines,
-            handoff["current_goal"]["text"],
-            label="Original user request (authoritative)",
-        )
+    lines.extend(["## Goal", "", *_compact_session_goal_lines(handoff)])
 
     required_capability_label = _compact_session_required_capability_label(handoff)
     captured_permission_label = _compact_session_capture_permission_label(handoff)
@@ -8390,6 +10412,56 @@ def render_compact_session_handoff(
             )
         ),
     ])
+    if intent.get("task_type_basis") == "safety_default_unconfirmed":
+        lines.append(
+            "- Intent classification: unconfirmed; `report` is the read-only "
+            "safety default and does not grant edit authority."
+        )
+    reported_behavior = intent.get("reported_behavior") or {}
+    if reported_behavior:
+        if reported_behavior.get("authority") == "user_directed":
+            lines.append(
+                "- Required delivery behavior (user-authored): the "
+                f"{reported_behavior['flow']} must send the "
+                f"{reported_behavior['object']} to the "
+                f"{reported_behavior['expected_destination']}, never the "
+                f"{reported_behavior['actual_destination']}."
+            )
+        else:
+            lines.append(
+                "- Reported behavior (user-authored): the "
+                f"{reported_behavior['flow']} sends the "
+                f"{reported_behavior['object']} to the "
+                f"{reported_behavior['actual_destination']}."
+            )
+        lines.extend(
+            [
+                (
+                    "- Expected destination (derived directly from the user's "
+                    f"contrast): {reported_behavior['expected_destination']}."
+                ),
+                (
+                    "- Safety boundary (derived): if the expected destination "
+                    "cannot be positively identified, automatic delivery must "
+                    f"not reach the {reported_behavior['actual_destination']}."
+                ),
+            ]
+        )
+    trailing_fragment = str(
+        (intent.get("source_quality") or {}).get("trailing_incomplete_fragment") or ""
+    ).strip()
+    if trailing_fragment:
+        lines.append(
+            "- Source-quality note: a trailing incomplete fragment was preserved "
+            "in a quarantined provenance quote and excluded from the operational goal: "
+            f"{_compact_markdown_code(trailing_fragment)}."
+        )
+    for gap in intent.get("evidence_gaps") or []:
+        message = _single_line(str(gap.get("message") or ""), 700)
+        if message:
+            lines.append(
+                f"- Evidence gap {gap.get('id') or 'unmapped'}: {message}"
+            )
     repository_resolution = repository.get("resolution") or {}
     if repository.get("root"):
         lines.extend([
@@ -8537,7 +10609,7 @@ def render_compact_session_handoff(
             ]
             if candidates:
                 lines.append("- Ranked candidates requiring inspection:")
-                for candidate in candidates[:3]:
+                for candidate in candidates[:5]:
                     lines.append(
                         "  - "
                         + _compact_markdown_code(candidate.get("path"))
@@ -8555,23 +10627,53 @@ def render_compact_session_handoff(
                             "change near the handoff; match its route, visible text, and "
                             "card structure to the required visual evidence before relying on it."
                         )
-            lines.append(
-                "- Unknowns: exact route, owning component, and whether transparency "
-                "comes from the card background or an ancestor style."
+            opacity_related = any(
+                re.search(r"\b(?:opaque|opacity|transparent|transparency)\b", text, re.I)
+                for text in intent.get("normalized_requirements") or []
             )
+            if reported_behavior:
+                lines.append(
+                    "- Unknowns: whether the mismatch still reproduces, the active "
+                    "window and focused element at delivery time, and the exact "
+                    "launch/focus/targeting/delivery call path."
+                )
+            elif opacity_related:
+                lines.append(
+                    "- Unknowns: exact route, owning component, and whether transparency "
+                    "comes from the target background or an ancestor style."
+                )
+            else:
+                lines.append(
+                    "- Unknowns: exact runtime route, owning component or function, "
+                    "and the observable path needed to validate the request."
+                )
     relevant_paths = _compact_session_relevant_paths(handoff)
     protected_paths = {str(item.get("path") or "").strip() for item in protected}
     overlap = [path for path in relevant_paths if path in protected_paths]
     if overlap:
-        lines.append(
-            "- Target/protected-baseline overlap: "
-            + ", ".join(f"`{path}`" for path in overlap[:3])
-            + ". Preserve the pre-existing edits in each overlapping file and apply "
-            "only the minimum requirement-specific delta without staging or unstaging "
-            "the whole file."
-        )
+        if may_edit:
+            lines.append(
+                "- Target/protected-baseline overlap: "
+                + ", ".join(f"`{path}`" for path in overlap[:5])
+                + ". Preserve the pre-existing edits in each overlapping file and apply "
+                "only the minimum requirement-specific delta without staging or unstaging "
+                "the whole file."
+            )
+        else:
+            lines.append(
+                "- Candidate/protected-baseline overlap (inspection only): "
+                + ", ".join(f"`{path}`" for path in overlap[:5])
+                + ". Preserve these files exactly; this read-only handoff does not "
+                "authorize a requirement-specific delta."
+            )
     if not handoff.get("implementation_summary") and not handoff.get("verification"):
         lines.append("- No implementation change or current verification has been confirmed.")
+    elif reported_behavior and handoff.get("implementation_summary"):
+        lines.append(
+            "- Current interpretation: later implementation claims are historical "
+            "leads, not proof that the user-reported runtime behavior is fixed. "
+            "Revalidate the destination in the current runtime."
+        )
     _append_compact_session_progress(lines, handoff)
     _append_compact_conversation_state(lines, handoff)
     _append_compact_session_supporting_context(lines, handoff)
@@ -8594,12 +10696,10 @@ def render_compact_session_handoff(
                 "reported_done",
                 "reported done; verify",
             )
-            checks = _compact_display_ids(requirement.get("verification_ids") or [])
-            suffix = f"; checks={checks}" if checks else ""
             requirement_text = _compact_requirement_text(
                 requirement.get("normalized_text") or requirement.get("text")
             )
-            lines.append(f"- {requirement['id']} [{status}{suffix}]: {requirement_text}")
+            lines.append(f"- {requirement['id']} [{status}]: {requirement_text}")
     else:
         lines.append("- Complete and verify the carried goal.")
     for criterion in intent.get("acceptance_criteria") or []:
@@ -8624,26 +10724,44 @@ def render_compact_session_handoff(
         if text and not any(_presentation_duplicate(text, line) for line in lines[-12:]):
             lines.append(f"- {text}")
     verification = handoff.get("verification") or []
-    for item in verification[-SESSION_HANDOFF_RENDERED_VERIFICATION_LIMIT:]:
-        command = _historical_single_line(
-            item.get("command"),
-            SESSION_HANDOFF_RENDERED_COMMAND_CHARS,
+    visible_verification = verification[-SESSION_HANDOFF_RENDERED_VERIFICATION_LIMIT:]
+    if len(verification) > len(visible_verification):
+        lines.append(
+            f"- {len(verification) - len(visible_verification)} earlier verification "
+            "record(s) remain in the structured handoff; no hidden verification ID "
+            "is used as a completion reference here."
         )
+    for item in visible_verification:
+        command, command_omission = _rendered_historical_command(item.get("command"))
         statement = _historical_single_line(
             item.get("statement"),
             SESSION_HANDOFF_RENDERED_STATEMENT_CHARS,
         )
-        proof = command or statement
+        proof = (
+            _compact_markdown_literal_code(command)
+            if command
+            else command_omission or statement
+        )
         if proof:
             linked = _compact_display_ids(item.get("requirement_ids") or []) or "unmapped"
             lines.append(
-                f"> [prior {item.get('status') or 'observed'} check; requirements={linked}] {proof}"
+                f"> [prior {item.get('status') or 'observed'} check; "
+                f"verification={item.get('id') or 'unmapped'}; requirements={linked}] {proof}"
             )
     verification_plan = handoff.get("verification_plan") or []
     if verification_plan:
         lines.append("- Verification required:")
-        for index, item in enumerate(verification_plan, start=1):
-            lines.append(f"  {index}. {_single_line(str(item.get('text') or ''), 700)}")
+        for item in verification_plan:
+            verification_id = str(item.get("id") or "planned-verification")
+            lines.append(
+                f"  - {verification_id}: {_single_line(str(item.get('text') or ''), 700)}"
+            )
+            evidence_locator = _single_line(
+                str(item.get("evidence_locator") or ""),
+                500,
+            )
+            if evidence_locator:
+                lines.append(f"    - Evidence locator: {evidence_locator}")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -8651,6 +10769,12 @@ def _append_compact_session_progress(
     lines: list[str],
     handoff: dict[str, Any],
 ) -> None:
+    if (handoff.get("reconciliation") or {}).get("conflicts"):
+        lines.append(
+            "- Reconciliation warning: prior completion and continuation claims "
+            "conflict. Treat neither as current truth; inspect the current repository "
+            "before continuing."
+        )
     implementation = handoff.get("implementation_summary") or []
     for item in implementation[-2:]:
         _append_session_context_quote(
@@ -8828,16 +10952,20 @@ def _append_compact_session_attachments(
 
 def _compact_session_relevant_paths(handoff: dict[str, Any]) -> list[str]:
     result: list[str] = []
+    for item in (handoff.get("intent") or {}).get("targets") or []:
+        path = str(item.get("resolved_entity") or "")
+        if path != "" and path not in result:
+            result.append(path)
+        for candidate in item.get("candidates") or []:
+            candidate_path = str(candidate.get("path") or "")
+            if candidate_path != "" and candidate_path not in result:
+                result.append(candidate_path)
     files = handoff.get("files") or {}
     for category in ("modified", "relevant"):
         for item in files.get(category) or []:
             path = str(item.get("path") or "")
             if path != "" and path not in result:
                 result.append(path)
-    for item in (handoff.get("intent") or {}).get("targets") or []:
-        path = str(item.get("resolved_entity") or "")
-        if path != "" and path not in result:
-            result.append(path)
     return result
 
 
@@ -9080,6 +11208,67 @@ def _compact_session_handoff_missing_fragments(
             if line.strip()
         ),
     ]
+    if intent.get("task_type_basis") == "safety_default_unconfirmed":
+        expected.append(
+            (
+                "task_mode_unconfirmed_basis",
+                "Intent classification: unconfirmed; `report` is the read-only safety default",
+            )
+        )
+    reported_behavior = intent.get("reported_behavior") or {}
+    if reported_behavior:
+        behavior_projection = (
+            "Required delivery behavior (user-authored): the "
+            f"{reported_behavior.get('flow')} must send the "
+            f"{reported_behavior.get('object')} to the "
+            f"{reported_behavior.get('expected_destination')}, never the "
+            f"{reported_behavior.get('actual_destination')}."
+            if reported_behavior.get("authority") == "user_directed"
+            else "Reported behavior (user-authored): the "
+            f"{reported_behavior.get('flow')} sends the "
+            f"{reported_behavior.get('object')} to the "
+            f"{reported_behavior.get('actual_destination')}."
+        )
+        expected.extend(
+            (
+                (
+                    "reported_behavior",
+                    behavior_projection,
+                ),
+                (
+                    "expected_destination",
+                    "Expected destination (derived directly from the user's contrast): "
+                    f"{reported_behavior.get('expected_destination')}.",
+                ),
+                (
+                    "safe_delivery_boundary",
+                    "Safety boundary (derived): if the expected destination cannot be "
+                    "positively identified, automatic delivery must not reach the "
+                    f"{reported_behavior.get('actual_destination')}.",
+                ),
+            )
+        )
+    trailing_fragment = str(
+        (intent.get("source_quality") or {}).get("trailing_incomplete_fragment") or ""
+    ).strip()
+    if trailing_fragment:
+        expected.append(
+            (
+                "source_quality_trailing_fragment",
+                "Source-quality note: a trailing incomplete fragment was preserved "
+                "in a quarantined provenance quote and excluded from the operational goal: "
+                f"{_compact_markdown_code(trailing_fragment)}.",
+            )
+        )
+    for gap in intent.get("evidence_gaps") or []:
+        message = _single_line(str(gap.get("message") or ""), 700)
+        if message:
+            expected.append(
+                (
+                    f"evidence_gap_{gap.get('id') or 'unmapped'}",
+                    f"Evidence gap {gap.get('id') or 'unmapped'}: {message}",
+                )
+            )
     repository = handoff.get("repository") or {}
     baseline_manifest = repository.get("protected_baseline_manifest") or {}
     expected.extend(
@@ -9240,14 +11429,77 @@ def _compact_session_handoff_missing_fragments(
         )
     for item in handoff.get("verification_plan") or []:
         verification_id = str(item.get("id") or "planned_verification")
-        expected.append(
+        expected.extend(
             (
-                f"verification_plan_{verification_id}",
-                _single_line(str(item.get("text") or ""), 700),
+                (f"verification_plan_{verification_id}_id", f"{verification_id}:"),
+                (
+                    f"verification_plan_{verification_id}",
+                    _single_line(str(item.get("text") or ""), 700),
+                ),
             )
         )
+        evidence_locator = _single_line(
+            str(item.get("evidence_locator") or ""),
+            500,
+        )
+        if evidence_locator:
+            expected.append(
+                (
+                    f"verification_plan_{verification_id}_evidence_locator",
+                    f"Evidence locator: {evidence_locator}",
+                )
+            )
+    visible_verification = (handoff.get("verification") or [
+    ])[-SESSION_HANDOFF_RENDERED_VERIFICATION_LIMIT:]
+    for item in visible_verification:
+        verification_id = str(item.get("id") or "unmapped")
+        linked = _compact_display_ids(item.get("requirement_ids") or []) or "unmapped"
+        expected.append(
+            (
+                f"verification_{verification_id}_mapping",
+                f"verification={verification_id}; requirements={linked}",
+            )
+        )
+        command, command_omission = _rendered_historical_command(item.get("command"))
+        if command:
+            expected.append(
+                (
+                    f"verification_{verification_id}_complete_command",
+                    _compact_markdown_literal_code(command),
+                )
+            )
+        elif command_omission:
+            expected.append(
+                (f"verification_{verification_id}_command_integrity", command_omission)
+            )
     missing = [label for label, value in expected if value.strip() and value.strip() not in content]
+    goal_section = _compact_generated_section(content, "## Goal").strip()
+    expected_goal_section = "\n".join(_compact_session_goal_lines(handoff)).strip()
+    if goal_section != expected_goal_section:
+        missing.append("goal_section_exact")
     start_section = _compact_generated_section(content, "## Start here")
+    state_section = _compact_generated_section(content, "## State now")
+    normalized_requirements = " ".join(intent.get("normalized_requirements") or [])
+    opacity_related = bool(
+        re.search(
+            r"\b(?:opaque|opacity|transparent|transparency)\b",
+            normalized_requirements,
+            re.I,
+        )
+    )
+    if not opacity_related and any(
+        fragment in f"{state_section}\n{start_section}"
+        for fragment in (
+            "whether transparency comes from",
+            "Search likely UI components and styles for transparent or alpha backgrounds",
+        )
+    ):
+        missing.append("cross_task_opacity_context")
+    if not bool((handoff.get("execution_policy") or {}).get("may_edit")) and (
+        "apply only the minimum requirement-specific delta"
+        in f"{state_section}\n{start_section}"
+    ):
+        missing.append("read_only_edit_instruction")
     start_steps = _compact_session_start_steps(handoff)
     start_positions = [start_section.find(step) for step in start_steps]
     if any(position < 0 for position in start_positions) or start_positions != sorted(
@@ -9255,6 +11507,11 @@ def _compact_session_handoff_missing_fragments(
     ):
         missing.append("start_step_order")
     done_section = _compact_generated_section(content, "## Done when")
+    if any(
+        line.startswith("- R") and "checks=" in line
+        for line in done_section.splitlines()
+    ):
+        missing.append("unverifiable_requirement_check_reference")
     done_bullets = [
         _compact_requirement_text(line[2:])
         for line in done_section.splitlines()
@@ -9612,6 +11869,7 @@ def build_session_handoff_artifact(
         repository_comparison=repository_comparison,
         receiver_attachment_deliveries=receiver_attachment_deliveries,
         receiver_baseline_delivery=receiver_baseline_delivery,
+        delivery_mode=normalized_delivery_mode,
     )
     required_delivery_attachments = [
         item
@@ -10566,11 +12824,6 @@ def _build_sections(
     ):
         progress_sequence = progress_item.events[-1].sequence_number
         progress_statement = str(progress_item.statement or "")
-        if not (
-            _positive_completion_claim(progress_statement)
-            or _BLOCKER_RESOLUTION_SIGNAL.search(progress_statement)
-        ):
-            continue
         candidates = [
             blocker
             for blocker in blockers
@@ -10578,10 +12831,29 @@ def _build_sections(
             and blocker.events
             and blocker.events[-1].sequence_number < progress_sequence
         ]
+        transient_resolution = any(
+            _reported_blocker_satisfied_by_progress(
+                blocker.statement,
+                progress_statement,
+                scope_text=goal_statement,
+            )
+            for blocker in candidates
+        )
+        if not (
+            _positive_completion_claim(progress_statement)
+            or _BLOCKER_RESOLUTION_SIGNAL.search(progress_statement)
+            or transient_resolution
+        ):
+            continue
         overlapping = [
             blocker
             for blocker in candidates
             if _statements_overlap(blocker.statement, progress_statement)
+            or _reported_blocker_satisfied_by_progress(
+                blocker.statement,
+                progress_statement,
+                scope_text=goal_statement,
+            )
         ]
         resolved = overlapping
         if (
@@ -10836,13 +13108,18 @@ def _verification_to_dict(value: CheckpointVerification) -> dict[str, Any]:
 def _sentences(value: str) -> list[str]:
     cleaned = _self_contained_goal(value)
     cleaned = re.sub(r"```.*?```", " ", cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = re.sub(r"[ \t]+", " ", cleaned).strip()
     if not cleaned:
         return []
+    incomplete_fragment = _trailing_incomplete_request_fragment(cleaned)
     return [
-        part.strip(" -•\t")
-        for part in re.split(r"(?<=[.!?])\s+|\s*[\r\n]+\s*", cleaned)
-        if len(part.strip(" -•\t")) >= 4
+        normalized
+        for part in re.split(r"(?<=[.!?])[ \t\r\n]+|(?:\r?\n){2,}", cleaned)
+        if len(
+            normalized := re.sub(r"\s+", " ", part).strip(" -•\t")
+        )
+        >= 4
+        and normalized != incomplete_fragment
     ]
 
 
@@ -10876,6 +13153,33 @@ def _single_line(value: str, limit: int) -> str:
 
 def _historical_single_line(value: Any, limit: int) -> str:
     return _single_line(_redacted_historical_text(value), limit)
+
+
+def _rendered_historical_command(value: Any) -> tuple[str, str | None]:
+    """Return a complete single-line command or an explicit integrity marker.
+
+    A clipped shell command can become a different command, so commands are
+    rendered all-or-nothing after secret redaction. Oversized or multiline
+    values remain identifiable without presenting a partial command as usable.
+    """
+
+    command = _redacted_historical_text(value).strip()
+    if not command:
+        return "", None
+    reason = (
+        "multiline"
+        if "\n" in command or "\r" in command
+        else "over display limit"
+        if len(command) > SESSION_HANDOFF_RENDERED_COMPLETE_COMMAND_CHARS
+        else ""
+    )
+    if not reason:
+        return command, None
+    return (
+        "",
+        "[complete command omitted: "
+        f"{reason}; chars={len(command)}; sha256={_sha256(command)}]",
+    )
 
 
 def _compact_display_ids(values: list[str]) -> str:

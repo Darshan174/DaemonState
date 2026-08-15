@@ -107,6 +107,16 @@ _OPTION_LINE_RE = re.compile(
     r"^\s*(?:(?:[-*]\s*)?(?:option\s*)?)?(?P<number>[1-4])\s*[.):/-]\s*(?P<text>.+?)\s*$",
     re.IGNORECASE,
 )
+_ORDERED_PROPOSAL_HEADING_RE = re.compile(
+    r"^\s*(?:#{1,6}\s*)?(?:recommended|proposed)\s+"
+    r"(?:correction\s+)?(?:order|plan|steps?|approach)\s*:?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_ORDERED_PROPOSAL_ITEM_RE = re.compile(
+    r"^\s*(?P<number>[1-9][0-9]?)\s*[.)]\s+(?P<text>.+?)\s*$",
+)
+
+
 @dataclass(frozen=True)
 class GoalFragment:
     event_id: str
@@ -521,12 +531,21 @@ def _pending_interaction(event: Any, content: str) -> PendingInteraction | None:
     prompt = re.sub(r"\s+", " ", content).strip()
     if not prompt:
         return None
+    ordered_proposal = _unique_ordered_proposal(content)
     options = tuple(
         match.group("text").strip()
         for line in content.splitlines()
         if (match := _OPTION_LINE_RE.match(line)) is not None
     )
-    if len(options) >= 2:
+    if ordered_proposal is not None:
+        # A numbered implementation sequence is one proposal, not a set of
+        # mutually exclusive choices. Bind a later "yes/go ahead" only when
+        # there is one explicitly labelled plan, and carry only that plan
+        # rather than promoting the assistant's surrounding diagnosis.
+        kind = "proposal"
+        prompt = ordered_proposal
+        options = ()
+    elif len(options) >= 2:
         kind = "options"
     elif _PENDING_USER_ACTION_RE.search(prompt) and (
         "?" in prompt or re.search(r"\b(?:please|need you to|you must|once you)\b", prompt, re.I)
@@ -547,6 +566,38 @@ def _pending_interaction(event: Any, content: str) -> PendingInteraction | None:
         kind=kind,
         prompt=prompt[:1_200],
         options=options,
+    )
+
+
+def _unique_ordered_proposal(content: str) -> str | None:
+    """Return one explicitly labelled sequential proposal, if unambiguous."""
+
+    headings = list(_ORDERED_PROPOSAL_HEADING_RE.finditer(content))
+    if len(headings) != 1:
+        return None
+
+    heading = headings[0]
+    numbered: list[tuple[int, str]] = []
+    started = False
+    for line in content[heading.end() :].splitlines():
+        stripped = line.strip()
+        if not stripped and not started:
+            continue
+        match = _ORDERED_PROPOSAL_ITEM_RE.fullmatch(line)
+        if match is None:
+            if started:
+                break
+            return None
+        started = True
+        numbered.append((int(match.group("number")), match.group("text").strip()))
+
+    if len(numbered) < 2 or [number for number, _ in numbered] != list(
+        range(1, len(numbered) + 1)
+    ):
+        return None
+    heading_text = re.sub(r"^\s*#{1,6}\s*", "", heading.group(0)).strip().rstrip(":")
+    return "\n".join(
+        [f"{heading_text}:", *(f"{number}. {text}" for number, text in numbered)]
     )
 
 

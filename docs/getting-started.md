@@ -107,9 +107,9 @@ If nothing appears, see [Session discovery troubleshooting](#session-discovery-t
 
 Continue is intentionally opinionated: it uses the newest eligible root session
 for the selected project by default. A Library selection, URL parameter, or old
-recovery point cannot silently replace it. To choose exact historical sessions,
-use **Choose custom sessions in Execute** from Continue and return through the
-numbered custom-session flow.
+recovery point cannot silently replace it. Execute can select exact historical
+Session Contexts for the floating button, but those selections do not change
+the source carried by any Continue card.
 
 1. Review the detected session, current lead, repository freshness, and provider
    readiness.
@@ -119,11 +119,14 @@ numbered custom-session flow.
 4. DaemonState captures the session tip, compiles and verifies the handoff,
    copies the complete Session Context, and requests a new composer through the
    app's macOS URL scheme.
-5. Confirm the destination, paste if the bounded native prefill was not used,
-   review the draft, and submit it yourself.
+5. DaemonState verifies the selected app is frontmost and requests a native
+   paste. Confirm the context is visible, review the draft, and submit it
+   yourself.
 
-Dispatch does not prove the target app rendered a composer. DaemonState does
-not create an agent run, press Enter, or report work before the user submits.
+Dispatch does not prove the target app rendered a composer, and a Command-V
+request does not prove insertion. DaemonState reports those states separately;
+it does not create an agent run, press Enter, or report work before the user
+submits.
 
 ### 3. Use Execute
 
@@ -273,11 +276,16 @@ Workspace Context only from a matching, complete local-harness observation.
 
 ### A provider card is unavailable
 
-- Install the matching desktop app for browser handoff and confirm macOS has a
-  registered URL handler.
+- Install Xcode Command Line Tools plus the matching desktop app for browser
+  handoff, then confirm macOS has a registered URL handler. Running
+  `bash scripts/setup.sh` prebuilds the native paste helper.
+- Confirm the native DaemonState overlay helper can run. If macOS prompts for
+  Accessibility access on the first paste, allow `DaemonStateOverlay` in
+  **System Settings → Privacy & Security → Accessibility**, then retry.
 - For CLI execution, confirm the provider CLI is installed and authenticated.
-- Codex account/model/rate-limit checks are read-only and may be inconclusive;
-  the dashboard reports that separately from the hard desktop-dispatch gate.
+- Codex account/model/rate-limit checks are read-only. Known signed-out or
+  rate-limited states block the card; inconclusive status is shown separately
+  as access-unverified.
 - A task can still be blocked when the provider cannot enforce its required
   image, permission, filesystem, or execution capability.
 

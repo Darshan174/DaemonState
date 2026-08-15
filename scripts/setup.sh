@@ -106,6 +106,18 @@ info "Building frontend…"
 (cd frontend && npm run build --silent)
 success "Frontend built → frontend/dist/"
 
+# ── Native macOS paste helper ────────────────────────────────────────────────
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  command -v swift >/dev/null 2>&1 \
+    || error "Swift is required for browser-to-desktop Continue on macOS. Install Xcode Command Line Tools and retry."
+  info "Building the native macOS context helper…"
+  swift build \
+    --disable-sandbox \
+    --package-path desktop/macos/DaemonStateOverlay \
+    -c release
+  success "Native context helper built"
+fi
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}${GREEN}Setup complete!${RESET}"

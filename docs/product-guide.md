@@ -156,10 +156,10 @@ project-wide parent     task-specific child
 
 ## Continue
 
-Continue carries the newest eligible in-project session forward by default.
-Its explicit **Choose custom sessions in Execute** path can return up to three
-workspace-scoped sessions as numbered, provider-matched choices without
-changing that default.
+Continue carries the newest eligible in-project session forward. Every
+destination card uses that same source session. **Choose custom sessions in
+Execute** can send up to three workspace-scoped Session Contexts to the
+floating button, but it does not change any card's source.
 
 ### Selection
 
@@ -171,15 +171,14 @@ identity. Internal sessions and sessions from another project are excluded.
 The default Continue action does not use:
 
 - a historical Library selection;
-- an Execute selection unless the user entered Execute from Continue and
-  explicitly returned with that custom-session flow;
+- an Execute selection;
 - an arbitrary session ID in the URL;
 - a saved recovery point as a silent replacement; or
 - an older indexed session when latest-session discovery failed.
 
-If no eligible latest session exists, the default action remains disabled.
-The custom path only offers sessions explicitly selected through Execute, and
-each choice preserves its exact provider and session identity.
+If no eligible latest session exists, the action remains disabled. Execute's
+selected sessions preserve their exact provider and identity for the floating
+button without becoming Continue-card inputs.
 
 ### Preparation
 
@@ -211,23 +210,33 @@ URL scheme:
 - `claude://code/new`
 - `opencode://new-session`
 
-When the complete context fits the bounded native link, a prefill is requested.
-The clipboard always remains the complete fallback. A successful Launch
-Services request proves neither that the destination rendered nor that the
-user submitted it. The response therefore reports a handoff, hash, and dispatch
-state—not a provider session ID or agent run.
+The link carries the project directory. Codex and Claude carry no prompt;
+OpenCode carries only a fresh non-sensitive marker. After dispatch, DaemonState
+waits for the exact provider bundle and requests a native paste. OpenCode must
+expose one marker-valued normal chat composer in its focused window; the helper
+focuses that exact element and replaces the marker only on that element. A
+harmless type/delete handshake then proves OpenCode synchronized its internal
+input state, and exact readback verifies the full value. Its integrated terminal,
+shell mode, and unverified app-level Command-V fallback are
+rejected. The clipboard always remains the complete fallback. The response
+reports a handoff, hash,
+open state, and paste state—not a provider session ID or agent run.
 
 Staging is idempotent. Reloads and same-key retries do not dispatch twice.
-Because dispatch remains unverified, the user can deliberately choose
-**Request again**, which creates a new key after checking the target app.
+Because route rendering and Command-V insertion may remain unverified, the user
+can deliberately choose **Request again**, which creates a new key after
+checking the target app.
 
 ### Provider readiness
 
-Browser readiness has a narrow scope: desktop application installation and a
-registered URL handler are the hard dispatch gates. Codex account, model, and
-rate-limit evidence is read-only and reported separately when the local app
-server supports it. Inconclusive account evidence does not become a fabricated
-manual attestation requirement.
+Browser readiness has a narrow scope: desktop application installation, a
+registered URL handler, and an available native paste helper are hard delivery
+gates. Codex account, model, and rate-limit evidence is read-only when the local
+app server supports it. Known signed-out or rate-limited states block the card;
+inconclusive or timed-out account evidence remains actionable but is labelled
+unverified. A hard desktop readiness timeout is shown as an undetermined,
+retryable check and is never presented as proof that the application is
+missing. macOS may request Accessibility access on the first paste.
 
 The automatic CLI path applies stricter task-specific capability gates, such
 as command execution, permission modes, file context, filesystem writes, or

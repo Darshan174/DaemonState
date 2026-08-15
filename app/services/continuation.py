@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models import Component, SessionEvent, SourceDocument, WorkCheckpoint, Workspace
 from app.schemas.continuation_execution import (
+    MAX_CONTINUATION_ARTIFACTS,
     ArtifactReference,
     ContinuationArtifactInput,
     TaskMode,
@@ -100,6 +101,8 @@ _EXECUTION_ONLY_QUALITY_CODES = frozenset({
     "verifier_command_missing",
     "provider_capability_missing",
     "handoff_semantic_conflict",
+    "worker_handoff_current_lead_missing",
+    "worker_handoff_overhead_budget_exceeded",
 })
 _PROJECT_CONTEXT_COPY_NON_BLOCKING_CODES = frozenset({
     "selected_task_completed",
@@ -131,6 +134,13 @@ class ContinuationError(ValueError):
 
 
 @dataclass(frozen=True)
+class _SessionTaskRequestBinding:
+    event: SessionEvent
+    source_document: SourceDocument
+    request_verbatim: str
+
+
+@dataclass(frozen=True)
 class _SessionTaskCandidate:
     provider: str
     session_id: str
@@ -139,6 +149,7 @@ class _SessionTaskCandidate:
     tip_event: SessionEvent
     objective: str
     request_verbatim: str
+    active_request_bindings: tuple[_SessionTaskRequestBinding, ...]
     request_recovered: bool = False
 
 
@@ -275,8 +286,7 @@ class ContinuationService:
                 ),
             )
         objective_origin = "explicit" if normalized_objective else None
-        trusted_request_event: SessionEvent | None = None
-        trusted_request_document: SourceDocument | None = None
+        trusted_request_bindings: tuple[_SessionTaskRequestBinding, ...] = ()
         current_goal = None
         sync_summary = None
         attention: list[dict[str, str]] = []
@@ -445,6 +455,17 @@ class ContinuationService:
                     request_verbatim=requested_checkpoint_recovered_goal,
                     access_scope=access_scope,
                 )
+                if (
+                    trusted_request_event is not None
+                    and trusted_request_document is not None
+                ):
+                    trusted_request_bindings = (
+                        _SessionTaskRequestBinding(
+                            event=trusted_request_event,
+                            source_document=trusted_request_document,
+                            request_verbatim=requested_checkpoint_recovered_goal,
+                        ),
+                    )
         elif requested_checkpoint_key is not None:
             if checkpoint_source_id is None:
                 raise ContinuationError(
@@ -577,8 +598,7 @@ class ContinuationService:
                         "compatible source-backed objective."
                     ),
                 )
-            trusted_request_event = session_candidate.goal_event
-            trusted_request_document = session_candidate.source_document
+            trusted_request_bindings = session_candidate.active_request_bindings
             if (
                 normalized_objective is not None
                 and not objective_is_user_edited
@@ -611,8 +631,7 @@ class ContinuationService:
             authoritative_request_verbatim = session_candidate.request_verbatim
             objective_origin = "session"
             if source_session_filter is not None:
-                trusted_request_event = session_candidate.goal_event
-                trusted_request_document = session_candidate.source_document
+                trusted_request_bindings = session_candidate.active_request_bindings
 
         if normalized_objective is None:
             fallback_checkpoint = next(
@@ -699,66 +718,27 @@ class ContinuationService:
             authoritative_request_verbatim
         )
         trusted_request_artifacts: tuple[ArtifactReference, ...] = ()
-        if (
-            trusted_request_event is not None
-            and trusted_request_document is not None
-        ):
-            trusted_descriptors = (
-                trusted_request_image_descriptors_from_payload(
-                    event_payload(trusted_request_event)
-                )
+        if trusted_request_bindings:
+            exact_request_bindings = trusted_request_bindings
+            continuation_lead_replaces_history = bool(
+                validated_continuation_lead is not None
+                and hashlib.sha256(
+                    historical_request_verbatim.encode("utf-8")
+                ).hexdigest()
+                != authoritative_request.request_sha256
             )
-            if (
-                (
-                    not trusted_descriptors
-                    or any(
-                        not descriptor.resolved_path
-                        for descriptor in trusted_descriptors
-                    )
+            if objective_is_user_edited or continuation_lead_replaces_history:
+                exact_request_bindings = tuple(
+                    binding
+                    for binding in trusted_request_bindings
+                    if hashlib.sha256(
+                        binding.request_verbatim.encode("utf-8")
+                    ).hexdigest()
+                    == authoritative_request.request_sha256
                 )
-                and trusted_request_event.provider == "codex"
-            ):
-                source_path = str(
-                    metadata_dict(trusted_request_document).get(
-                        "source_path"
-                    )
-                    or ""
-                ).strip()
-                if source_path:
-                    recovered_descriptors = (
-                        recover_codex_request_image_descriptors(
-                            source_path=source_path,
-                            source_sequence_number=(
-                                trusted_request_event.sequence_number
-                            ),
-                            request_verbatim=(
-                                trusted_request_event.content
-                                or authoritative_request.request_verbatim
-                            ),
-                            codex_sessions_root=_codex_sessions_root(),
-                            artifact_data_dir=settings.data_dir,
-                        )
-                    )
-                    if (
-                        not trusted_descriptors
-                        or _durable_descriptor_recovery_matches(
-                            trusted_descriptors,
-                            recovered_descriptors,
-                        )
-                    ):
-                        trusted_descriptors = recovered_descriptors
-            trusted_request_artifacts = (
-                resolve_trusted_request_image_artifacts(
-                    authoritative_request.request_verbatim,
-                    trusted_descriptors=trusted_descriptors,
-                    allow_local_files=(
-                        access_scope.principal_id == "local"
-                    ),
-                    include_unreferenced_trusted_descriptors=(
-                        not objective_is_user_edited
-                        and validated_continuation_lead is None
-                    ),
-                )
+            trusted_request_artifacts = _resolve_trusted_request_artifacts(
+                exact_request_bindings,
+                allow_local_files=(access_scope.principal_id == "local"),
             )
         effective_artifacts: tuple[
             ContinuationArtifactInput | ArtifactReference,
@@ -1961,7 +1941,13 @@ class ContinuationService:
         request_events = await recent_events(("user_request", "runtime_instruction"))
         resolved_by_session: dict[
             tuple[str, str],
-            tuple[SessionEvent, str, str, bool],
+            tuple[
+                SessionEvent,
+                str,
+                str,
+                tuple[_SessionTaskRequestBinding, ...],
+                bool,
+            ],
         ] = {}
         session_order: list[tuple[str, str]] = []
         for event in request_events:
@@ -1998,6 +1984,7 @@ class ContinuationService:
             recovered_event_ids: set[str] = set()
             unrecoverable_event_ids: set[str] = set()
             original_by_id: dict[str, SessionEvent] = {}
+            request_by_id: dict[str, str] = {}
             for event in session_events:
                 event_id = str(event.provider_event_id or event.id)
                 original_by_id[event_id] = event
@@ -2019,9 +2006,13 @@ class ContinuationService:
                     replay_events.append(event)
                     continue
                 if recovered_request is None:
+                    request_verbatim = _event_request_verbatim(event)
+                    if request_verbatim is not None:
+                        request_by_id[event_id] = request_verbatim
                     replay_events.append(event)
                     continue
                 recovered_event_ids.add(event_id)
+                request_by_id[event_id] = recovered_request
                 replay_events.append(
                     SimpleNamespace(
                         provider_event_id=event.provider_event_id,
@@ -2098,6 +2089,38 @@ class ContinuationService:
             goal_event = original_by_id.get(active_goal.root_event_id)
             if goal_event is None:
                 continue
+            active_request_bindings: list[_SessionTaskRequestBinding] = []
+            for event_id in active_goal.source_event_ids:
+                event = original_by_id.get(event_id)
+                request = request_by_id.get(event_id)
+                source = (
+                    documents_by_id.get(event.source_document_id)
+                    if event is not None
+                    else None
+                )
+                if (
+                    event is None
+                    or source is None
+                    or request is None
+                    or (
+                        event.event_type != "user_request"
+                        and not (
+                            event.event_type == "runtime_instruction"
+                            and event.role == "user"
+                        )
+                    )
+                ):
+                    active_request_bindings = []
+                    break
+                active_request_bindings.append(
+                    _SessionTaskRequestBinding(
+                        event=event,
+                        source_document=source,
+                        request_verbatim=request,
+                    )
+                )
+            if len(active_request_bindings) != len(active_goal.source_event_ids):
+                continue
             if (
                 source_session is not None
                 and objective
@@ -2108,6 +2131,7 @@ class ContinuationService:
                 goal_event,
                 goal,
                 request_verbatim,
+                tuple(active_request_bindings),
                 bool(recovered_event_ids & set(active_goal.source_event_ids)),
             )
 
@@ -2118,6 +2142,7 @@ class ContinuationService:
                 goal_event,
                 goal,
                 request_verbatim,
+                active_request_bindings,
                 request_recovered,
             ) = resolved_by_session[key]
             if objective and not _goals_compatible(objective, goal):
@@ -2147,6 +2172,7 @@ class ContinuationService:
                 tip_event=tip,
                 objective=goal,
                 request_verbatim=request_verbatim,
+                active_request_bindings=active_request_bindings,
                 request_recovered=request_recovered,
             )
         return None
@@ -2997,6 +3023,66 @@ def _durable_descriptor_recovery_matches(
         )
         for stored, restored in zip(persisted, recovered, strict=True)
     )
+
+
+def _resolve_trusted_request_artifacts(
+    bindings: tuple[_SessionTaskRequestBinding, ...],
+    *,
+    allow_local_files: bool,
+) -> tuple[ArtifactReference, ...]:
+    """Resolve active-task images against only their exact source user turn."""
+
+    artifacts: list[ArtifactReference] = []
+    for binding in bindings:
+        event = binding.event
+        trusted_descriptors = trusted_request_image_descriptors_from_payload(
+            event_payload(event)
+        )
+        if (
+            (
+                not trusted_descriptors
+                or any(
+                    not descriptor.resolved_path
+                    for descriptor in trusted_descriptors
+                )
+            )
+            and event.provider == "codex"
+        ):
+            source_path = str(
+                metadata_dict(binding.source_document).get("source_path") or ""
+            ).strip()
+            if source_path:
+                recovered_descriptors = recover_codex_request_image_descriptors(
+                    source_path=source_path,
+                    source_sequence_number=event.sequence_number,
+                    request_verbatim=binding.request_verbatim,
+                    codex_sessions_root=_codex_sessions_root(),
+                    artifact_data_dir=settings.data_dir,
+                )
+                if (
+                    not trusted_descriptors
+                    or _durable_descriptor_recovery_matches(
+                        trusted_descriptors,
+                        recovered_descriptors,
+                    )
+                ):
+                    trusted_descriptors = recovered_descriptors
+        resolved = resolve_trusted_request_image_artifacts(
+            binding.request_verbatim,
+            trusted_descriptors=trusted_descriptors,
+            allow_local_files=allow_local_files,
+            include_unreferenced_trusted_descriptors=True,
+        )
+        for artifact in resolved:
+            if len(artifacts) >= MAX_CONTINUATION_ARTIFACTS:
+                raise ValueError(
+                    "continuation artifacts exceed the supported limit of "
+                    f"{MAX_CONTINUATION_ARTIFACTS}"
+                )
+            artifacts.append(
+                artifact.model_copy(update={"id": f"A{len(artifacts) + 1}"})
+            )
+    return tuple(artifacts)
 
 
 def _attention(code: str, severity: str, message: str) -> dict[str, str]:

@@ -45,7 +45,9 @@ def test_readme_documents_honest_setup_deployment_and_contributing_paths():
     assert "It is not a production hardening guide" in text
     assert "There are no built-in Codex" not in text
     assert "requests a new composer" in text
-    assert "not as a verified open" in text
+    assert "verifies the selected provider bundle" in text
+    assert "Command-V remains explicitly" in text
+    assert "Neither path starts or submits a provider turn" in text
     assert "There is no system-wide agent monitor" in text
     assert "local harness is the path that independently inspects Git state" in " ".join(text.split())
     assert "Continue automatically captures the selected session tip" in text

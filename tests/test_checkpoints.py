@@ -26,13 +26,16 @@ from app.services.checkpoints import (
     CHECKPOINT_CATEGORIES,
     COMPACT_SESSION_CONTEXT_REQUIRED_HEADINGS,
     SESSION_CONTEXT_REQUIRED_HEADINGS,
+    _compact_markdown_literal_code,
     _derive_session_requirements,
     _handoff_presentation_sections,
     _infer_session_task_mode,
     _is_useful_discovery_command,
     _is_useful_verification_command,
     _meaningful_command_result,
+    _rendered_historical_command,
     _reconcile_session_handoff,
+    _reported_blocker_satisfied_by_progress,
     _request_extends_active_session_task,
     _session_attachment_dependencies,
     _session_attachment_dependency_role,
@@ -1098,9 +1101,10 @@ async def test_session_handoff_reconciles_completion_continuation_conflict(
         session_id="conflicting-handoff",
         events=events,
     )
+    snapshot = _snapshot(tmp_path)
     monkeypatch.setattr(
         "app.services.checkpoints.capture_repository_snapshot",
-        _async_value(_snapshot(tmp_path)),
+        _async_value(snapshot),
     )
     checkpoint = (
         await capture_missing_compaction_checkpoints(
@@ -1166,6 +1170,142 @@ async def test_session_handoff_reconciles_completion_continuation_conflict(
     assert (
         "Neither is treated as current truth until repository inspection resolves it."
         in handoff["content"]
+    )
+
+    staged = build_session_handoff_artifact(
+        checkpoint,
+        request_verbatim=str(events[0].content),
+        delivery_mode="desktop_stage",
+        render_variant="compact_v2",
+        repository_comparison={
+            "status": "unchanged",
+            "reason": "The current checkout matches the captured checkpoint.",
+            "checked_at": utc_now(),
+            "current": snapshot.to_dict(),
+        },
+    )
+    assert staged["reconciliation"]["state"] == "needs_reconciliation"
+    assert staged["quality_report"]["status"] == "review_required"
+    assert staged["quality_report"]["copy_ready"] is True
+    assert staged["quality_report"]["automatic_execution_ready"] is False
+    conflict_warning = next(
+        item
+        for item in staged["quality_report"]["warnings"]
+        if item["code"] == "completion_continuation_conflict_reconciled"
+    )
+    assert conflict_warning["status"] == "warning"
+    assert (
+        "non-submitting Session Context remains safe to review"
+        in conflict_warning["message"]
+    )
+    assert not any(
+        item["code"] == "completion_continuation_conflict_reconciled"
+        for item in staged["quality_report"]["blocking_issues"]
+    )
+    assert (
+        "Reconciliation warning: prior completion and continuation claims conflict."
+        in staged["content"]
+    )
+
+
+async def test_session_handoff_binds_yes_go_ahead_to_one_recommended_plan(
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="recommended-plan-handoff",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="recommended-plan:user-goal",
+                sequence_number=1,
+                event_type="user_request",
+                role="user",
+                content="Investigate why the Continue cards are disabled.",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="recommended-plan:assistant",
+                sequence_number=2,
+                event_type="assistant_update",
+                role="assistant",
+                content=(
+                    "The diagnosis includes several historical observations.\n\n"
+                    "### Recommended correction order\n\n"
+                    "1. Remove the Continue-only maturity lock.\n"
+                    "2. Keep Execute's historical-copy gate.\n"
+                    "3. Verify the destination-specific paste result.\n"
+                    "4. Preserve unrelated workspace changes.\n"
+                    "5. Run the focused tests."
+                ),
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="recommended-plan:user-acceptance",
+                sequence_number=3,
+                event_type="user_request",
+                role="user",
+                content="yes go ahead",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="recommended-plan:boundary",
+                sequence_number=4,
+                event_type="compaction_boundary",
+            ),
+        ],
+    )
+    snapshot = _snapshot(tmp_path)
+    monkeypatch.setattr(
+        "app.services.checkpoints.capture_repository_snapshot",
+        _async_value(snapshot),
+    )
+    checkpoint = (
+        await capture_missing_compaction_checkpoints(
+            db_session,
+            workspace_id=workspace.id,
+            provider="codex",
+            session_id="recommended-plan-handoff",
+        )
+    )[0]
+    checkpoint = await get_checkpoint(db_session, checkpoint.id)
+    assert checkpoint is not None
+    data = checkpoint_to_dict(checkpoint)
+    goal = data["sections"]["goal"][0]
+    conversation_state = goal["payload"]["conversation_state"]
+
+    assert conversation_state["unresolved_references"] == []
+    assert conversation_state["transitions"][-1]["act"] == "accept"
+    assert "Remove the Continue-only maturity lock" in (
+        conversation_state["decisions"][-1]["statement"]
+    )
+    assert "historical observations" not in (
+        conversation_state["decisions"][-1]["statement"]
+    )
+
+    staged = build_session_handoff_artifact(
+        checkpoint,
+        request_verbatim=goal["payload"]["request_verbatim"],
+        checkpoint_data=data,
+        delivery_mode="desktop_stage",
+        repository_comparison={
+            "status": "unchanged",
+            "reason": "The current checkout matches the captured checkpoint.",
+            "checked_at": utc_now(),
+            "current": snapshot.to_dict(),
+        },
+    )
+    reference_check = next(
+        item
+        for item in staged["quality_report"]["checks"]
+        if item["code"] == "conversation_references_resolved"
+    )
+    assert reference_check["status"] == "pass"
+    assert not any(
+        item["code"] == "conversation_references_resolved"
+        for item in staged["quality_report"]["blocking_issues"]
     )
 
 
@@ -1616,7 +1756,45 @@ def test_session_task_chain_keeps_explicit_dependent_follow_up(
             "Use the attached screenshot as the source of truth for colors, "
             "spacing, typography, and responsive layout."
         ),
+        (
+            "The OpenCode Continue prompt lands in the terminal instead of the "
+            "chatbox, as shown in the screenshot."
+        ),
+        (
+            "After selecting OpenCode Continue from the current workspace, the app "
+            "opens the expected desktop window and prepares all of the generated "
+            "continuation context, but it still delivers that prompt to the terminal "
+            "instead of the chat composer, as shown in the screenshot."
+        ),
+        (
+            "Review this screenshot and explain the failure. The current production "
+            "behavior occurs only after the workspace is selected, the desktop app "
+            "opens, the continuation context is generated, the target provider is "
+            "activated, and focus moves between multiple controls before the content "
+            "lands in the wrong destination, so preserve every detail while tracing it."
+        ),
+        "Unlike the old build, this current failure is shown in the screenshot.",
+        "The prior issue is fixed; the current issue is shown in the screenshot.",
+        (
+            "Unlike the previous screenshot, the attached screenshot shows the "
+            "current failure."
+        ),
+        (
+            "The old screenshot is obsolete. Inspect this screenshot to explain "
+            "the current issue."
+        ),
+        "Ignore the old screenshot; review this new screenshot.",
+        "Ignore the old screenshot; inspect the screenshot I just attached.",
+        "Ignore the old screenshot; inspect the image attached below.",
+        "Ignore the first screenshot; review the second screenshot.",
+        (
+            "The previous screenshot documented an obsolete build with an unrelated "
+            "focus path and is retained only for comparison. Inspect this screenshot "
+            "to explain the current production issue after the desktop app opens, "
+            "activates the provider, and moves focus into the wrong destination."
+        ),
         "Look at this screenshot and explain what is wrong.",
+        "Do not ignore the attached screenshot; use it to verify the current failure.",
     ],
 )
 def test_session_attachment_keeps_direct_visual_dependency_active(
@@ -1625,23 +1803,304 @@ def test_session_attachment_keeps_direct_visual_dependency_active(
     assert _session_attachment_dependency_role(request_text) == "active_input"
 
 
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "Ignore the old screenshot; inspect the runtime logs instead.",
+        "This is not as shown in the screenshot anymore; use current runtime evidence.",
+        "The previous screenshot was historical context only.",
+        (
+            "Inspect this screenshot. Actually, ignore the current screenshot "
+            "and use runtime logs."
+        ),
+    ],
+)
+def test_historical_or_negated_screenshot_reference_is_not_active_input(
+    request_text: str,
+) -> None:
+    assert _session_attachment_dependency_role(request_text) == "historical_evidence"
+
+
 def test_session_attachments_are_classified_per_follow_up_fragment() -> None:
-    request = (
+    root = (
         "Build the automatic workflow described in detail here; the old image "
         "only documents the removed browser fallback.\n"
-        '<image name="old" path="/tmp/old.png"></image>\n\n'
-        "## Additional user-authored requirements\n\n"
-        "### Follow-up 1\n"
+        '<image name="old" path="/tmp/old.png"></image>'
+    )
+    follow_up = (
         "Inspect this screenshot and explain the incorrect card state.\n"
         '<image name="current" path="/tmp/current.png"></image>'
     )
+    request = (
+        f"{root}\n\n"
+        "## Additional user-authored requirements\n\n"
+        f"### Follow-up 1\n{follow_up}"
+    )
 
-    attachments = _session_attachment_dependencies(request)
+    attachments = _session_attachment_dependencies(
+        request,
+        request_fragments=(root, follow_up),
+    )
 
     assert [(item["name"], item["dependency_role"], item["required"]) for item in attachments] == [
         ("old", "historical_evidence", False),
         ("current", "active_input", True),
     ]
+
+
+def test_session_attachments_are_classified_per_declaration_within_one_fragment() -> None:
+    request = (
+        "Ignore the first screenshot; review the second screenshot.\n"
+        '<image name="old" path="/tmp/old.png"></image>\n'
+        '<image name="current" path="/tmp/current.png"></image>'
+    )
+
+    attachments = _session_attachment_dependencies(request)
+
+    assert [
+        (item["name"], item["dependency_role"], item["required"])
+        for item in attachments
+    ] == [
+        ("old", "historical_evidence", False),
+        ("current", "active_input", True),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("directive", "expected_roles"),
+    [
+        (
+            "Ignore the first screenshot and review the second screenshot.",
+            [("historical_evidence", False), ("active_input", True)],
+        ),
+        (
+            "Use image 2, not image 1.",
+            [("historical_evidence", False), ("active_input", True)],
+        ),
+        (
+            "Use the first screenshot, but ignore the second.",
+            [("active_input", True), ("historical_evidence", False)],
+        ),
+    ],
+)
+def test_coordinated_ordinal_image_instructions_are_scoped_per_reference(
+    directive: str,
+    expected_roles: list[tuple[str, bool]],
+) -> None:
+    request = (
+        f"{directive}\n"
+        '<image name="first" path="/tmp/first.png"></image>\n'
+        '<image name="second" path="/tmp/second.png"></image>'
+    )
+
+    attachments = _session_attachment_dependencies(request)
+
+    assert [
+        (item["dependency_role"], item["required"])
+        for item in attachments
+    ] == expected_roles
+
+
+@pytest.mark.parametrize(
+    "directive",
+    [
+        "Ignore images 1 and 2; review image 3.",
+        "Ignore the first two screenshots; review the third screenshot.",
+    ],
+)
+def test_grouped_ordinal_image_instructions_are_scoped_per_reference(
+    directive: str,
+) -> None:
+    request = (
+        f"{directive}\n"
+        '<image name="first" path="/tmp/first.png"></image>\n'
+        '<image name="second" path="/tmp/second.png"></image>\n'
+        '<image name="third" path="/tmp/third.png"></image>'
+    )
+
+    attachments = _session_attachment_dependencies(request)
+
+    assert [
+        (item["dependency_role"], item["required"])
+        for item in attachments
+    ] == [
+        ("historical_evidence", False),
+        ("historical_evidence", False),
+        ("active_input", True),
+    ]
+
+
+def test_oxford_comma_image_group_is_scoped_per_reference() -> None:
+    request = (
+        "Ignore images 1, 2, and 3; review image 4.\n"
+        '<image name="first" path="/tmp/first.png"></image>\n'
+        '<image name="second" path="/tmp/second.png"></image>\n'
+        '<image name="third" path="/tmp/third.png"></image>\n'
+        '<image name="fourth" path="/tmp/fourth.png"></image>'
+    )
+
+    attachments = _session_attachment_dependencies(request)
+
+    assert [
+        (item["dependency_role"], item["required"])
+        for item in attachments
+    ] == [
+        ("historical_evidence", False),
+        ("historical_evidence", False),
+        ("historical_evidence", False),
+        ("active_input", True),
+    ]
+
+
+def test_other_grouped_images_are_excluded_from_the_selected_ordinal() -> None:
+    request = (
+        "Use only the third screenshot; ignore the other two.\n"
+        '<image name="first" path="/tmp/first.png"></image>\n'
+        '<image name="second" path="/tmp/second.png"></image>\n'
+        '<image name="third" path="/tmp/third.png"></image>'
+    )
+
+    attachments = _session_attachment_dependencies(request)
+
+    assert [
+        (item["dependency_role"], item["required"])
+        for item in attachments
+    ] == [
+        ("historical_evidence", False),
+        ("historical_evidence", False),
+        ("active_input", True),
+    ]
+
+
+@pytest.mark.parametrize(
+    "directive",
+    [
+        "Ignore the old screenshot; review the current screenshot.",
+        "Review the current screenshot; ignore the old screenshot.",
+    ],
+)
+def test_named_old_and_current_attachments_receive_distinct_roles(
+    directive: str,
+) -> None:
+    request = (
+        f"{directive}\n"
+        '<image name="old" path="/tmp/old.png"></image>\n'
+        '<image name="current" path="/tmp/current.png"></image>'
+    )
+
+    attachments = _session_attachment_dependencies(request)
+
+    assert [
+        (item["name"], item["dependency_role"], item["required"])
+        for item in attachments
+    ] == [
+        ("old", "historical_evidence", False),
+        ("current", "active_input", True),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("directive", "historical_name", "active_name"),
+    [
+        (
+            "Ignore the before screenshot; review the after screenshot.",
+            "before",
+            "after",
+        ),
+        (
+            "Use the target screenshot, but ignore the baseline screenshot.",
+            "baseline",
+            "target",
+        ),
+    ],
+)
+def test_semantically_named_mixed_attachments_receive_distinct_roles(
+    directive: str,
+    historical_name: str,
+    active_name: str,
+) -> None:
+    request = (
+        f"{directive}\n"
+        f'<image name="{historical_name}" path="/tmp/historical.png"></image>\n'
+        f'<image name="{active_name}" path="/tmp/active.png"></image>'
+    )
+
+    attachments = _session_attachment_dependencies(request)
+
+    assert [
+        (item["name"], item["dependency_role"], item["required"])
+        for item in attachments
+    ] == [
+        (historical_name, "historical_evidence", False),
+        (active_name, "active_input", True),
+    ]
+
+
+def test_arbitrarily_named_mixed_attachments_bind_to_named_instructions() -> None:
+    request = (
+        "Ignore the broken screenshot; review the fixed screenshot.\n"
+        '<image name="broken" path="/tmp/broken.png"></image>\n'
+        '<image name="fixed" path="/tmp/fixed.png"></image>'
+    )
+
+    attachments = _session_attachment_dependencies(request)
+
+    assert [
+        (item["name"], item["dependency_role"], item["required"])
+        for item in attachments
+    ] == [
+        ("broken", "historical_evidence", False),
+        ("fixed", "active_input", True),
+    ]
+
+
+def test_arbitrarily_named_attachment_ellipsis_keeps_distinct_roles() -> None:
+    request = (
+        "Ignore the broken screenshot and review the fixed one.\n"
+        '<image name="broken" path="/tmp/broken.png"></image>\n'
+        '<image name="fixed" path="/tmp/fixed.png"></image>'
+    )
+
+    attachments = _session_attachment_dependencies(request)
+
+    assert [
+        (item["name"], item["dependency_role"], item["required"])
+        for item in attachments
+    ] == [
+        ("broken", "historical_evidence", False),
+        ("fixed", "active_input", True),
+    ]
+
+
+def test_shared_token_attachment_names_bind_as_full_names() -> None:
+    request = (
+        "Ignore the login before screenshot; review the login after screenshot.\n"
+        '<image name="login before" path="/tmp/before.png"></image>\n'
+        '<image name="login after" path="/tmp/after.png"></image>'
+    )
+
+    attachments = _session_attachment_dependencies(request)
+
+    assert [
+        (item["name"], item["dependency_role"], item["required"])
+        for item in attachments
+    ] == [
+        ("login before", "historical_evidence", False),
+        ("login after", "active_input", True),
+    ]
+
+
+def test_later_current_image_opt_out_overrides_earlier_inspection_request() -> None:
+    request = (
+        "Inspect this screenshot. Actually, ignore the current screenshot and use "
+        "runtime logs.\n"
+        '<image name="current" path="/tmp/current.png"></image>'
+    )
+
+    attachments = _session_attachment_dependencies(request)
+
+    assert attachments[0]["dependency_role"] == "historical_evidence"
+    assert attachments[0]["required"] is False
 
 
 def test_session_handoff_treats_prescriptive_workflow_complaint_as_change() -> None:
@@ -4337,6 +4796,270 @@ async def test_later_progress_supersedes_reported_intermediate_blocker(
     )
 
 
+async def test_final_verification_counts_resolve_waiting_to_report_blocker(
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="final-count-blocker",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="final-count:user",
+                sequence_number=1,
+                event_type="user_request",
+                role="user",
+                content="Finish the OpenCode continuation workflow.",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="final-count:waiting",
+                sequence_number=2,
+                event_type="assistant_update",
+                role="assistant",
+                content="I’m waiting for the exact final count before handing this back.",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="final-count:complete",
+                sequence_number=3,
+                event_type="assistant_update",
+                role="assistant",
+                content=(
+                    "Final verification is complete: 2,279 backend tests, 98 native "
+                    "Swift tests, and 444 frontend tests passed; release helper rebuilt."
+                ),
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.checkpoints.capture_repository_snapshot",
+        _async_value(_snapshot(tmp_path)),
+    )
+    await db_session.commit()
+
+    checkpoint = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="final-count-blocker",
+        trigger="manual",
+    )
+    data = checkpoint_to_dict(await get_checkpoint(db_session, checkpoint.id))
+
+    assert data["sections"]["blockers"][0]["state"] == "historical"
+    assert checkpoint.continuation_status == "ready"
+
+
+@pytest.mark.parametrize(
+    "progress_statement",
+    [
+        (
+            "Final verification is complete: 12 backend tests and 3 frontend tests "
+            "passed; 0 pending, no failures."
+        ),
+        (
+            "Final verification is complete: 2,279 backend tests passed, 3 skipped, "
+            "0 failed."
+        ),
+        (
+            "Final verification is complete: 12 backend tests and 3 frontend tests "
+            "passed; failed: 0."
+        ),
+    ],
+)
+def test_zero_negative_statuses_preserve_positive_final_count_evidence(
+    progress_statement: str,
+) -> None:
+    assert _reported_blocker_satisfied_by_progress(
+        "I’m waiting for the exact final count before handing this back.",
+        progress_statement,
+        scope_text="Finish the OpenCode continuation workflow.",
+    )
+
+
+@pytest.mark.parametrize(
+    "progress_statement",
+    [
+        (
+            "Final verification is complete: 12 backend tests passed; "
+            "3 frontend tests passed."
+        ),
+        (
+            "Final verification is complete: passed 12 backend tests and "
+            "3 frontend tests."
+        ),
+    ],
+)
+def test_each_quantified_suite_can_bind_to_positive_pass_evidence(
+    progress_statement: str,
+) -> None:
+    assert _reported_blocker_satisfied_by_progress(
+        "I’m waiting for the exact final count before handing this back.",
+        progress_statement,
+        scope_text="Finish the OpenCode continuation workflow.",
+    )
+
+
+def test_waiting_for_final_count_remains_visible_until_evidence_arrives() -> None:
+    statement = "I’m waiting for the exact final count before handing this back."
+    sections = {category: [] for category in CHECKPOINT_CATEGORIES}
+    sections["blockers"] = [
+        {
+            "statement": statement,
+            "state": "active",
+            "truth_state": "reported",
+            "payload": {},
+        }
+    ]
+
+    projected = _handoff_presentation_sections(sections)
+
+    assert projected["blockers"] == sections["blockers"]
+
+
+@pytest.mark.parametrize(
+    "unrelated_progress",
+    [
+        "Final verification is complete: 12 billing tests passed.",
+        "Final verification is complete: 12 billing tests and 3 invoice tests passed.",
+        "Final verification is complete: 12 billing tests passed, 2 skipped, 0 failed.",
+        (
+            "Final verification is complete: 12 backend billing tests and 3 frontend "
+            "export tests passed."
+        ),
+        "Final verification is complete: 12 backend tests failed and 3 frontend tests failed.",
+        (
+            "Final verification is complete: 12 unit tests and 3 integration tests "
+            "are still failing."
+        ),
+        (
+            "Final verification is complete: 12 billing tests and 3 invoice tests "
+            "passed; backend and frontend suites remain pending."
+        ),
+        (
+            "Final verification is complete: 12 backend tests and 3 frontend tests "
+            "passed; failures: 1."
+        ),
+        (
+            "Final verification is complete: 12 backend tests passed; 3 frontend "
+            "tests have not run."
+        ),
+        (
+            "Final verification is complete: 12 backend tests passed; 3 frontend "
+            "tests errored."
+        ),
+        (
+            "Final verification is complete: 12 backend tests and 3 frontend tests "
+            "passed; release verification is incomplete."
+        ),
+        (
+            "Final verification is complete: 12 backend tests and 3 frontend tests; "
+            "no tests passed."
+        ),
+        (
+            "Final verification is complete: 12 backend tests and 3 frontend tests, "
+            "0 passed."
+        ),
+        (
+            "Final verification is complete: 12 backend tests skipped; lint passed."
+        ),
+        (
+            "Final verification is complete: 12 backend tests did not pass; lint passed."
+        ),
+        (
+            "Final verification is complete: 12 backend tests and 3 frontend tests "
+            "passed for billing."
+        ),
+        (
+            "Final verification is complete: for billing, 12 backend tests and 3 "
+            "frontend tests passed."
+        ),
+        (
+            "Final verification is complete: 12 backend tests and 3 frontend tests "
+            "passed in billing."
+        ),
+        (
+            "Final verification is complete: 12 backend tests passed, 3 frontend "
+            "tests were not executed."
+        ),
+        (
+            "Final verification is complete: 12 backend tests passed, 3 frontend "
+            "tests were ignored."
+        ),
+        (
+            "Final verification is complete: 12 backend tests passed, 3 frontend "
+            "tests are flaky."
+        ),
+        (
+            "Final verification is complete: 12 backend tests and 3 frontend tests, "
+            "passed: 0."
+        ),
+        (
+            "Final verification is complete: 12 backend tests and 3 frontend tests "
+            "were skipped, while lint passed."
+        ),
+    ],
+)
+async def test_unrelated_final_results_do_not_resolve_waiting_for_test_count(
+    db_session,
+    tmp_path,
+    monkeypatch,
+    unrelated_progress: str,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="unrelated-final-count",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="unrelated-final-count:user",
+                sequence_number=1,
+                event_type="user_request",
+                role="user",
+                content="Finish the OpenCode continuation workflow.",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="unrelated-final-count:waiting",
+                sequence_number=2,
+                event_type="assistant_update",
+                role="assistant",
+                content="I’m waiting for the exact final count before handing this back.",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="unrelated-final-count:billing",
+                sequence_number=3,
+                event_type="assistant_update",
+                role="assistant",
+                content=unrelated_progress,
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.checkpoints.capture_repository_snapshot",
+        _async_value(_snapshot(tmp_path)),
+    )
+    await db_session.commit()
+
+    checkpoint = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="unrelated-final-count",
+        trigger="manual",
+    )
+    data = checkpoint_to_dict(await get_checkpoint(db_session, checkpoint.id))
+
+    assert data["sections"]["blockers"][0]["state"] == "active"
+    assert checkpoint.continuation_status == "blocked"
+
+
 async def test_unrelated_progress_does_not_supersede_a_live_blocker(
     client,
     db_session,
@@ -5403,6 +6126,31 @@ def test_session_prompt_length_is_not_a_semantic_copy_failure() -> None:
     }
 
 
+def test_historical_commands_render_complete_or_with_an_integrity_marker() -> None:
+    complete = "pytest -q " + "tests/test_context.py " * 20
+    rendered, omission = _rendered_historical_command(complete)
+
+    assert rendered == complete.strip()
+    assert omission is None
+    assert "…" not in rendered
+
+    oversized = "x" * 4_001
+    rendered, omission = _rendered_historical_command(oversized)
+
+    assert rendered == ""
+    assert omission == (
+        "[complete command omitted: over display limit; chars=4001; "
+        f"sha256={hashlib.sha256(oversized.encode()).hexdigest()}]"
+    )
+    assert oversized[:240] not in omission
+
+    shell_bytes = 'python -c "print(`value`)" C:\\tmp\\context.json'
+    rendered_span = _compact_markdown_literal_code(shell_bytes)
+    assert rendered_span == f"`` {shell_bytes} ``"
+    assert r'\"' not in rendered_span
+    assert r"\u0060" not in rendered_span
+
+
 def test_compact_session_brief_is_copy_ready_specific_and_fail_closed(
     monkeypatch,
 ) -> None:
@@ -5417,6 +6165,17 @@ def test_compact_session_brief_is_copy_ready_specific_and_fail_closed(
         }
     ]
     contract = _compact_session_handoff_contract(goal, supporting=supporting)
+    complete_command = (
+        ".venv/bin/pytest -q tests/test_checkpoints.py "
+        "tests/test_session_handoff_intent_compiler.py "
+        "tests/test_session_handoff_evaluator_projection.py "
+        "tests/test_continuations.py -k "
+        "'compact_session or staged_handoff or desktop_composer or target_provider' "
+        '--note="OpenCode `composer`" '
+        r"C:\tmp\context.json"
+    )
+    assert len(complete_command) > 240
+    contract["verification"][0]["command"] = complete_command
     checkpoint_data = {
         "id": "checkpoint-compact",
         "provider": "codex",
@@ -5476,7 +6235,11 @@ def test_compact_session_brief_is_copy_ready_specific_and_fail_closed(
     )
     expanded_start = "Complete and verify R1 (Render a five-part continuation brief.)."
     assert expanded_start in content
-    assert "R1 [remaining; checks=V1]" in content
+    assert "R1 [remaining]" in content
+    assert "checks=V1" not in content
+    assert "verification=V1; requirements=R1" in content
+    assert complete_command in content
+    assert f"{complete_command[:240]}…" not in content
     assert "> [Failed approach; historical reported] Rebuilding all context" in content
     assert "> [Active blocker; historical reported] The old prompt is too noisy" in content
     assert "attachment-A1" in content
@@ -5515,7 +6278,7 @@ def test_compact_session_brief_is_copy_ready_specific_and_fail_closed(
     assert "exact_next_action" in critical["missing_fragments"]
 
     missing_requirement = content.replace(
-        "- R1 [remaining; checks=V1]: Render a five-part continuation brief.",
+        "- R1 [remaining]: Render a five-part continuation brief.",
         "- Render a five-part continuation brief.",
     )
     requirement_issues = session_handoff_render_issues(
@@ -5533,8 +6296,8 @@ def test_compact_session_brief_is_copy_ready_specific_and_fail_closed(
     assert "requirement_R1" in requirement_critical["missing_fragments"]
 
     missing_requirement_text = content.replace(
-        "- R1 [remaining; checks=V1]: Render a five-part continuation brief.",
-        "- R1 [remaining; checks=V1]: requirement text omitted",
+        "- R1 [remaining]: Render a five-part continuation brief.",
+        "- R1 [remaining]: requirement text omitted",
     )
     text_issues = session_handoff_render_issues(
         missing_requirement_text,
@@ -5549,6 +6312,43 @@ def test_compact_session_brief_is_copy_ready_specific_and_fail_closed(
         if item["code"] == "compact_session_context_critical_state_missing"
     )
     assert "requirement_R1" in text_critical["missing_fragments"]
+
+    contaminated_goal = content.replace(
+        f"{goal}\n\nOriginal user request (authoritative):",
+        f"{goal}\n\nthis was th\n\nOriginal user request (authoritative):",
+        1,
+    )
+    goal_issues = session_handoff_render_issues(
+        contaminated_goal,
+        request_verbatim=goal,
+        supporting_context=supporting,
+        handoff_contract=contract,
+        variant="compact_v2",
+    )
+    goal_critical = next(
+        item
+        for item in goal_issues
+        if item["code"] == "compact_session_context_critical_state_missing"
+    )
+    assert "goal_section_exact" in goal_critical["missing_fragments"]
+
+    undefined_check = content.replace(
+        "- R1 [remaining]: Render a five-part continuation brief.",
+        "- R1 [remaining; checks=V9]: Render a five-part continuation brief.",
+    )
+    check_issues = session_handoff_render_issues(
+        undefined_check,
+        request_verbatim=goal,
+        supporting_context=supporting,
+        handoff_contract=contract,
+        variant="compact_v2",
+    )
+    check_critical = next(
+        item
+        for item in check_issues
+        if item["code"] == "compact_session_context_critical_state_missing"
+    )
+    assert "unverifiable_requirement_check_reference" in check_critical["missing_fragments"]
 
 
 def test_production_shaped_generated_overhead_is_advisory_not_a_copy_veto(

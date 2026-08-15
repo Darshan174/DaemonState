@@ -3067,7 +3067,8 @@
   }
 }
 
-@media (min-width: 768px) and (max-width: 1023px) {
+/* Keep the provider rail scrollable until the sidebar leaves room for the deck. */
+@media (min-width: 768px) and (max-width: 1279px) {
   .daemonstate-harness-fan.daemonstate-provider-layout {
     display: flex;
     min-height: 0;
@@ -3085,13 +3086,13 @@
       );
   }
 
-  .daemonstate-provider-group {
+  .daemonstate-harness-fan.daemonstate-provider-layout > .daemonstate-provider-group {
     display: flex;
     min-height: 0;
   }
 }
 
-@media (min-width: 1024px) {
+@media (min-width: 1280px) {
   .daemonstate-harness-fan.daemonstate-provider-layout {
     display: grid;
     grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
@@ -3128,12 +3129,13 @@
   }
 
   .daemonstate-provider-group[data-provider-count="2"] > .daemonstate-provider-card[data-fan-position="left"] {
-    --daemonstate-fan-x: -112px;
+    /* Rotating a 260px by 352px card by 5deg makes it about 290px wide. */
+    --daemonstate-fan-x: -150px;
     --daemonstate-fan-y: 12px;
   }
 
   .daemonstate-provider-group[data-provider-count="2"] > .daemonstate-provider-card[data-fan-position="right"] {
-    --daemonstate-fan-x: 112px;
+    --daemonstate-fan-x: 150px;
     --daemonstate-fan-y: 12px;
   }
 
@@ -3153,14 +3155,6 @@
 }
 
 @media (min-width: 1280px) {
-  .daemonstate-provider-group[data-provider-count="2"] > .daemonstate-provider-card[data-fan-position="left"] {
-    --daemonstate-fan-x: -125px;
-  }
-
-  .daemonstate-provider-group[data-provider-count="2"] > .daemonstate-provider-card[data-fan-position="right"] {
-    --daemonstate-fan-x: 125px;
-  }
-
   .daemonstate-provider-group[data-provider-count="3"] > .daemonstate-provider-card[data-fan-position="left"] {
     --daemonstate-fan-x: -92px;
   }

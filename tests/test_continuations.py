@@ -44,6 +44,8 @@ from app.services import continuation as continuation_module
 from app.services.checkpoints import (
     MAX_CONTINUATION_LEAD_CHARS,
     capture_checkpoint,
+    get_checkpoint,
+    project_desktop_stage_checkpoint_data,
 )
 from app.services.continuation import _checkpoint_repo_compatible
 from app.services.continuation_quality_gate import (
@@ -53,6 +55,7 @@ from app.services.continuation_quality_gate import (
 from app.services.continuation_runtime import (
     ContinuationRunError,
     ContinuationStageService,
+    staged_continuation_payload,
 )
 from app.services.harness_adapters import ProviderReadiness
 from app.services.harness_launcher import (
@@ -66,6 +69,159 @@ from app.services.session_events import NormalizedSessionEvent, persist_session_
 from app.services.source_revisions import ingest_source_document_revision
 from app.sync.session_resolvers import ResolvedSession, SessionDiscoveryResult
 from app.time import utc_now
+
+
+def _native_paste_launch_result(
+    *,
+    verified: bool = True,
+    provider: str = "codex",
+) -> dict[str, object]:
+    verified_method = (
+        "accessibility_verified_input_sync"
+        if provider == "opencode"
+        else "accessibility_insert"
+    )
+    return {
+        "launched": True,
+        "open_requested": True,
+        "open_verified": True,
+        "navigation_requested": True,
+        "navigation_verified": False,
+        "mode": "desktop_composer",
+        "navigation": "new_session",
+        "exact_session_supported": False,
+        "prefill_requested": False,
+        "context_copied": True,
+        "context_loaded": verified,
+        "paste_requested": True,
+        "paste_verified": verified,
+        "paste_method": verified_method if verified else "command_v",
+        "paste_code": (
+            "desktop_context_inserted" if verified else "desktop_paste_command_dispatched"
+        ),
+        "paste_message": "Context delivery requested. Nothing was submitted.",
+        "paste_action": "Review the complete draft.",
+        "target_policy": "opencode-chat-composer-v1",
+        "target_kind": "chat_composer",
+        "target_identity_verified": True,
+        "marker_replaced": True,
+        "execution_started": False,
+        "context_delivery": (
+            (
+                "desktop_composer_verified_input_sync"
+                if provider == "opencode"
+                else "desktop_composer_accessibility_insert"
+            )
+            if verified
+            else "desktop_composer_command_v"
+        ),
+    }
+
+
+def _durable_native_paste_request(
+    *,
+    verified: bool,
+    target_provider: str = "codex",
+    overrides: dict[str, object] | None = None,
+) -> ContinuationStageRequest:
+    harness_session = {
+        **_native_paste_launch_result(
+            verified=verified,
+            provider=target_provider,
+        ),
+        "provider": target_provider,
+        "execution_started": False,
+    }
+    harness_session.update(overrides or {})
+    response = {
+        "schema_version": "continuation.stage.v1",
+        "status": "awaiting_user",
+        "execution_started": False,
+        "delivery": {
+            "status": "awaiting_user",
+            "harness_session": harness_session,
+        },
+        "run": {
+            "handoff_id": "handoff-1",
+            "status": "awaiting_user",
+            "execution_started": False,
+        },
+    }
+    return ContinuationStageRequest(
+        workspace_id=uuid4(),
+        context_pack_id=uuid4(),
+        continuation_execution_id=uuid4(),
+        idempotency_key="native-paste-restoration",
+        request_sha256="a" * 64,
+        target_provider=target_provider,
+        status="succeeded",
+        response_json=json.dumps(response),
+        error_json="{}",
+    )
+
+
+@pytest.mark.parametrize("verified", (True, False))
+def test_staged_handoff_restores_safe_native_paste_envelopes(verified: bool) -> None:
+    restored = staged_continuation_payload(_durable_native_paste_request(verified=verified))
+
+    assert restored is not None
+    harness_session = restored["delivery"]["harness_session"]
+    assert harness_session["paste_requested"] is True
+    assert harness_session["paste_verified"] is verified
+    assert harness_session["context_loaded"] is verified
+    assert harness_session["paste_method"] == ("accessibility_insert" if verified else "command_v")
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"paste_requested": False},
+        {"context_copied": False},
+        {"open_verified": False},
+        {"paste_method": "clipboard"},
+        {"paste_verified": True, "context_loaded": False},
+        {"paste_method": "command_v", "paste_verified": True, "context_loaded": True},
+    ),
+)
+def test_staged_handoff_rejects_unsafe_native_paste_envelopes(
+    overrides: dict[str, object],
+) -> None:
+    assert (
+        staged_continuation_payload(
+            _durable_native_paste_request(verified=False, overrides=overrides)
+        )
+        is None
+    )
+
+
+def test_staged_opencode_handoff_requires_verified_marker_replacement() -> None:
+    restored = staged_continuation_payload(
+        _durable_native_paste_request(
+            verified=True,
+            target_provider="opencode",
+        )
+    )
+    assert restored is not None
+
+    assert (
+        staged_continuation_payload(
+            _durable_native_paste_request(
+                verified=False,
+                target_provider="opencode",
+            )
+        )
+        is None
+    )
+    assert (
+        staged_continuation_payload(
+            _durable_native_paste_request(
+                verified=True,
+                target_provider="opencode",
+                overrides={"target_identity_verified": False},
+            )
+        )
+        is None
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -82,6 +238,22 @@ def _continuation_tests_have_an_exact_visible_harness(monkeypatch) -> None:
             code="visible_harness_ready",
             message=f"{provider} can show the exact continuation.",
             action=f"Continue in {provider}.",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.probe_harness_composer_dispatch_readiness",
+        lambda provider: HarnessComposerReadiness(
+            provider=provider,
+            ready=True,
+            desktop_available=True,
+            url_scheme_registered=True,
+            required_url_scheme=provider,
+            code="desktop_dispatch_ready",
+            message=f"{provider} desktop dispatch is ready.",
+            action=f"Continue in {provider}.",
+            paste_automation_available=True,
+            account_access_state="unverified",
+            account_access_verified=False,
         ),
     )
     monkeypatch.setattr(
@@ -499,6 +671,68 @@ async def test_prepare_blocks_project_context_copy_for_contract_blocker(
         "blocks_copy": True,
     }
     assert issues["mandatory_requirement_verification_unexecutable"]["blocks_copy"] is False
+
+
+async def test_prepare_keeps_execution_prompt_overhead_out_of_project_copy_gate(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal="Inspect the continuation handoff without starting automatic execution.",
+        session_id="execution-overhead-is-run-only",
+    )
+    original = continuation_module.evaluate_continuation_quality
+
+    def execution_overhead_quality(*args, **kwargs):
+        report = original(*args, **kwargs)
+        return ContinuationQualityReport(
+            launchable=False,
+            issues=(
+                *report.issues,
+                ContinuationQualityIssue(
+                    code="worker_handoff_overhead_budget_exceeded",
+                    severity="blocking",
+                    message="Execution prompt exceeds its model-facing overhead budget.",
+                ),
+            ),
+            contract_sha256=report.contract_sha256,
+            prompt_sha256=report.prompt_sha256,
+        )
+
+    monkeypatch.setattr(
+        continuation_module,
+        "evaluate_continuation_quality",
+        execution_overhead_quality,
+    )
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "objective": ("Inspect the continuation handoff without starting automatic execution."),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    execution_issue = next(
+        issue
+        for issue in body["quality_report"]["blocking_issues"]
+        if issue["code"] == "worker_handoff_overhead_budget_exceeded"
+    )
+    copy_issue = next(
+        issue
+        for issue in body["project_context"]["quality_issues"]
+        if issue["code"] == "worker_handoff_overhead_budget_exceeded"
+    )
+    assert execution_issue["blocks_current_execution"] is True
+    assert body["quality_report"]["launchable"] is False
+    assert copy_issue["blocks_copy"] is False
+    assert body["project_context"]["copy_ready"] is True
 
 
 async def test_checkpoint_project_context_recovers_lossless_request_and_images(
@@ -3154,7 +3388,7 @@ async def test_provider_readiness_endpoint_returns_structured_local_status(
         fail_cli_probe,
     )
     monkeypatch.setattr(
-        "app.services.continuation_runtime.probe_harness_composer_readiness",
+        "app.services.continuation_runtime.probe_harness_composer_dispatch_readiness",
         lambda provider: HarnessComposerReadiness(
             provider=provider,
             ready=provider != "claude",
@@ -3207,7 +3441,7 @@ async def test_provider_readiness_endpoint_returns_structured_local_status(
     assert providers["codex"]["capabilities"]["desktop_dispatch_available"] is True
     assert providers["codex"]["capabilities"]["account_access_probe_supported"] is True
     assert providers["opencode"]["ready"] is True
-    assert providers["opencode"]["status"] == "ready"
+    assert providers["opencode"]["status"] == "access_unverified"
     assert providers["opencode"]["desktop_handoff_supported"] is True
     assert providers["opencode"]["code"] == "desktop_dispatch_ready"
     assert providers["opencode"]["capabilities"]["account_access_probe_supported"] is False
@@ -3302,13 +3536,7 @@ async def test_stage_accepts_continuation_lead_without_explicit_source_boundary(
     def fake_launch(_provider: str, *, cwd: str, prompt: str):
         assert cwd == str(tmp_path)
         launch_calls.append(prompt)
-        return {
-            "open_requested": True,
-            "navigation_requested": True,
-            "prefill_requested": True,
-            "context_copied": True,
-            "context_delivery": "desktop_composer_prefill_and_clipboard",
-        }
+        return _native_paste_launch_result(provider=_provider)
 
     monkeypatch.setattr(
         "app.services.continuation_runtime.launch_harness_composer",
@@ -3427,7 +3655,7 @@ async def test_stage_requires_a_ready_desktop_composer_scheme(
     assert list(await db_session.scalars(select(AgentRun))) == []
 
 
-async def test_stage_rejects_session_context_before_two_compactions(
+async def test_stage_uses_latest_session_tip_before_two_compactions(
     client,
     db_session,
     monkeypatch,
@@ -3436,14 +3664,21 @@ async def test_stage_rejects_session_context_before_two_compactions(
     workspace = await _seed_session(
         db_session,
         tmp_path,
-        goal="Do not stage this new session before the context is mature.",
+        goal="Stage the current session tip without waiting for compaction.",
         session_id="stage-minimum-compactions",
         provider="codex",
     )
     _initialize_git_repository(tmp_path)
+
+    launch_calls: list[dict[str, str]] = []
+
+    def launch(provider: str, *, cwd: str, prompt: str) -> dict[str, object]:
+        launch_calls.append({"provider": provider, "cwd": cwd, "prompt": prompt})
+        return _native_paste_launch_result(provider=provider)
+
     monkeypatch.setattr(
         "app.services.continuation_runtime.launch_harness_composer",
-        lambda *_args, **_kwargs: pytest.fail("an under-compacted session must not reach Desktop"),
+        launch,
     )
 
     response = await client.post(
@@ -3458,11 +3693,41 @@ async def test_stage_rejects_session_context_before_two_compactions(
         },
     )
 
-    assert response.status_code == 409, response.text
-    detail = response.json()["detail"]
-    assert detail["code"] == "session_context_compactions_required"
-    assert detail["message"] == "2 compactions required (0/2)."
-    assert detail["blocker"]["title"] == "Session Context locked"
+    assert response.status_code == 200, response.text
+    body = response.json()
+    checkpoint = body["preparation"]["checkpoint"]
+    assert checkpoint["capture_status"] == "complete"
+    assert checkpoint["boundary"]["snapshot_phase"] == "session_tip"
+    assert checkpoint["boundary"]["sequence_number"] == 2
+    assert checkpoint["boundary"]["has_newer_events"] is False
+    latest_event = await db_session.scalar(
+        select(SessionEvent)
+        .where(
+            SessionEvent.workspace_id == workspace.id,
+            SessionEvent.provider == "codex",
+            SessionEvent.session_id == "stage-minimum-compactions",
+        )
+        .order_by(SessionEvent.sequence_number.desc(), SessionEvent.id.desc())
+        .limit(1)
+    )
+    captured = await db_session.get(WorkCheckpoint, UUID(checkpoint["id"]))
+    assert latest_event is not None
+    assert captured is not None
+    assert captured.boundary_event_id == latest_event.id
+    assert len(launch_calls) == 1
+    assert launch_calls[0]["provider"] == "codex"
+    assert launch_calls[0]["cwd"] == str(tmp_path)
+    assert (
+        "Stage the current session tip without waiting for compaction."
+        in (launch_calls[0]["prompt"])
+    )
+    assert body["delivery"]["context_schema_version"] == "session_handoff.v1"
+    assert body["delivery"]["context_scope"] == "session"
+    assert body["delivery"]["source_session_id"] == "stage-minimum-compactions"
+    assert (
+        body["delivery"]["context_sha256"]
+        == hashlib.sha256(launch_calls[0]["prompt"].encode("utf-8")).hexdigest()
+    )
 
 
 async def test_stage_opens_installed_desktop_with_unverified_account_access(
@@ -3501,12 +3766,7 @@ async def test_stage_opens_installed_desktop_with_unverified_account_access(
         launch_calls.append(provider)
         assert cwd == str(tmp_path)
         assert "without asking for an attestation" in prompt
-        return {
-            "open_requested": True,
-            "context_copied": True,
-            "prefill_requested": True,
-            "context_delivery": "desktop_composer_prefill_and_clipboard",
-        }
+        return _native_paste_launch_result(provider=provider)
 
     monkeypatch.setattr(
         "app.services.continuation_runtime.launch_harness_composer",
@@ -3571,12 +3831,7 @@ async def test_stage_records_automatic_codex_account_evidence(
         launch_calls.append(provider)
         assert cwd == str(tmp_path)
         assert "reports account and model access automatically" in prompt
-        return {
-            "open_requested": True,
-            "context_copied": True,
-            "prefill_requested": True,
-            "context_delivery": "desktop_composer_prefill_and_clipboard",
-        }
+        return _native_paste_launch_result()
 
     monkeypatch.setattr(
         "app.services.continuation_runtime.launch_harness_composer",
@@ -3761,13 +4016,7 @@ async def test_stage_compiles_typed_metadata_from_effective_continuation_lead(
     def fake_launch(_provider: str, *, cwd: str, prompt: str):
         assert cwd == str(tmp_path)
         launch_calls.append(prompt)
-        return {
-            "open_requested": True,
-            "navigation_requested": True,
-            "prefill_requested": True,
-            "context_copied": True,
-            "context_delivery": "desktop_composer_prefill_and_clipboard",
-        }
+        return _native_paste_launch_result()
 
     monkeypatch.setattr(
         "app.services.continuation_runtime.launch_harness_composer",
@@ -3847,21 +4096,7 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
                 "prompt": prompt,
             }
         )
-        return {
-            "launched": False,
-            "open_requested": True,
-            "open_verified": False,
-            "navigation_requested": True,
-            "navigation_verified": False,
-            "mode": "desktop_composer",
-            "navigation": "new_session",
-            "exact_session_supported": False,
-            "prefill_requested": True,
-            "context_copied": True,
-            "context_loaded": False,
-            "execution_started": False,
-            "context_delivery": "desktop_composer_prefill_and_clipboard",
-        }
+        return _native_paste_launch_result(provider=provider)
 
     monkeypatch.setattr(
         "app.services.continuation.sync_local_session_library",
@@ -3933,8 +4168,12 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     )
     assert body["delivery"]["settings_applied"] is False
     assert body["delivery"]["settings_confirmation_required"] is (target_provider == "codex")
-    assert body["delivery"]["mode"] == "desktop_composer_prefill"
-    assert body["delivery"]["context_delivery"] == ("desktop_composer_prefill_and_clipboard")
+    assert body["delivery"]["mode"] == "desktop_composer_native_paste"
+    assert body["delivery"]["context_delivery"] == (
+        "desktop_composer_verified_input_sync"
+        if target_provider == "opencode"
+        else "desktop_composer_accessibility_insert"
+    )
     assert body["delivery"]["context_schema_version"] == ("session_handoff.v1")
     assert body["delivery"]["context_scope"] == "session"
     assert body["delivery"]["context_render_variant"] == brief_variant
@@ -3947,14 +4186,16 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     assert "session_id" not in body["delivery"]["harness_session"]
     assert body["delivery"]["harness_session"]["awaiting_user"] is True
     assert body["delivery"]["harness_session"]["execution_started"] is False
-    assert body["delivery"]["harness_session"]["launched"] is False
+    assert body["delivery"]["harness_session"]["launched"] is True
     assert body["delivery"]["harness_session"]["open_requested"] is True
-    assert body["delivery"]["harness_session"]["open_verified"] is False
-    assert body["delivery"]["harness_session"]["context_loaded"] is False
+    assert body["delivery"]["harness_session"]["open_verified"] is True
+    assert body["delivery"]["harness_session"]["context_loaded"] is True
+    assert body["delivery"]["harness_session"]["paste_requested"] is True
+    assert body["delivery"]["harness_session"]["paste_verified"] is True
     assert body["delivery"]["harness_session"]["context_copied"] is True
     assert body["delivery"]["harness_session"]["context_render_variant"] == (brief_variant)
     assert body["delivery"]["harness_session"]["source_session_id"] == ("waiting-handoff-source")
-    assert body["delivery"]["harness_session"]["prefill_requested"] is True
+    assert body["delivery"]["harness_session"]["prefill_requested"] is False
     assert body["run"]["provider_session_id"] is None
     assert body["run"]["continuation_lead_sha256"] == (continuation_lead_sha256)
     assert body["run"]["objective"] == body["preparation"]["objective"]
@@ -4194,10 +4435,11 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     staged_handoff = provider_body["staged_handoff"]
     assert staged_handoff["delivery"] == body["delivery"]
     assert staged_handoff["run"] == body["run"]
-    assert staged_handoff["delivery"]["harness_session"]["context_loaded"] is False
+    assert staged_handoff["delivery"]["harness_session"]["context_loaded"] is True
+    assert staged_handoff["delivery"]["harness_session"]["paste_verified"] is True
     assert staged_handoff["delivery"]["harness_session"]["context_copied"] is True
     assert staged_handoff["delivery"]["visibility"]["open_requested"] is True
-    assert staged_handoff["delivery"]["visibility"]["open_verified"] is False
+    assert staged_handoff["delivery"]["visibility"]["open_verified"] is True
     assert staged_handoff["run"]["provider_session_id"] is None
     assert "preparation" not in staged_handoff
     assert staged_handoff["continuation_identity"] == {
@@ -4302,14 +4544,7 @@ async def test_stage_continuation_allows_a_readable_non_git_project(
 
     def fake_launch(provider: str, *, cwd: str, prompt: str):
         launch_calls.append({"provider": provider, "cwd": cwd, "prompt": prompt})
-        return {
-            "open_requested": True,
-            "navigation_requested": True,
-            "prefill_requested": True,
-            "context_copied": True,
-            "execution_started": False,
-            "context_delivery": "desktop_composer_prefill_and_clipboard",
-        }
+        return _native_paste_launch_result()
 
     monkeypatch.setattr(
         "app.services.continuation_runtime.launch_harness_composer",
@@ -4377,21 +4612,7 @@ async def test_stage_opens_visible_desktop_with_incomplete_foundation_warning(
                 "prompt": prompt,
             }
         )
-        return {
-            "launched": False,
-            "open_requested": True,
-            "open_verified": False,
-            "navigation_requested": True,
-            "navigation_verified": False,
-            "mode": "desktop_composer",
-            "navigation": "new_session",
-            "exact_session_supported": False,
-            "prefill_requested": True,
-            "context_copied": True,
-            "context_loaded": False,
-            "execution_started": False,
-            "context_delivery": "desktop_composer_prefill_and_clipboard",
-        }
+        return _native_paste_launch_result()
 
     monkeypatch.setattr(
         "app.services.continuation_runtime.probe_provider_readiness",
@@ -4443,6 +4664,1034 @@ async def test_stage_opens_visible_desktop_with_incomplete_foundation_warning(
         )
         == []
     )
+
+
+async def test_stage_uses_session_context_despite_stacked_unused_artifact_blockers(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    goal = "Diagnose the Continue cards without submitting work automatically."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id="stacked-unused-artifact-blockers",
+        provider="codex",
+        compaction_count=2,
+    )
+    foundation = list(
+        await db_session.scalars(
+            select(Component).where(
+                Component.workspace_id == workspace.id,
+                Component.identity_key.like("fixture:%"),
+            )
+        )
+    )
+    for component in foundation:
+        component.status = "superseded"
+    await db_session.flush()
+    _initialize_git_repository(tmp_path)
+    monkeypatch.setattr(
+        "app.services.continuation_quality_gate.EXECUTION_PROMPT_MAX_OVERHEAD_CHARS",
+        1,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_quality_gate.PROJECT_CONTEXT_MAX_OVERHEAD_CHARS",
+        1,
+    )
+    launch_calls: list[dict[str, str]] = []
+
+    def fake_launch(provider: str, *, cwd: str, prompt: str):
+        launch_calls.append({"provider": provider, "cwd": cwd, "prompt": prompt})
+        return _native_paste_launch_result()
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.launch_harness_composer",
+        fake_launch,
+    )
+
+    response = await client.post(
+        "/api/continuations/stage",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "idempotency_key": "stacked-unused-artifact-blockers",
+            "target_provider": "codex",
+            "source_provider": "codex",
+            "source_session_id": "stacked-unused-artifact-blockers",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    issues = {
+        issue["code"]: issue for issue in body["preparation"]["project_context"]["quality_issues"]
+    }
+    assert {
+        "worker_handoff_overhead_budget_exceeded",
+        "project_context_copy_overhead_budget_exceeded",
+        "project_context_foundation_empty",
+    } <= set(issues)
+    assert issues["worker_handoff_overhead_budget_exceeded"]["blocks_copy"] is False
+    assert issues["project_context_copy_overhead_budget_exceeded"]["blocks_copy"] is True
+    assert issues["project_context_foundation_empty"]["blocks_copy"] is True
+    assert body["preparation"]["quality_report"]["launchable"] is False
+    assert body["preparation"]["project_context"]["copy_ready"] is False
+    assert body["status"] == "awaiting_user"
+    assert body["execution_started"] is False
+    assert len(launch_calls) == 1
+    assert launch_calls[0]["provider"] == "codex"
+    assert launch_calls[0]["cwd"] == str(tmp_path)
+    assert goal in launch_calls[0]["prompt"]
+    assert launch_calls[0]["prompt"].startswith("# Continuation Brief v2\n")
+    assert body["delivery"]["context_scope"] == "session"
+
+
+async def test_stage_links_screenshot_to_its_declaring_composite_follow_up(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    session_id = "composite-screenshot-follow-up"
+    root_goal = "now deeply investigate why the cards in the continue page aren't working"
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=root_goal,
+        session_id=session_id,
+    )
+    source = await db_session.scalar(
+        select(SourceDocument).where(
+            SourceDocument.workspace_id == workspace.id,
+            SourceDocument.external_id == f"codex:session:{session_id}",
+        )
+    )
+    assert source is not None
+
+    image_bytes = _test_png((180, 30, 30))
+    image_path = tmp_path / "codex-card-failure.png"
+    image_path.write_bytes(image_bytes)
+    image_sha256 = hashlib.sha256(image_bytes).hexdigest()
+    artifact_data_dir = tmp_path.parent / f"{tmp_path.name}-artifact-data"
+    durable_path = (
+        artifact_data_dir
+        / "request-artifacts"
+        / image_sha256[:2]
+        / f"{image_sha256}.png"
+    )
+    durable_path.parent.mkdir(parents=True)
+    durable_path.write_bytes(image_bytes)
+    monkeypatch.setattr(settings, "data_dir", str(artifact_data_dir))
+
+    failure_follow_up = (
+        "this happened when i clicked codex card. WHY TF DOES THIS KEEP FAILING?\n"
+        f'<image name=[Image #1] path="{image_path}">\n</image>'
+    )
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=source,
+        provider="codex",
+        session_id=session_id,
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id=f"codex:{session_id}:recommended-plan",
+                sequence_number=3,
+                event_type="assistant_update",
+                role="assistant",
+                content=(
+                    "### Recommended correction order\n\n"
+                    "1. Remove the two-compaction restriction from Continue.\n"
+                    "2. Make every card use one shared latest-session source.\n"
+                    "3. Reuse the floating button's real paste mechanism.\n"
+                    "4. Include the destination provider in the retry key.\n"
+                    "5. Distinguish desktop detection from account readiness."
+                ),
+                payload={"cwd": str(tmp_path)},
+            ),
+            NormalizedSessionEvent(
+                provider_event_id=f"codex:{session_id}:acceptance",
+                sequence_number=4,
+                event_type="user_request",
+                role="user",
+                content="yes go ahead",
+                payload={"cwd": str(tmp_path)},
+            ),
+            NormalizedSessionEvent(
+                provider_event_id=f"codex:{session_id}:progress",
+                sequence_number=5,
+                event_type="assistant_update",
+                role="assistant",
+                content="I am applying the accepted correction order now.",
+                payload={"cwd": str(tmp_path)},
+            ),
+            NormalizedSessionEvent(
+                provider_event_id=f"codex:{session_id}:screenshot-failure",
+                sequence_number=6,
+                event_type="user_request",
+                role="user",
+                content=failure_follow_up,
+                payload={
+                    "cwd": str(tmp_path),
+                    "local_images": [str(image_path)],
+                    "input_images": [
+                        {
+                            "ordinal": 1,
+                            "mime_type": "image/png",
+                            "sha256": image_sha256,
+                            "size_bytes": len(image_bytes),
+                            "valid": True,
+                            "stored_path": str(durable_path),
+                        }
+                    ],
+                },
+            ),
+            NormalizedSessionEvent(
+                provider_event_id=f"codex:{session_id}:boundary",
+                sequence_number=7,
+                event_type="compaction_boundary",
+                payload={"window_id": "composite-screenshot-boundary"},
+            ),
+        ],
+    )
+    _initialize_git_repository(tmp_path)
+    launch_calls: list[dict[str, str]] = []
+
+    def fake_launch(provider: str, *, cwd: str, prompt: str):
+        launch_calls.append({"provider": provider, "cwd": cwd, "prompt": prompt})
+        return _native_paste_launch_result()
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.launch_harness_composer",
+        fake_launch,
+    )
+    response = await client.post(
+        "/api/continuations/stage",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "idempotency_key": "composite-screenshot-follow-up",
+            "target_provider": "codex",
+            "source_provider": "codex",
+            "source_session_id": session_id,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(launch_calls) == 1
+    prompt = launch_calls[0]["prompt"]
+    assert "WHY TF DOES THIS KEEP FAILING?" in prompt
+    assert "A1 supports R7" in prompt
+    assert "supports unmapped" not in prompt
+    body = response.json()
+    assert body["status"] == "awaiting_user"
+    assert body["execution_started"] is False
+    assert body["delivery"]["context_scope"] == "session"
+    project_artifacts = body["preparation"]["execution_contract"]["artifacts"]
+    assert len(project_artifacts) == 1
+    assert project_artifacts[0]["available"] is True
+    assert project_artifacts[0]["source_path"] == str(image_path)
+    assert project_artifacts[0]["path"] == str(durable_path)
+    assert project_artifacts[0]["sha256"] == image_sha256
+    assert image_sha256 in body["preparation"]["project_context"]["content"]
+
+
+async def test_stage_opencode_destination_complaint_without_context_contamination(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    session_id = "opencode-destination-mismatch"
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal="Review the continuation workflow.",
+        session_id=session_id,
+    )
+    source = await db_session.scalar(
+        select(SourceDocument).where(
+            SourceDocument.workspace_id == workspace.id,
+            SourceDocument.external_id == f"codex:session:{session_id}",
+        )
+    )
+    assert source is not None
+
+    image_bytes = _test_png((30, 90, 180))
+    image_path = tmp_path / "opencode-wrong-destination.png"
+    image_path.write_bytes(image_bytes)
+    image_sha256 = hashlib.sha256(image_bytes).hexdigest()
+    artifact_data_dir = tmp_path.parent / f"{tmp_path.name}-opencode-artifacts"
+    durable_path = (
+        artifact_data_dir
+        / "request-artifacts"
+        / image_sha256[:2]
+        / f"{image_sha256}.png"
+    )
+    durable_path.parent.mkdir(parents=True)
+    durable_path.write_bytes(image_bytes)
+    monkeypatch.setattr(settings, "data_dir", str(artifact_data_dir))
+    complaint = (
+        "the opencode continue was somewhat successful, it pastes the prompt in "
+        "the terminal instead of chatbox as shown in the screenshot"
+    )
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=source,
+        provider="codex",
+        session_id=session_id,
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id=f"codex:{session_id}:complaint",
+                sequence_number=3,
+                event_type="user_request",
+                role="user",
+                content=complaint,
+                payload={
+                    "cwd": str(tmp_path),
+                    "local_images": [str(image_path)],
+                    "input_images": [
+                        {
+                            "ordinal": 1,
+                            "mime_type": "image/png",
+                            "sha256": image_sha256,
+                            "size_bytes": len(image_bytes),
+                            "valid": True,
+                            "stored_path": str(durable_path),
+                        }
+                    ],
+                },
+            ),
+            NormalizedSessionEvent(
+                provider_event_id=f"codex:{session_id}:boundary",
+                sequence_number=4,
+                event_type="compaction_boundary",
+                payload={"window_id": "opencode-destination-boundary"},
+            ),
+        ],
+    )
+    _initialize_git_repository(tmp_path)
+    launch_calls: list[dict[str, str]] = []
+
+    def fake_launch(provider: str, *, cwd: str, prompt: str):
+        launch_calls.append({"provider": provider, "cwd": cwd, "prompt": prompt})
+        return _native_paste_launch_result(provider=provider)
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.launch_harness_composer",
+        fake_launch,
+    )
+
+    response = await client.post(
+        "/api/continuations/stage",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "idempotency_key": "opencode-destination-mismatch",
+            "target_provider": "opencode",
+            "source_provider": "codex",
+            "source_session_id": session_id,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(launch_calls) == 1
+    assert launch_calls[0]["provider"] == "opencode"
+    prompt = launch_calls[0]["prompt"]
+    goal_section = prompt.split("## Goal", 1)[1].split("## State now", 1)[0]
+    done_section = prompt.split("## Done when", 1)[1]
+    assert (
+        "Produce an evidence-backed report on the OpenCode Continue destination mismatch"
+        in goal_section
+    )
+    assert complaint in goal_section
+    assert "Reported behavior (user-authored)" in prompt
+    assert "Expected destination" in prompt and "chat composer" in prompt
+    assert "A1 supports R1" in prompt
+    assert image_sha256 in prompt
+    assert "Task type: report." in prompt
+    assert "Intent classification: unconfirmed" in prompt
+    assert "apply only the minimum requirement-specific delta" not in prompt
+    assert "transparency comes from" not in prompt
+    assert "card background" not in prompt.casefold()
+    assert "Search likely UI components and styles" not in prompt
+    assert complaint not in done_section
+    assert "verification=V" not in prompt
+
+    body = response.json()
+    assert body["status"] == "awaiting_user"
+    assert body["delivery"]["provider"] == "opencode"
+    assert body["delivery"]["filesystem_mode"] == "read_only"
+    assert body["preparation"]["execution_contract"]["task_mode"] == "report"
+    assert body["preparation"]["project_context"]["copy_ready"] is True
+
+
+async def test_stage_reprojects_legacy_unresolved_plan_acceptance_at_saved_boundary(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    goal = "Investigate why the Continue cards are disabled."
+    session_id = "legacy-ordered-plan-acceptance"
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id=session_id,
+    )
+    source = await db_session.scalar(
+        select(SourceDocument).where(
+            SourceDocument.workspace_id == workspace.id,
+            SourceDocument.external_id == f"codex:session:{session_id}",
+        )
+    )
+    assert source is not None
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=source,
+        provider="codex",
+        session_id=session_id,
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id=f"codex:{session_id}:recommended-plan",
+                sequence_number=3,
+                event_type="assistant_update",
+                role="assistant",
+                content=(
+                    "### Recommended correction order\n\n"
+                    "1. Remove the Continue-only maturity lock.\n"
+                    "2. Keep Execute's historical-copy gate.\n"
+                    "3. Verify the destination-specific paste result.\n"
+                    "4. Preserve unrelated workspace changes.\n"
+                    "5. Run the focused tests."
+                ),
+                payload={"cwd": str(tmp_path)},
+            ),
+            NormalizedSessionEvent(
+                provider_event_id=f"codex:{session_id}:acceptance",
+                sequence_number=4,
+                event_type="user_request",
+                role="user",
+                content="yes go ahead",
+                payload={"cwd": str(tmp_path)},
+            ),
+            NormalizedSessionEvent(
+                provider_event_id=f"codex:{session_id}:boundary",
+                sequence_number=5,
+                event_type="compaction_boundary",
+                payload={"window_id": "legacy-parser-boundary"},
+            ),
+        ],
+    )
+    boundary = await db_session.scalar(
+        select(SessionEvent).where(
+            SessionEvent.workspace_id == workspace.id,
+            SessionEvent.provider_event_id == f"codex:{session_id}:boundary",
+        )
+    )
+    assert boundary is not None
+    with monkeypatch.context() as legacy_parser:
+        legacy_parser.setattr(
+            "app.services.conversation_state._unique_ordered_proposal",
+            lambda _content: None,
+        )
+        checkpoint = await capture_checkpoint(
+            db_session,
+            workspace_id=workspace.id,
+            provider="codex",
+            session_id=session_id,
+            boundary_event_id=boundary.id,
+            trigger="compaction",
+        )
+        await db_session.flush()
+
+    goal_item = await db_session.scalar(
+        select(CheckpointItem).where(
+            CheckpointItem.checkpoint_id == checkpoint.id,
+            CheckpointItem.category == "goal",
+        )
+    )
+    assert goal_item is not None
+    legacy_goal_payload = json.loads(goal_item.payload_json)
+    assert legacy_goal_payload["conversation_state"]["unresolved_references"]
+    assert legacy_goal_payload["request_verbatim"] == goal
+    stored_checkpoint_payload = checkpoint.payload_json
+    stored_checkpoint_sha256 = checkpoint.payload_sha256
+    stored_goal_payload = goal_item.payload_json
+    checkpoint_id = checkpoint.id
+
+    _initialize_git_repository(tmp_path)
+    launch_calls: list[dict[str, str]] = []
+
+    def fake_launch(provider: str, *, cwd: str, prompt: str):
+        launch_calls.append({"provider": provider, "cwd": cwd, "prompt": prompt})
+        return _native_paste_launch_result()
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.launch_harness_composer",
+        fake_launch,
+    )
+    response = await client.post(
+        "/api/continuations/stage",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "idempotency_key": "legacy-ordered-plan-acceptance",
+            "target_provider": "codex",
+            "source_provider": "codex",
+            "source_session_id": session_id,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(launch_calls) == 1
+    prompt = launch_calls[0]["prompt"]
+    assert "Accepted the prior assistant proposal" in prompt
+    assert "Remove the Continue-only maturity lock" in prompt
+    assert "Run the focused tests" in prompt
+    assert "Unresolved user reference" not in prompt
+    body = response.json()
+    assert body["delivery"]["context_scope"] == "session"
+    assert body["execution_started"] is False
+
+    db_session.expire_all()
+    unchanged_checkpoint = await db_session.get(WorkCheckpoint, checkpoint_id)
+    unchanged_goal_item = await db_session.scalar(
+        select(CheckpointItem).where(
+            CheckpointItem.checkpoint_id == checkpoint_id,
+            CheckpointItem.category == "goal",
+        )
+    )
+    assert unchanged_checkpoint is not None
+    assert unchanged_goal_item is not None
+    assert unchanged_checkpoint.payload_json == stored_checkpoint_payload
+    assert unchanged_checkpoint.payload_sha256 == stored_checkpoint_sha256
+    assert unchanged_goal_item.payload_json == stored_goal_payload
+
+
+async def test_stage_keeps_genuinely_ambiguous_ordered_plans_blocked(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    goal = "Improve the Continue workflow without guessing between two plans."
+    session_id = "ambiguous-ordered-plans"
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id=session_id,
+    )
+    source = await db_session.scalar(
+        select(SourceDocument).where(
+            SourceDocument.workspace_id == workspace.id,
+            SourceDocument.external_id == f"codex:session:{session_id}",
+        )
+    )
+    assert source is not None
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=source,
+        provider="codex",
+        session_id=session_id,
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id=f"codex:{session_id}:plans",
+                sequence_number=3,
+                event_type="assistant_update",
+                role="assistant",
+                content=(
+                    "Recommended plan:\n"
+                    "1. Keep the current UI.\n"
+                    "2. Fix delivery.\n\n"
+                    "Proposed plan:\n"
+                    "1. Replace the UI.\n"
+                    "2. Remove delivery."
+                ),
+                payload={"cwd": str(tmp_path)},
+            ),
+            NormalizedSessionEvent(
+                provider_event_id=f"codex:{session_id}:ambiguous-yes",
+                sequence_number=4,
+                event_type="user_request",
+                role="user",
+                content="yes",
+                payload={"cwd": str(tmp_path)},
+            ),
+            NormalizedSessionEvent(
+                provider_event_id=f"codex:{session_id}:boundary",
+                sequence_number=5,
+                event_type="compaction_boundary",
+                payload={"window_id": "ambiguous-plan-boundary"},
+            ),
+        ],
+    )
+    _initialize_git_repository(tmp_path)
+    launch_calls = 0
+
+    def must_not_launch(_provider: str, *, cwd: str, prompt: str):
+        nonlocal launch_calls
+        launch_calls += 1
+        pytest.fail(f"ambiguous acceptance reached desktop launch at {cwd}: {prompt[:80]}")
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.launch_harness_composer",
+        must_not_launch,
+    )
+    response = await client.post(
+        "/api/continuations/stage",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "idempotency_key": "ambiguous-ordered-plans",
+            "target_provider": "codex",
+            "source_provider": "codex",
+            "source_session_id": session_id,
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "session_context_staging_blocked"
+    assert any(
+        issue["code"] == "conversation_references_resolved"
+        for issue in detail["blocker"]["quality_issues"]
+    )
+    assert launch_calls == 0
+
+
+async def test_desktop_stage_projection_fails_closed_on_partially_visible_dialogue(
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    goal = "Investigate the Continue cards without replaying hidden dialogue."
+    session_id = "partially-visible-plan-acceptance"
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id=session_id,
+    )
+    visible_source = await db_session.scalar(
+        select(SourceDocument).where(
+            SourceDocument.workspace_id == workspace.id,
+            SourceDocument.external_id == f"codex:session:{session_id}",
+        )
+    )
+    assert visible_source is not None
+    hidden_content = "Recommended plan:\n1. Apply the hidden correction.\n2. Verify it."
+    hidden_source = SourceDocument(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        source_type="agent_session",
+        external_id=f"codex:session:{session_id}:restricted-assistant",
+        content=hidden_content,
+        content_sha256=hashlib.sha256(hidden_content.encode("utf-8")).hexdigest(),
+        source_identity_sha256=hashlib.sha256(
+            f"{workspace.id}:{session_id}:restricted-assistant".encode("utf-8")
+        ).hexdigest(),
+        revision_number=1,
+        visibility_scope="restricted",
+        permission_snapshot_sha256="restricted-assistant-snapshot",
+        metadata_json="{}",
+    )
+    db_session.add(hidden_source)
+    await db_session.flush()
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=hidden_source,
+        provider="codex",
+        session_id=session_id,
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id=f"codex:{session_id}:hidden-plan",
+                sequence_number=3,
+                event_type="assistant_update",
+                role="assistant",
+                content=hidden_content,
+                payload={"cwd": str(tmp_path)},
+            ),
+        ],
+    )
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=visible_source,
+        provider="codex",
+        session_id=session_id,
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id=f"codex:{session_id}:acceptance",
+                sequence_number=4,
+                event_type="user_request",
+                role="user",
+                content="yes go ahead",
+                payload={"cwd": str(tmp_path)},
+            ),
+            NormalizedSessionEvent(
+                provider_event_id=f"codex:{session_id}:boundary",
+                sequence_number=5,
+                event_type="compaction_boundary",
+                payload={"window_id": "partially-visible-boundary"},
+            ),
+        ],
+    )
+    boundary = await db_session.scalar(
+        select(SessionEvent).where(
+            SessionEvent.workspace_id == workspace.id,
+            SessionEvent.provider_event_id == f"codex:{session_id}:boundary",
+        )
+    )
+    assert boundary is not None
+    with monkeypatch.context() as legacy_parser:
+        legacy_parser.setattr(
+            "app.services.conversation_state._unique_ordered_proposal",
+            lambda _content: None,
+        )
+        checkpoint = await capture_checkpoint(
+            db_session,
+            workspace_id=workspace.id,
+            provider="codex",
+            session_id=session_id,
+            boundary_event_id=boundary.id,
+            trigger="compaction",
+        )
+        await db_session.flush()
+
+    checkpoint_id = checkpoint.id
+    workspace_id = workspace.id
+    db_session.expire_all()
+    checkpoint = await get_checkpoint(db_session, checkpoint_id)
+    assert checkpoint is not None
+
+    projected = await project_desktop_stage_checkpoint_data(
+        db_session,
+        checkpoint,
+        access_scope=AccessScope(
+            principal_id="workspace-member",
+            workspace_ids=frozenset({workspace_id}),
+        ),
+    )
+
+    assert "desktop_stage_projection" not in projected
+    projected_goal = projected["sections"]["goal"][0]["payload"]
+    assert projected_goal["request_verbatim"] == goal
+    assert projected_goal["conversation_state"]["unresolved_references"]
+    assert "Apply the hidden correction" not in json.dumps(projected_goal)
+
+
+async def test_desktop_stage_projection_refreshes_legacy_transient_blocker_state(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    session_id = "legacy-final-count-projection"
+    blocker_statement = "I’m waiting for the exact final count before handing this back."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal="Finish the OpenCode continuation workflow.",
+        session_id=session_id,
+    )
+    source = await db_session.scalar(
+        select(SourceDocument).where(
+            SourceDocument.workspace_id == workspace.id,
+            SourceDocument.external_id == f"codex:session:{session_id}",
+        )
+    )
+    assert source is not None
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=source,
+        provider="codex",
+        session_id=session_id,
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id=f"codex:{session_id}:waiting",
+                sequence_number=3,
+                event_type="assistant_update",
+                role="assistant",
+                content=blocker_statement,
+                payload={"cwd": str(tmp_path)},
+            ),
+            NormalizedSessionEvent(
+                provider_event_id=f"codex:{session_id}:final-count",
+                sequence_number=4,
+                event_type="assistant_update",
+                role="assistant",
+                content=(
+                    "Final verification is complete: 2,279 backend tests, 98 native "
+                    "Swift tests, and 444 frontend tests passed."
+                ),
+                payload={"cwd": str(tmp_path)},
+            ),
+            NormalizedSessionEvent(
+                provider_event_id=f"codex:{session_id}:boundary",
+                sequence_number=5,
+                event_type="compaction_boundary",
+                payload={"window_id": "legacy-final-count-boundary"},
+            ),
+        ],
+    )
+    boundary = await db_session.scalar(
+        select(SessionEvent).where(
+            SessionEvent.workspace_id == workspace.id,
+            SessionEvent.provider_event_id == f"codex:{session_id}:boundary",
+        )
+    )
+    assert boundary is not None
+    _initialize_git_repository(tmp_path)
+    checkpoint = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id=session_id,
+        boundary_event_id=boundary.id,
+        trigger="compaction",
+    )
+    blocker_item = await db_session.scalar(
+        select(CheckpointItem).where(
+            CheckpointItem.checkpoint_id == checkpoint.id,
+            CheckpointItem.category == "blockers",
+            CheckpointItem.statement == blocker_statement,
+        )
+    )
+    next_action_item = await db_session.scalar(
+        select(CheckpointItem).where(
+            CheckpointItem.checkpoint_id == checkpoint.id,
+            CheckpointItem.category == "exact_next_action",
+        )
+    )
+    assert blocker_item is not None
+    assert next_action_item is not None
+
+    # Emulate a saved checkpoint produced before transient result reconciliation.
+    blocker_item.state = "active"
+    next_action_item.statement = f"Resolve this blocker: {blocker_statement}"
+    checkpoint.continuation_status = "blocked"
+    await db_session.flush()
+    checkpoint_id = checkpoint.id
+    workspace_id = workspace.id
+    db_session.expire_all()
+    checkpoint = await get_checkpoint(db_session, checkpoint_id)
+    assert checkpoint is not None
+
+    projected = await project_desktop_stage_checkpoint_data(
+        db_session,
+        checkpoint,
+        access_scope=AccessScope(
+            principal_id="workspace-member",
+            workspace_ids=frozenset({workspace_id}),
+        ),
+    )
+
+    projected_blocker = next(
+        item
+        for item in projected["sections"]["blockers"]
+        if item["statement"] == blocker_statement
+    )
+    assert projected_blocker["state"] == "historical"
+    assert projected_blocker["payload"][
+        "desktop_stage_transient_resolution_replayed"
+    ] is True
+    assert projected["continuation_status"] == "review_required"
+    assert projected["desktop_stage_projection"][
+        "refreshed_transient_blocker_count"
+    ] == 1
+    assert not projected["sections"]["exact_next_action"][0]["statement"].startswith(
+        "Resolve this blocker:"
+    )
+
+    launched_prompts: list[str] = []
+
+    def capture_launch(provider: str, *, cwd: str, prompt: str):
+        assert provider == "opencode"
+        assert cwd == str(tmp_path)
+        launched_prompts.append(prompt)
+        return _native_paste_launch_result(provider=provider)
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.launch_harness_composer",
+        capture_launch,
+    )
+    response = await client.post(
+        "/api/continuations/stage",
+        json={
+            "workspace_id": str(workspace_id),
+            "repo_path": str(tmp_path),
+            "idempotency_key": "legacy-final-count-projection",
+            "target_provider": "opencode",
+            "source_provider": "codex",
+            "source_session_id": session_id,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(launched_prompts) == 1
+    assert blocker_statement not in launched_prompts[0]
+    assert "Resolve this blocker:" not in launched_prompts[0]
+
+
+async def test_run_remains_blocked_by_stacked_execution_and_project_failures(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    goal = "Run the continuation only after every automatic-execution gate passes."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id="run-stacked-quality-blockers",
+        provider="codex",
+        compaction_count=2,
+    )
+    foundation = list(
+        await db_session.scalars(
+            select(Component).where(
+                Component.workspace_id == workspace.id,
+                Component.identity_key.like("fixture:%"),
+            )
+        )
+    )
+    for component in foundation:
+        component.status = "superseded"
+    await db_session.flush()
+    _initialize_git_repository(tmp_path)
+    monkeypatch.setattr(
+        "app.services.continuation_quality_gate.EXECUTION_PROMPT_MAX_OVERHEAD_CHARS",
+        1,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_quality_gate.PROJECT_CONTEXT_MAX_OVERHEAD_CHARS",
+        1,
+    )
+    provider_execution_calls = 0
+
+    async def must_not_select_provider(**_kwargs):
+        nonlocal provider_execution_calls
+        provider_execution_calls += 1
+        pytest.fail("automatic provider execution started despite blocking quality issues")
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime._select_ready_invocation",
+        must_not_select_provider,
+    )
+
+    response = await client.post(
+        "/api/continuations/run",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "target_provider": "codex",
+            "source_provider": "codex",
+            "source_session_id": "run-stacked-quality-blockers",
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "continuation_quality_gate_failed"
+    issue_codes = {issue["code"] for issue in detail["blocker"]["quality_report"]["issues"]}
+    assert {
+        "worker_handoff_overhead_budget_exceeded",
+        "project_context_copy_overhead_budget_exceeded",
+        "project_context_foundation_empty",
+    } <= issue_codes
+    assert provider_execution_calls == 0
+    assert (
+        list(
+            await db_session.scalars(select(AgentRun).where(AgentRun.workspace_id == workspace.id))
+        )
+        == []
+    )
+
+
+async def test_stage_discards_new_evidence_bundle_when_rejected_before_launch(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    goal = "Reject this draft before launch without leaving receiver evidence behind."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id="discard-prelaunch-evidence",
+        provider="codex",
+        compaction_count=2,
+    )
+    _initialize_git_repository(tmp_path)
+    (tmp_path / "app" / "continuation.py").write_text(
+        "def prepare_continuation():\n    return False\n",
+        encoding="utf-8",
+    )
+    runtime_data = tmp_path / "runtime-data"
+    monkeypatch.setattr(settings, "data_dir", str(runtime_data))
+    observed_bundle_roots: list[Path] = []
+    launch_calls = 0
+
+    def reject_before_launch(
+        _preparation,
+        *,
+        session_context,
+        **_kwargs,
+    ) -> str:
+        bundle = session_context.get("receiver_attachment_bundle") or {}
+        root = Path(str(bundle.get("root") or ""))
+        assert root.is_dir()
+        observed_bundle_roots.append(root)
+        raise ContinuationRunError(
+            "project_context_staging_blocked",
+            "Current project evidence failed an integrity check.",
+            status_code=409,
+        )
+
+    def must_not_launch(_provider: str, *, cwd: str, prompt: str):
+        nonlocal launch_calls
+        launch_calls += 1
+        pytest.fail(f"pre-launch rejection reached {cwd}: {prompt[:80]}")
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime._staging_context_for_preparation",
+        reject_before_launch,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.launch_harness_composer",
+        must_not_launch,
+    )
+
+    response = await client.post(
+        "/api/continuations/stage",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "idempotency_key": "discard-prelaunch-evidence",
+            "target_provider": "codex",
+            "source_provider": "codex",
+            "source_session_id": "discard-prelaunch-evidence",
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "project_context_staging_blocked"
+    assert launch_calls == 0
+    assert len(observed_bundle_roots) == 1
+    assert not observed_bundle_roots[0].exists()
 
 
 async def test_stage_failure_is_replayed_without_opening_another_draft(
@@ -4517,18 +5766,7 @@ async def test_stage_failure_is_replayed_without_opening_another_draft(
         launch_calls += 1
         assert cwd == str(tmp_path)
         assert "Prepare one durable desktop continuation handoff." in prompt
-        return {
-            "launched": False,
-            "open_requested": True,
-            "open_verified": False,
-            "navigation_requested": True,
-            "navigation_verified": False,
-            "prefill_requested": True,
-            "context_copied": True,
-            "context_loaded": False,
-            "execution_started": False,
-            "context_delivery": "desktop_composer_prefill_and_clipboard",
-        }
+        return _native_paste_launch_result()
 
     monkeypatch.setattr(
         "app.services.continuation_runtime.launch_harness_composer",
@@ -4586,18 +5824,7 @@ async def test_stage_expires_a_crashed_pending_reservation_before_retry(
         launch_calls += 1
         assert cwd == str(tmp_path)
         assert "Recover safely" in prompt
-        return {
-            "launched": False,
-            "open_requested": True,
-            "open_verified": False,
-            "navigation_requested": True,
-            "navigation_verified": False,
-            "prefill_requested": True,
-            "context_copied": True,
-            "context_loaded": False,
-            "execution_started": False,
-            "context_delivery": "desktop_composer_prefill_and_clipboard",
-        }
+        return _native_paste_launch_result()
 
     monkeypatch.setattr(
         "app.services.continuation_runtime.launch_harness_composer",
@@ -4701,18 +5928,7 @@ async def test_cancelled_stage_keeps_its_reservation_until_launcher_stops(
         assert "Never race two desktop open requests" in prompt
         launcher_started.set()
         release_launcher.wait(timeout=2)
-        return {
-            "launched": False,
-            "open_requested": True,
-            "open_verified": False,
-            "navigation_requested": True,
-            "navigation_verified": False,
-            "prefill_requested": True,
-            "context_copied": True,
-            "context_loaded": False,
-            "execution_started": False,
-            "context_delivery": "desktop_composer_prefill_and_clipboard",
-        }
+        return _native_paste_launch_result()
 
     monkeypatch.setattr(
         "app.services.continuation_runtime.launch_harness_composer",
@@ -4735,7 +5951,10 @@ async def test_cancelled_stage_keeps_its_reservation_until_launcher_stops(
         )
     )
     try:
-        for _ in range(200):
+        # Repository capture can exceed two seconds on a heavily modified
+        # development worktree. The cancellation invariant starts at launcher
+        # entry, so wait within the service's own ten-second request budget.
+        for _ in range(1_000):
             if launcher_started.is_set():
                 break
             await asyncio.sleep(0.01)
@@ -4766,11 +5985,31 @@ async def test_cancelled_stage_keeps_its_reservation_until_launcher_stops(
     assert request.status == "pending"
 
 
-async def test_stage_rejects_an_unconfirmed_open_or_clipboard_copy(
+@pytest.mark.parametrize(
+    "launch_overrides",
+    (
+        {"open_verified": False},
+        {
+            "paste_method": "accessibility_insert",
+            "paste_verified": False,
+            "context_loaded": False,
+        },
+        {"paste_verified": True, "context_loaded": False},
+        {
+            "paste_method": "command_v",
+            "paste_verified": True,
+            "context_loaded": True,
+        },
+        {"execution_started": True},
+        {"paste_requested": False},
+    ),
+)
+async def test_stage_rejects_an_inconsistent_native_paste_result(
     client,
     db_session,
     monkeypatch,
     tmp_path,
+    launch_overrides,
 ) -> None:
     workspace = await _seed_session(
         db_session,
@@ -4789,14 +6028,8 @@ async def test_stage_rejects_an_unconfirmed_open_or_clipboard_copy(
         assert cwd == str(tmp_path)
         assert "Prepare a confirmed desktop continuation handoff." in prompt
         return {
-            "launched": False,
-            "open_requested": False,
-            "open_verified": False,
-            "navigation_requested": False,
-            "navigation_verified": False,
-            "context_copied": True,
-            "context_loaded": False,
-            "execution_started": False,
+            **_native_paste_launch_result(),
+            **launch_overrides,
         }
 
     monkeypatch.setattr(

@@ -50,10 +50,6 @@ import {
 } from "../context-map/digest";
 import { copyReadySessionContextContent } from "./sessionContinuity";
 import {
-  MINIMUM_SESSION_CONTEXT_COMPACTIONS,
-  sessionContextCompactionCount,
-} from "./sessionContextPolicy";
-import {
   desktopOverlaySessionSelections,
   executeSessionIdentity,
   readExecuteActiveSessionIdentities,
@@ -170,29 +166,6 @@ export default function NowPage() {
     customSessionFlow,
     workspace.activeWorkspaceId,
   ]);
-  const activeCustomSessions = useMemo(() => Object.fromEntries(
-    HARNESS_ORDER.map((provider) => [
-      provider,
-      (customSessionsByProvider[provider] || []).find(
-        (session) => (
-          executeSessionIdentity(session) === activeCustomSessionIds[provider]
-        ),
-      ) || customSessionsByProvider[provider]?.[0] || null,
-    ]),
-  ), [activeCustomSessionIds, customSessionsByProvider]);
-  const activeCustomSessionKey = customSessionFlow
-    ? JSON.stringify(HARNESS_ORDER.map((provider) => (
-        executeSessionIdentity(activeCustomSessions[provider])
-      )))
-    : "";
-  const customSessionRequestKey = JSON.stringify([
-    workspace.activeWorkspaceId || "",
-    activeCustomSessionKey,
-  ]);
-  const customSessionRequestKeyRef = useRef(customSessionRequestKey);
-  customSessionRequestKeyRef.current = customSessionRequestKey;
-  const activeCustomSessionsRef = useRef(activeCustomSessions);
-  activeCustomSessionsRef.current = activeCustomSessions;
   const overlaySelectedSessions = sessionLibraryConfirmed
     ? desktopOverlaySessionSelections(customSessions)
     : undefined;
@@ -219,9 +192,9 @@ export default function NowPage() {
     enabled: latestSessionDiscoverySucceeded,
   });
   const digestActivity = digestQuery.data?.activity?.primary || null;
-  // The default Continue action deliberately follows the newest available
-  // session. The explicit Continue -> Execute return flow below can expose a
-  // separately selected source, but URL parameters alone never supply one.
+  // Every Continue card deliberately follows the newest available session.
+  // Execute selections below belong only to the floating-button overlay; URL
+  // parameters and saved selections never replace this source.
   const continuationDigestActivity = selectContinuationSessionActivity(
     digestQuery.data?.activity?.recent_sessions,
     digestActivity,
@@ -316,10 +289,12 @@ export default function NowPage() {
   const capturedContinuationLead = rootSessionTaskCandidate(latestSession)
     || rootSessionTaskCandidate(continuationDigestActivity)
     || "";
-  const continuationLeadSourceKey = JSON.stringify([
-    latestSession?.connector_type || continuationDigestActivity?.provider || "",
-    latestSession?.session_id || continuationDigestActivity?.session_id || "",
-    capturedContinuationLead,
+  const continuationSource = sessionDescriptorReference(latestSession);
+  const continuationExecutionKey = JSON.stringify([
+    workspace.activeWorkspaceId || "",
+    continuationSource?.provider || "",
+    continuationSource?.sessionId || "",
+    continuationRepoPath || "",
   ]);
   const [continuationState, setContinuationState] = useState("idle");
   const [continuationResult, setContinuationResult] = useState(null);
@@ -331,7 +306,6 @@ export default function NowPage() {
     status: "idle",
     message: null,
   });
-  const continuationLeadSourceKeyRef = useRef(continuationLeadSourceKey);
   const continuationLead = capturedContinuationLead;
   const continuationRequestKey = JSON.stringify([
     workspace.activeWorkspaceId || "",
@@ -350,10 +324,12 @@ export default function NowPage() {
     continuationRepoPath || "",
     primaryCheckpointQuery.data?.sections?.goal?.[0]?.statement || "",
     continuationLead,
-    activeCustomSessionKey,
   ]);
   const continuationRequestKeyRef = useRef(continuationRequestKey);
+  const continuationExecutionKeyRef = useRef(continuationExecutionKey);
+  continuationExecutionKeyRef.current = continuationExecutionKey;
   const continuationStageInFlightRef = useRef(false);
+  const pendingProviderRef = useRef(null);
   const continuationPageMountedRef = useRef(true);
   useEffect(() => {
     continuationPageMountedRef.current = true;
@@ -361,10 +337,6 @@ export default function NowPage() {
       continuationPageMountedRef.current = false;
     };
   }, []);
-  useEffect(() => {
-    if (continuationLeadSourceKeyRef.current === continuationLeadSourceKey) return;
-    continuationLeadSourceKeyRef.current = continuationLeadSourceKey;
-  }, [continuationLeadSourceKey]);
   useEffect(() => {
     if (continuationRequestKeyRef.current === continuationRequestKey) return;
     continuationRequestKeyRef.current = continuationRequestKey;
@@ -453,13 +425,6 @@ export default function NowPage() {
   const sessionCompactions = sessionCheckpoints.filter(
     (item) => item.boundary?.snapshot_phase === "pre_compaction",
   );
-  const sessionCompactionCount = Math.max(
-    sessionContextCompactionCount(latestDiscoveredSession),
-    uniqueCapturedCompactionCount(sessionCompactions),
-  );
-  const sessionContextReady = (
-    sessionCompactionCount >= MINIMUM_SESSION_CONTEXT_COMPACTIONS
-  );
   const latestSessionContextCandidate = [...sessionCheckpoints]
     .filter((item) => (
       ["pre_compaction", "session_tip"].includes(
@@ -472,8 +437,6 @@ export default function NowPage() {
   )
     ? latestSessionContextCandidate
     : null;
-  const inferredSource = sessionDescriptorReference(latestSession);
-  const continuationSource = inferredSource;
   const continuationObjective = continuationLead;
   const continuationLeadCandidate = prepareTaskCandidate(
     continuationLead,
@@ -491,23 +454,9 @@ export default function NowPage() {
     || (continuationSource
       ? "Task will be resolved from the selected session"
       : "");
-  const stageTaskContinuation = async (
-    targetProvider,
-    selectedSession = null,
-  ) => {
-    const selectedSource = selectedSession
-      ? sessionDescriptorReference(selectedSession)
-      : null;
-    const requestedSource = customSessionFlow
-      ? selectedSource
-      : continuationSource;
-    const requestedContextReady = customSessionFlow
-      ? Number(selectedSession?.compactionCount || 0) >= MINIMUM_SESSION_CONTEXT_COMPACTIONS
-      : sessionContextReady;
-    const requestedObjective = customSessionFlow
-      ? rootSessionTaskCandidate(selectedSession)
-        || String(selectedSession?.topic || selectedSession?.preview || "").trim()
-      : continuationObjective;
+  const stageTaskContinuation = async (targetProvider) => {
+    const requestedSource = continuationSource;
+    const requestedObjective = continuationObjective;
     // Recorded session CWDs are historical hints, not repository authority.
     // Send only a uniquely verified workspace repository; otherwise the
     // backend resolves the session directory or requires an explicit choice.
@@ -515,7 +464,6 @@ export default function NowPage() {
     if (
       !workspace.activeWorkspaceId
       || !requestedSource
-      || !requestedContextReady
     ) return;
     if (repositorySelectionRequired && !requestedRepoPath) {
       setContinuationState("blocked");
@@ -528,7 +476,7 @@ export default function NowPage() {
       return;
     }
     if (continuationStageInFlightRef.current) return;
-    if (!customSessionFlow && !continuationLeadResolvable) {
+    if (!continuationLeadResolvable) {
       setContinuationState("blocked");
       setContinuationError({
         title: "Choose work to continue",
@@ -542,35 +490,19 @@ export default function NowPage() {
       return;
     }
     continuationStageInFlightRef.current = true;
+    pendingProviderRef.current = targetProvider;
     const stageRequestKey = JSON.stringify([
-      continuationRequestKey,
+      workspace.activeWorkspaceId,
       requestedSource.provider,
       requestedSource.sessionId,
-      requestedObjective,
       requestedRepoPath || "",
+      targetProvider,
     ]);
-    const stageCustomSessionRequestKey = customSessionRequestKey;
-    const stageSourceKey = JSON.stringify([
-      requestedSource.provider,
-      requestedSource.sessionId,
-    ]);
+    const stageExecutionKey = continuationExecutionKey;
     const stageRequestIsCurrent = () => (
       continuationPageMountedRef.current
-      && (selectedSession
-        ? (
-          customSessionRequestKeyRef.current === stageCustomSessionRequestKey
-          && executeSessionIdentity(
-              activeCustomSessionsRef.current[targetProvider],
-            ) === executeSessionIdentity(selectedSession)
-        )
-        : (
-          continuationRequestKeyRef.current === continuationRequestKey
-          && continuationLeadSourceKeyRef.current === continuationLeadSourceKey
-          && stageSourceKey === JSON.stringify([
-            continuationSource?.provider || "",
-            continuationSource?.sessionId || "",
-          ])
-        ))
+      && continuationExecutionKeyRef.current === stageExecutionKey
+      && pendingProviderRef.current === targetProvider
     );
     const requestReservation = continuationStageRequestReservation({
       workspaceId: workspace.activeWorkspaceId,
@@ -612,11 +544,14 @@ export default function NowPage() {
           : {
               title: "Context staging was not confirmed",
               message: (
-                "The desktop open request and clipboard copy were not both "
-                + "confirmed. No successful handoff is claimed."
+                "DaemonState could not confirm that the provider opened and "
+                + "received a safe paste request. No successful handoff is claimed."
               ),
               affectedTasks: requestedObjective ? [requestedObjective] : [],
-              action: "Open the desktop app, then retry Continue.",
+              action: (
+                "Open the provider, check macOS Accessibility permission, "
+                + "then retry Continue."
+              ),
             }
       );
       setContinuationError(blocker);
@@ -644,18 +579,14 @@ export default function NowPage() {
       setContinuationError(continuationErrorFromRequest(error, targetProvider));
     } finally {
       continuationStageInFlightRef.current = false;
+      pendingProviderRef.current = null;
       if (continuationPageMountedRef.current) {
         setPendingProvider(null);
       }
     }
   };
-  const actionInputsPending = !customSessionFlow && latestSessionDiscoveryPending;
-  const continueAction = customSessionFlow
-    ? {
-        kind: "continue",
-        description: "",
-      }
-    : latestSessionDiscoveryFailed
+  const actionInputsPending = latestSessionDiscoveryPending;
+  const continueAction = latestSessionDiscoveryFailed
     ? {
         kind: "discovery_error",
         description: (
@@ -722,18 +653,8 @@ export default function NowPage() {
       source: continuationSource,
       checkpointId: null,
   };
-  const latestRunMatchInput = customSessionFlow
-    ? customContinuationMatchInput(
-        latestContinuationRun,
-        activeCustomSessions,
-      )
-    : defaultContinuationMatchInput;
-  const stagedHandoffMatchInput = customSessionFlow
-    ? customContinuationMatchInput(
-        stagedContinuationHandoff,
-        activeCustomSessions,
-      )
-    : defaultContinuationMatchInput;
+  const latestRunMatchInput = defaultContinuationMatchInput;
+  const stagedHandoffMatchInput = defaultContinuationMatchInput;
   const latestRunMatchesCurrentTask = Boolean(
     latestRunMatchInput
     && persistedRunMatchesContinuation(
@@ -853,9 +774,7 @@ export default function NowPage() {
                 Continue with Session Context
               </h1>
               <p className="mt-3 hidden max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#b8b8af] lg:block lg:text-[15px]">
-                {customSessionFlow && customSessions.length
-                  ? "Choose a numbered session for each harness, then open its exact Session Context."
-                  : "The newest available session is selected by default. Choose a harness to open its Session Context."}
+                The newest available session is selected for every harness. Choose where to open its Session Context.
               </p>
             </div>
 
@@ -880,7 +799,7 @@ export default function NowPage() {
                 <ExecuteBanner
                   to="/app/execute?from=continue"
                   linkLabel="Open Execute"
-                  description="Open Execute to select custom sessions and choose which Session Contexts appear in Continue."
+                  description="Open Execute to choose Session Contexts for the floating button. Harness cards always carry the newest session."
                   headingLevel={2}
                   headingId="continue-execute-title"
                   showWorkspace={false}
@@ -979,27 +898,13 @@ export default function NowPage() {
                     );
                     const hovered = hoveredContinuationProvider === provider.provider;
                     const pending = pendingProvider === provider.provider;
-                    const customSession = customSessionFlow
-                      ? activeCustomSessions[provider.provider]
-                      : null;
-                    const customSessionOrdinal = customSession
-                      ? customSessions.findIndex(
-                          (session) => executeSessionIdentity(session) === executeSessionIdentity(customSession),
-                        ) + 1
-                      : 0;
                     const repositoryReady = (
                       !repositorySelectionRequired || Boolean(continuationRepoPath)
                     );
                     const providerTaskReady = (
-                      (customSessionFlow ? Boolean(customSession) : continuationTaskReady)
+                      continuationTaskReady
                       && repositoryReady
                     );
-                    const providerContextReady = customSessionFlow
-                      ? Number(customSession?.compactionCount || 0) >= MINIMUM_SESSION_CONTEXT_COMPACTIONS
-                      : sessionContextReady;
-                    const providerCompactionCount = customSessionFlow
-                      ? Number(customSession?.compactionCount || 0)
-                      : sessionCompactionCount;
                     const distanceFromHover = hoverIndex >= 0 ? index - hoverIndex : 0;
                     const translateX = hoverIndex >= 0 && !hovered
                       ? distanceFromHover * 18
@@ -1023,21 +928,9 @@ export default function NowPage() {
                         taskPending={continueAction.kind === "loading"}
                         taskRequirement={!repositoryReady
                           ? "Choose the repository for this session above."
-                          : customSessionFlow && !customSession
-                            ? `Choose a ${harnessMeta(provider.provider).name} session above.`
-                            : continueAction.description}
-                        contextReady={providerContextReady}
-                        compactionCount={providerCompactionCount}
-                        minimumCompactions={MINIMUM_SESSION_CONTEXT_COMPACTIONS}
-                        sessionOrdinal={customSessionOrdinal || null}
-                        sessionTitle={customSession?.title || ""}
+                          : continueAction.description}
                         onHover={() => setHoveredContinuationProvider(provider.provider)}
-                        onContinue={(targetProvider) => (
-                          stageTaskContinuation(
-                            targetProvider,
-                            customSessionFlow ? customSession : null,
-                          )
-                        )}
+                        onContinue={stageTaskContinuation}
                       />
                     );
                   })}
@@ -1124,7 +1017,7 @@ export default function NowPage() {
         />
       </header>
 
-      {!customSessionFlow && latestSessionDiscoveryFailed ? (
+      {latestSessionDiscoveryFailed ? (
         <div className="flex flex-col justify-between gap-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-3.5 text-red-800 sm:flex-row sm:items-center dark:border-red-900/60 dark:bg-red-950/25 dark:text-red-100">
           <div>
             <p className="text-xs font-semibold">Could not verify the newest local session</p>
@@ -1206,7 +1099,7 @@ function ContinueSessionSwissKnife({
 
   return (
     <section
-      aria-label="Custom Continue sessions"
+      aria-label="Floating button sessions"
       data-session-pin-fan="true"
       className="relative z-50 mt-3 flex w-full flex-col gap-2 pr-7 lg:col-start-1 lg:row-start-1 lg:mt-0 lg:h-52 lg:min-w-0 lg:pr-0"
     >
@@ -3334,50 +3227,6 @@ function verificationLabel(verification = {}) {
   return `${passed}/${observed} passed`;
 }
 
-function customContinuationMatchInput(record, activeSessions = {}) {
-  const identity = record?.continuation_identity
-    || record?.context_package?.continuation_identity
-    || record?.context_manifest?.continuation
-    || record?.preparation?.manifest?.continuation
-    || null;
-  const sourceProvider = normalizeProvider(
-    identity?.source_provider
-      || identity?.provider
-      || record?.delivery?.source_provider,
-  );
-  const sourceSessionId = String(
-    identity?.source_session_id
-      || identity?.session_id
-      || record?.delivery?.source_session_id
-      || record?.delivery?.harness_session?.source_session_id
-      || "",
-  ).trim();
-  if (!sourceProvider || !sourceSessionId) return null;
-  const session = Object.values(activeSessions).find((candidate) => {
-    const source = sessionDescriptorReference(candidate);
-    return (
-      source?.provider === sourceProvider
-      && source?.sessionId === sourceSessionId
-    );
-  });
-  if (!session) return null;
-  const persistedObjective = String(
-    identity?.selected_objective
-      || identity?.execution_objective
-      || record?.preparation?.objective
-      || "",
-  ).trim();
-  return {
-    // Custom Continue does not submit an editable objective. Once the exact
-    // selected source matches, use the backend-derived objective for recovery.
-    objective: persistedObjective
-      || rootSessionTaskCandidate(session)
-      || String(session?.topic || session?.preview || "").trim(),
-    source: sessionDescriptorReference(session),
-    checkpointId: null,
-  };
-}
-
 function persistedRunMatchesContinuation(latestRun, {
   objective,
   source,
@@ -3755,9 +3604,15 @@ function ContinuationWorkflowStatus({
       "the selected harness",
     );
     const sessionContextAdvisory = continuationSessionContextAdvisory(result);
-    const prefillRequested = (
-      result?.delivery?.visibility?.prefill_requested === true
-      || harnessSession?.prefill_requested === true
+    const pasteRequested = (
+      result?.delivery?.visibility?.paste_requested === true
+      || harnessSession?.paste_requested === true
+    );
+    const pasteVerified = (
+      result?.delivery?.visibility?.paste_verified === true
+      || harnessSession?.paste_verified === true
+      || result?.delivery?.visibility?.context_loaded === true
+      || harnessSession?.context_loaded === true
     );
     const handoffAge = restored && result?.run?.started_at
       ? formatTimeAgo(result.run.started_at)
@@ -3776,9 +3631,11 @@ function ContinuationWorkflowStatus({
         <p className="mt-1 text-xs leading-5 text-[#606952] dark:text-[#c8d6a7]">
           {restored
             ? "Nothing is running now. Request again if needed."
-            : prefillRequested
-              ? `Context copied. Review the draft, then send it in ${provider}.`
-              : `Context copied. Paste it into ${provider}, then send it.`}
+            : pasteVerified
+              ? `Context was pasted into ${provider}. Review it, then send it.`
+              : pasteRequested
+                ? `Context copied to your clipboard. A paste command was sent to ${provider}, but the composer contents could not be verified. Confirm the context is visible, then send it.`
+                : `Context copied to your clipboard, but no paste was confirmed in ${provider}.`}
         </p>
         {sessionContextAdvisory ? (
           <div className="mt-2 rounded-lg border border-amber-300/70 bg-amber-50 px-2.5 py-2 text-amber-800 dark:border-amber-300/25 dark:bg-amber-300/[0.08] dark:text-amber-100">
@@ -4123,6 +3980,23 @@ function normalizeWorkflowTaskTitles(value) {
 function continuationStagingConfirmed(result) {
   const delivery = result?.delivery;
   const session = delivery?.harness_session;
+  const pasteMethod = String(
+    session?.paste_method || "",
+  ).trim().toLocaleLowerCase();
+  const pasteVerified = session?.paste_verified === true;
+  const contextLoaded = session?.context_loaded === true;
+  const safePasteEnvelope = (
+    session?.open_requested === true
+    && session?.open_verified === true
+    && session?.execution_started === false
+    && session?.context_copied === true
+    && session?.paste_requested === true
+    && contextLoaded === pasteVerified
+    && (
+      (pasteMethod === "accessibility_insert" && pasteVerified)
+      || (pasteMethod === "command_v" && !pasteVerified)
+    )
+  );
   return (
     String(result?.status || "").trim().toLocaleLowerCase() === "awaiting_user"
     && ["staged", "loaded", "awaiting_user"].includes(
@@ -4130,9 +4004,7 @@ function continuationStagingConfirmed(result) {
     )
     && Boolean(String(delivery?.context_delivery || "").trim())
     && delivery?.execution_started === false
-    && session?.open_requested === true
-    && session?.execution_started === false
-    && session?.context_copied === true
+    && safePasteEnvelope
     && Boolean(String(
       delivery?.handoff_id
         || session?.handoff_id
@@ -4688,20 +4560,6 @@ function queryHasSettled(query) {
     || query?.isError
     || (!query?.isLoading && query?.data !== undefined),
   );
-}
-
-function uniqueCapturedCompactionCount(items) {
-  if (!Array.isArray(items)) return 0;
-  return new Set(
-    items.map((item, index) => (
-      String(
-        item?.boundary?.event_id
-        || item?.boundary?.sequence_number
-        || item?.id
-        || `checkpoint-${index}`,
-      )
-    )),
-  ).size;
 }
 
 function checkpointMatchesActivity(checkpoint, activity) {
