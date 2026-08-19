@@ -95,11 +95,11 @@ describe("Landing", () => {
 
     expect(provider).toHaveAttribute(
       "aria-label",
-      "Codex, Claude Code, or OpenCode",
+      "Codex, Claude Code, OpenCode, Cursor, Gemini, or Grok",
     );
     expect(provider).toHaveTextContent("Codex");
 
-    ["Claude Code", "OpenCode", "Claude Code", "Codex", "OpenCode"].forEach(
+    ["Claude Code", "OpenCode", "Cursor", "Gemini", "Grok", "Codex"].forEach(
       (name) => {
         act(() => vi.advanceTimersByTime(1000));
         expect(provider).toHaveTextContent(name);
@@ -183,6 +183,7 @@ describe("Landing", () => {
     const productLinks = screen.getAllByRole("link", { name: "Open product" });
     expect(productLinks.length).toBeGreaterThanOrEqual(2);
     productLinks.forEach((link) => expect(link).toHaveAttribute("href", "/app"));
+    expect(container.querySelector(".dsr-hero-primary-link")).not.toBeInTheDocument();
     screen.getAllByRole("link", { name: /Join (the early-access )?waitlist/i })
       .forEach((link) => expect(link).toHaveAttribute("href", "#early-access"));
   });

@@ -948,7 +948,6 @@
 
 .dsr-provider-rotator {
   display: inline-grid;
-  min-width: 6.4em;
   overflow: hidden;
   vertical-align: -0.16em;
   white-space: nowrap;

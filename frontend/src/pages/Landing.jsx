@@ -41,9 +41,9 @@ const ROTATING_AGENT_NAMES = [
   "Codex",
   "Claude Code",
   "OpenCode",
-  "Claude Code",
-  "Codex",
-  "OpenCode",
+  "Cursor",
+  "Gemini",
+  "Grok",
 ];
 const ROTATING_AGENT_INTERVAL_MS = 1000;
 
@@ -180,7 +180,7 @@ function RotatingAgentName() {
   return (
     <span
       className="dsr-provider-rotator"
-      aria-label="Codex, Claude Code, or OpenCode"
+      aria-label="Codex, Claude Code, OpenCode, Cursor, Gemini, or Grok"
     >
       <span key={activeIndex} aria-hidden="true">
         {ROTATING_AGENT_NAMES[activeIndex]}
@@ -663,17 +663,11 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
 
           <div className="dsr-hero-support">
             <p>
-              DaemonState keeps your project context alive across{" "}
-              <RotatingAgentName /> and every session in between.
+              DaemonState keeps your project context alive across every session
+              with <RotatingAgentName />.
             </p>
             <p>Self-hosted. Source-backed. User-reviewed.</p>
             <div className="dsr-hero-links">
-              {!waitlistOnlyMode && (
-                <Link to="/app" className="dsr-hero-primary-link">
-                  Open product
-                  <ArrowRight aria-hidden="true" />
-                </Link>
-              )}
               <a href="#how-it-works" className="dsr-hero-text-link">
                 See how it works
                 <ArrowRight aria-hidden="true" />
