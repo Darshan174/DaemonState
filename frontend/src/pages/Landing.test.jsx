@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -30,8 +30,10 @@ describe("Landing", () => {
       }),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/keeps your project context alive across Codex, Claude Code/i),
+      screen.getByText(/keeps your project context alive across/i),
     ).toBeInTheDocument();
+    expect(screen.getByText("Self-hosted. Source-backed. User-reviewed."))
+      .toBeInTheDocument();
     expect(container.querySelector(".daemonstate-landing")).toHaveAttribute(
       "data-landing-theme",
       "fixed",
@@ -78,8 +80,34 @@ describe("Landing", () => {
     expect(screen.getAllByText("Codex").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Claude Code").length).toBeGreaterThan(0);
     expect(screen.getAllByText("OpenCode").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Gemini").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Cursor").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Grok").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Any agent")).not.toBeInTheDocument();
     expect(screen.queryByText(/Trusted by/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/10,000/i)).not.toBeInTheDocument();
+  });
+
+  it("rotates supported agent names every second in the requested order", () => {
+    vi.useFakeTimers();
+    const { container, unmount } = renderLanding();
+    const provider = container.querySelector(".dsr-provider-rotator");
+
+    expect(provider).toHaveAttribute(
+      "aria-label",
+      "Codex, Claude Code, or OpenCode",
+    );
+    expect(provider).toHaveTextContent("Codex");
+
+    ["Claude Code", "OpenCode", "Claude Code", "Codex", "OpenCode"].forEach(
+      (name) => {
+        act(() => vi.advanceTimersByTime(1000));
+        expect(provider).toHaveTextContent(name);
+      },
+    );
+
+    unmount();
+    vi.useRealTimers();
   });
 
   it("positions project history as usable infrastructure without invented proof", () => {
@@ -125,13 +153,16 @@ describe("Landing", () => {
     );
     expect(screen.queryByText("Cards advance automatically")).not.toBeInTheDocument();
     expect(screen.queryByText(/Drag to explore/i)).not.toBeInTheDocument();
-    expect(container.querySelector(".dsr-system-frame")).toBeInTheDocument();
+    expect(container.querySelector(".dsr-system-frame")).not.toBeInTheDocument();
     expect(container.querySelectorAll(".dsr-stack-card")).toHaveLength(3);
-    expect(container.querySelectorAll(".dsr-agent-logo")).toHaveLength(11);
-    expect(container.querySelectorAll(".dsr-tool-avatar")).toHaveLength(4);
-    expect(container.querySelector(".dsr-agent-logo-any")).not.toBeInTheDocument();
+    expect(container.querySelectorAll(".dsr-agent-logo")).toHaveLength(15);
+    expect(container.querySelectorAll(".dsr-tool-avatar")).toHaveLength(6);
+    expect(container.querySelectorAll(".dsr-agent-logo-gemini")).toHaveLength(2);
+    expect(container.querySelectorAll(".dsr-agent-logo-cursor")).toHaveLength(2);
+    expect(container.querySelectorAll(".dsr-agent-logo-grok")).toHaveLength(2);
+    expect(container.querySelectorAll(".dsr-agent-logo-any")).toHaveLength(0);
     expect(container.querySelectorAll(".dsr-graph-connectors path")).toHaveLength(3);
-    expect(container.querySelectorAll(".dsr-tools-track > .is-any-agent")).toHaveLength(2);
+    expect(container.querySelectorAll(".dsr-tools-track > .is-any-agent")).toHaveLength(0);
     expect(
       screen.getByRole("heading", { name: "Switch tools. Keep the thread." }),
     ).toBeInTheDocument();
@@ -161,6 +192,7 @@ describe("Landing", () => {
 
     expect(container.querySelector('a[href="/app"]')).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Open product" })).not.toBeInTheDocument();
+    expect(container.querySelector(".dsr-hero-primary-link")).not.toBeInTheDocument();
     screen.getAllByRole("link", { name: /Join (the early-access )?waitlist/i })
       .forEach((link) => expect(link).toHaveAttribute("href", "#early-access"));
   });
