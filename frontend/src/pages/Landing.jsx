@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowRight,
@@ -15,7 +15,6 @@ import {
   RefreshCw,
   ShieldCheck,
   Sparkles,
-  Terminal,
   Waypoints,
   X,
 } from "lucide-react";
@@ -36,8 +35,17 @@ const GITHUB_URL = "https://github.com/Darshan174/DaemonState";
 // 0.08s start delay + 0.55s color transition + 0.25s hold + 0.32s fade = 1.2s total.
 const LOADER_MESSAGE_HOLD_SECONDS = 0.25;
 
-const TOOL_NAMES = ["Codex", "Claude Code", "OpenCode", "Cursor"];
-const TOOL_MARQUEE_NAMES = [...TOOL_NAMES, "Any agent"];
+const TOOL_NAMES = ["Codex", "Claude Code", "OpenCode", "Gemini", "Cursor", "Grok"];
+const TOOL_MARQUEE_NAMES = TOOL_NAMES;
+const ROTATING_AGENT_NAMES = [
+  "Codex",
+  "Claude Code",
+  "OpenCode",
+  "Claude Code",
+  "Codex",
+  "OpenCode",
+];
+const ROTATING_AGENT_INTERVAL_MS = 1000;
 
 const MEMORY_ITEMS = [
   "What you are building",
@@ -51,32 +59,32 @@ const MEMORY_ITEMS = [
 const DECK_CARDS = [
   {
     number: "01",
-    eyebrow: "Session history",
-    title: "Every session, finally in one place.",
+    eyebrow: "Session library",
+    title: "Five sessions in. Still re-explaining the project.",
     type: "sessions",
   },
   {
     number: "02",
-    eyebrow: "Decision graph",
-    title: "The reasoning survives the chat window.",
+    eyebrow: "Decisions + evidence",
+    title: "Context compaction kept the summary. It lost the nuance.",
     type: "graph",
   },
   {
     number: "03",
-    eyebrow: "Persistent memory",
-    title: "Project context stays alive.",
+    eyebrow: "Workspace Context",
+    title: "The session is still open. The model is already forgetting.",
     type: "memory",
   },
   {
     number: "04",
-    eyebrow: "Clean handoff",
-    title: "The next agent starts up to speed.",
+    eyebrow: "Session Context",
+    title: "Claude looks better today. Too bad your context lives in Codex.",
     type: "handoff",
   },
   {
     number: "05",
-    eyebrow: "Continuous work",
-    title: "Change the model. Keep the momentum.",
+    eyebrow: "Agent destination",
+    title: "Every fresh chat starts with an expensive history lesson.",
     type: "continuity",
   },
 ];
@@ -137,6 +145,48 @@ function splitWords(text) {
       {index < words.length - 1 ? " " : ""}
     </span>
   ));
+}
+
+function RotatingAgentName() {
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+
+    const reducedMotion = typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-reduced-motion: reduce)")
+      : null;
+    let intervalId;
+
+    const syncRotation = () => {
+      if (intervalId) window.clearInterval(intervalId);
+      intervalId = undefined;
+
+      if (reducedMotion?.matches) return;
+      intervalId = window.setInterval(() => {
+        setActiveIndex((index) => (index + 1) % ROTATING_AGENT_NAMES.length);
+      }, ROTATING_AGENT_INTERVAL_MS);
+    };
+
+    syncRotation();
+    reducedMotion?.addEventListener?.("change", syncRotation);
+
+    return () => {
+      if (intervalId) window.clearInterval(intervalId);
+      reducedMotion?.removeEventListener?.("change", syncRotation);
+    };
+  }, []);
+
+  return (
+    <span
+      className="dsr-provider-rotator"
+      aria-label="Codex, Claude Code, or OpenCode"
+    >
+      <span key={activeIndex} aria-hidden="true">
+        {ROTATING_AGENT_NAMES[activeIndex]}
+      </span>
+    </span>
+  );
 }
 
 export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
@@ -426,41 +476,6 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           },
         });
 
-        gsap.timeline({
-          scrollTrigger: {
-            trigger: ".dsr-system-reveal",
-            start: "top 82%",
-            end: "bottom 42%",
-            scrub: 1,
-          },
-        })
-          .from(".dsr-system-frame", {
-            y: 130,
-            scale: 0.86,
-            borderRadius: 44,
-            ease: "none",
-          })
-          .from(
-            ".dsr-system-sidebar",
-            { xPercent: -72, autoAlpha: 0, ease: "none" },
-            0.08,
-          )
-          .from(
-            ".dsr-system-inspector",
-            { xPercent: 72, autoAlpha: 0, ease: "none" },
-            0.08,
-          )
-          .from(
-            ".dsr-system-memory-card",
-            {
-              y: 90,
-              autoAlpha: 0,
-              stagger: 0.08,
-              ease: "none",
-            },
-            0.18,
-          );
-
         gsap.to(".dsr-tools-track", {
           xPercent: -50,
           duration: 24,
@@ -648,20 +663,12 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
 
           <div className="dsr-hero-support">
             <p>
-              DaemonState keeps your project context alive across Codex, Claude
-              Code, OpenCode, and every session in between.
+              DaemonState keeps your project context alive across{" "}
+              <RotatingAgentName /> and every session in between.
             </p>
-            <p>
-              Switch tools. Start fresh sessions. Continue exactly where you
-              left off.
-            </p>
+            <p>Self-hosted. Source-backed. User-reviewed.</p>
             <div className="dsr-hero-links">
-              {waitlistOnlyMode ? (
-                <a href="#early-access" className="dsr-hero-primary-link">
-                  Join the waitlist
-                  <ArrowRight aria-hidden="true" />
-                </a>
-              ) : (
+              {!waitlistOnlyMode && (
                 <Link to="/app" className="dsr-hero-primary-link">
                   Open product
                   <ArrowRight aria-hidden="true" />
@@ -697,10 +704,6 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
                 No re-explaining. No rediscovery. No starting over.
               </strong>
             </div>
-          </div>
-
-          <div className="dsr-system-reveal">
-            <SystemFrame />
           </div>
         </section>
 
@@ -1137,6 +1140,8 @@ function DeckVisual({ type }) {
 }
 
 function AgentLogo({ name }) {
+  const geminiGradientId = useId().replaceAll(":", "");
+
   if (name === "Codex") {
     return (
       <span className="dsr-agent-logo dsr-agent-logo-codex" title="Codex">
@@ -1167,6 +1172,34 @@ function AgentLogo({ name }) {
     );
   }
 
+  if (name === "Gemini") {
+    return (
+      <span className="dsr-agent-logo dsr-agent-logo-gemini" title="Gemini">
+        <svg viewBox="0 0 48 48" aria-hidden="true">
+          <defs>
+            <linearGradient
+              id={geminiGradientId}
+              x1="7"
+              y1="5"
+              x2="42"
+              y2="43"
+              gradientUnits="userSpaceOnUse"
+            >
+              <stop offset="0" stopColor="#ea4335" />
+              <stop offset="0.32" stopColor="#fbbc04" />
+              <stop offset="0.62" stopColor="#34a853" />
+              <stop offset="1" stopColor="#4285f4" />
+            </linearGradient>
+          </defs>
+          <path
+            d="M24 3C25.6 14.7 33.3 22.4 45 24C33.3 25.6 25.6 33.3 24 45C22.4 33.3 14.7 25.6 3 24C14.7 22.4 22.4 14.7 24 3Z"
+            fill={`url(#${geminiGradientId})`}
+          />
+        </svg>
+      </span>
+    );
+  }
+
   if (name === "Cursor") {
     return (
       <span className="dsr-agent-logo dsr-agent-logo-cursor" title="Cursor">
@@ -1177,91 +1210,27 @@ function AgentLogo({ name }) {
     );
   }
 
+  if (name === "Grok") {
+    return (
+      <span className="dsr-agent-logo dsr-agent-logo-grok" title="Grok">
+        <svg viewBox="0 0 34 32" fill="none" aria-hidden="true">
+          <path
+            d="M13.374 20.5407L24.4555 12.3506C24.9988 11.9491 25.7753 12.1057 26.0342 12.7294C27.3966 16.0185 26.7879 19.9712 24.0772 22.6851C21.3666 25.3989 17.595 25.9941 14.1477 24.6386L10.3818 26.3843C15.7832 30.0806 22.3422 29.1665 26.4409 25.0601C29.692 21.8051 30.6989 17.3683 29.7574 13.3673L29.7659 13.3758C28.4006 7.49809 30.1016 5.14871 33.5859 0.344576C33.6683 0.230667 33.7508 0.116757 33.8333 0L29.2482 4.59055V4.57631L13.3712 20.5436"
+            fill="currentColor"
+          />
+          <path
+            d="M11.0867 22.5312C7.20979 18.8234 7.87821 13.0852 11.1862 9.77618C13.6323 7.3271 17.64 6.32755 21.1385 7.79698L24.8959 6.05986C24.219 5.57005 23.3514 5.04322 22.3559 4.67301C17.8562 2.81914 12.469 3.7418 8.81115 7.40114C5.29271 10.9238 4.18626 16.3402 6.08628 20.9621C7.5056 24.4164 5.17893 26.8597 2.8352 29.3259C2.00465 30.2001 1.17126 31.0744 0.5 31.9999L11.0838 22.534"
+            fill="currentColor"
+          />
+        </svg>
+      </span>
+    );
+  }
+
   return (
     <span className="dsr-agent-logo dsr-agent-logo-any" title="Any agent">
       <Sparkles aria-hidden="true" />
     </span>
-  );
-}
-
-function SystemFrame() {
-  return (
-    <div className="dsr-system-frame" aria-label="DaemonState project memory preview">
-      <div className="dsr-system-chrome">
-        <div>
-          <span />
-          <span />
-          <span />
-        </div>
-        <p>PROJECT / DAEMONSTATE</p>
-        <small><i /> CONTEXT LIVE</small>
-      </div>
-
-      <aside className="dsr-system-sidebar">
-        <DaemonStateIcon size={34} />
-        <nav aria-label="Preview navigation">
-          <span className="is-active"><Layers3 /> Continue</span>
-          <span><History /> Sessions</span>
-          <span><Waypoints /> Evidence</span>
-          <span><Database /> Sources</span>
-        </nav>
-        <small>23 SESSIONS INDEXED</small>
-      </aside>
-
-      <div className="dsr-system-main">
-        <div className="dsr-system-main-heading">
-          <div>
-            <small>READY TO CONTINUE</small>
-            <h3>Resume the work,<br />not the explanation.</h3>
-          </div>
-          <span>DEMO / CURRENT STATE</span>
-        </div>
-
-        <div className="dsr-system-memory-grid">
-          <article className="dsr-system-memory-card is-wide">
-            <header><span>Current objective</span><small>ACTIVE</small></header>
-            <h4>Ship provider-neutral continuation</h4>
-            <p>Keep approval in the foreground while adapters share one contract.</p>
-          </article>
-          <article className="dsr-system-memory-card">
-            <header><span>Decisions</span><small>14</small></header>
-            <strong>One adapter contract</strong>
-            <p>Chosen in session 22</p>
-          </article>
-          <article className="dsr-system-memory-card">
-            <header><span>Failed path</span><small>03</small></header>
-            <strong>Background delivery</strong>
-            <p>Loses foreground approval</p>
-          </article>
-          <article className="dsr-system-memory-card is-command">
-            <Terminal />
-            <code>pytest tests/test_harness.py</code>
-            <span>READY</span>
-          </article>
-        </div>
-      </div>
-
-      <aside className="dsr-system-inspector">
-        <header>
-          <span>Next session</span>
-          <CircleDot />
-        </header>
-        <div className="dsr-inspector-score">
-          <strong>100%</strong>
-          <span>HANDOFF READY</span>
-        </div>
-        <ul>
-          <li><Check /> Decisions restored</li>
-          <li><Check /> Blocker surfaced</li>
-          <li><Check /> Files attached</li>
-          <li><Check /> Next action clear</li>
-        </ul>
-        <button type="button" tabIndex={-1}>
-          Open in any agent
-          <ArrowRight />
-        </button>
-      </aside>
-    </div>
   );
 }
 
@@ -1277,10 +1246,14 @@ function ToolsBand() {
           </h2>
           <p>Decisions, files, failed paths, and next steps move with you.</p>
         </div>
-        <div className="dsr-tools-proof-diagram">
+        <div
+          className="dsr-tools-proof-diagram"
+          role="img"
+          aria-label="Codex, Claude Code, OpenCode, Gemini, Cursor, and Grok sessions connect through DaemonState."
+        >
           <div
             className="dsr-tool-avatars"
-            aria-label="Codex, Claude Code, OpenCode, and Cursor"
+            aria-hidden="true"
           >
             {TOOL_NAMES.map((tool) => (
               <span className="dsr-tool-avatar" key={tool} title={tool}>
@@ -1309,13 +1282,10 @@ function ToolsBand() {
           </aside>
         </div>
       </div>
-      <div className="dsr-tools-marquee">
+      <div className="dsr-tools-marquee" aria-hidden="true">
         <div className="dsr-tools-track">
           {repeatedTools.map((tool, index) => (
-            <div
-              className={tool === "Any agent" ? "is-any-agent" : undefined}
-              key={`${tool}-${index}`}
-            >
+            <div key={`${tool}-${index}`}>
               <span>{tool}</span>
               <i aria-hidden="true" />
             </div>
