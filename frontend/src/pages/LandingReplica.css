@@ -949,14 +949,15 @@
 .dsr-provider-rotator {
   display: inline-grid;
   overflow: hidden;
-  vertical-align: -0.16em;
+  vertical-align: baseline;
   white-space: nowrap;
 }
 
 .dsr-provider-rotator > span {
   grid-area: 1 / 1;
   display: inline-block;
-  font-weight: 680;
+  font-style: italic;
+  font-weight: inherit;
   animation: dsr-provider-name-cycle 1s ease-in-out both;
 }
 
