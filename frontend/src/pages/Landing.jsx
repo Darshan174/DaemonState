@@ -48,12 +48,12 @@ const ROTATING_AGENT_NAMES = [
 const ROTATING_AGENT_INTERVAL_MS = 1000;
 
 const MEMORY_ITEMS = [
-  "What you are building",
-  "What has already been completed",
-  "Which decisions were made",
-  "What failed and why",
-  "Which files matter",
-  "What needs to happen next",
+  "The current goal",
+  "Completed and remaining work",
+  "Decisions and their evidence",
+  "Failed approaches and blockers",
+  "Relevant and changed files",
+  "Checks and the exact next action",
 ];
 
 const DECK_CARDS = [
@@ -92,47 +92,47 @@ const DECK_CARDS = [
 const PROCESS_STEPS = [
   {
     number: "01",
-    title: "Import your sessions",
-    body: "Bring together work from Codex, Claude Code, OpenCode, and the coding agents you use next.",
+    title: "Capture the session",
+    body: "Create an immutable checkpoint from an in-project Codex, Claude Code, or OpenCode session.",
     icon: Layers3,
     tone: "lime",
-    meta: "SESSIONS / CONNECTED",
+    meta: "SESSION / CAPTURED",
   },
   {
     number: "02",
-    title: "Recover what matters",
-    body: "DaemonState extracts decisions, progress, failures, files, blockers, and the work that remains.",
+    title: "Compile the state",
+    body: "Reconcile it with the current repository and separate source-backed facts from session claims.",
     icon: Waypoints,
     tone: "blue",
-    meta: "CONTEXT / RECONCILED",
+    meta: "STATE / RECONCILED",
   },
   {
     number: "03",
-    title: "Continue anywhere",
-    body: "Generate a clean handoff and continue in another session, model, or coding harness without starting over.",
+    title: "Dock the next agent",
+    body: "Inspect the bounded brief, then carry it into a fresh supported agent session.",
     icon: RefreshCw,
     tone: "coral",
-    meta: "HANDOFF / READY",
+    meta: "DESTINATION / SELECTED",
   },
 ];
 
 const FEATURE_CARDS = [
   {
     number: "01",
-    title: "Decisions, not transcripts",
-    body: "Recover the choices that shaped the project and the evidence behind them.",
+    title: "Session Context",
+    body: "The goal, progress, decisions, failed attempts, blockers, checks, and next action from one captured session.",
     icon: Fingerprint,
   },
   {
     number: "02",
-    title: "Failures stay useful",
-    body: "Keep dead ends visible so the next session does not repeat expensive mistakes.",
+    title: "Workspace Context",
+    body: "Project-wide identity, architecture, capabilities, commands, repository state, and durable evidence.",
     icon: ShieldCheck,
   },
   {
     number: "03",
-    title: "Files stay connected",
-    body: "Carry forward the repository paths, commands, and open loops that matter now.",
+    title: "A clear boundary",
+    body: "Task-local narration stays separate from project truth until current evidence supports it.",
     icon: FileCode2,
   },
 ];
@@ -636,7 +636,7 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
       className="daemonstate-landing dsr-landing"
     >
       <div className="dsr-loader" aria-hidden="true">
-        <span>Persistent context for every session</span>
+        <span>Project state for the next session</span>
       </div>
 
       <LandingNav
@@ -651,12 +651,10 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           <h1
             id="hero-heading"
             className="dsr-hero-heading"
-            aria-label="Your AI coding work shouldn’t reset every session."
+            aria-label="The docking layer for AI agents."
           >
-            <span className="dsr-hero-heading-left">Your AI coding work</span>
-            <span className="dsr-hero-heading-right">
-              shouldn’t reset every session.
-            </span>
+            <span className="dsr-hero-heading-left">The docking layer</span>
+            <span className="dsr-hero-heading-right">for AI agents.</span>
           </h1>
 
           <HeroDeck />
@@ -682,21 +680,19 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
 
         <section id="problem" className="dsr-problem">
           <div className="dsr-section-shell dsr-problem-copy">
-            <SectionMarker label="The context gap" number="01" />
-            <h2>Stop rebuilding context.</h2>
+            <SectionMarker label="The blind start" number="01" />
+            <h2>Every new agent starts partially blind.</h2>
             <p className="dsr-problem-statement">
               {splitWords(
-                "Your decisions, failed attempts, relevant files, blockers, commands, and next steps should not disappear when a session ends.",
+                "A fresh session can see the repository. It cannot see why the work is in its current state, which paths already failed, or what was actually verified.",
               )}
             </p>
             <div className="dsr-problem-foot">
               <p>
-                DaemonState turns fragmented coding sessions into context your
-                next agent can immediately use.
+                DaemonState captures that missing working state and reconciles
+                it with current project evidence.
               </p>
-              <strong>
-                No re-explaining. No rediscovery. No starting over.
-              </strong>
+              <strong>Start from captured work, not a reconstructed prompt.</strong>
             </div>
           </div>
         </section>
@@ -707,8 +703,8 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           <div className="dsr-stack-sticky">
             <div className="dsr-section-shell dsr-stack-heading">
               <SectionMarker label="How it works" number="02" />
-              <h2>One project. Every agent. Continuous context.</h2>
-              <p>Three steps. One uninterrupted line of work.</p>
+              <h2>Capture. Compile. Dock.</h2>
+              <p>A deliberate path from one session to the next.</p>
             </div>
 
             <div className="dsr-stack-cards">
@@ -722,10 +718,8 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
         <section className="dsr-features" aria-labelledby="features-heading">
           <div className="dsr-section-shell">
             <div className="dsr-features-heading">
-              <SectionMarker label="What survives" number="03" dark />
-              <h2 id="features-heading">
-                Keep the useful parts. Leave the noise behind.
-              </h2>
+              <SectionMarker label="The state model" number="03" dark />
+              <h2 id="features-heading">Two contexts. One project.</h2>
             </div>
             <div className="dsr-features-grid">
               {FEATURE_CARDS.map((feature) => (
@@ -737,25 +731,25 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
 
         <section id="project-memory" className="dsr-memory">
           <div className="dsr-section-shell">
-            <SectionMarker label="Persistent project memory" number="04" />
+            <SectionMarker label="What gets carried" number="04" />
             <h2
               className="dsr-memory-title"
-              aria-label="Your coding history becomes infrastructure."
+              aria-label="Not chat history. Working state."
             >
               <span className="dsr-memory-title-line">
-                <span>Your coding history</span>
+                <span>Not chat history.</span>
               </span>
               <span className="dsr-memory-title-line dsr-memory-title-right">
-                <span>becomes infrastructure.</span>
+                <span>Working state.</span>
               </span>
             </h2>
-            <p className="dsr-memory-not-archive">Not another chat archive.</p>
+            <p className="dsr-memory-not-archive">Bounded. Source-backed. Current.</p>
 
             <div className="dsr-memory-layout">
               <div className="dsr-memory-copy">
                 <p>
-                  DaemonState gives every new coding session a current, usable
-                  understanding of:
+                  DaemonState compiles what the receiving agent needs now,
+                  without using the entire conversation as the default brief.
                 </p>
                 <ul className="dsr-memory-list">
                   {MEMORY_ITEMS.map((item) => (
@@ -773,15 +767,15 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
 
         <section id="early-access" className="dsr-final">
           <div className="dsr-final-topline">
-            <span>Persistent context for AI coding agents</span>
+            <span>The docking layer for AI coding agents</span>
             <span>Early access / 2026</span>
           </div>
 
           <div className="dsr-final-copy">
-            <p>Use the right AI tool for the job without losing what came before.</p>
-            <h2 aria-label="Change the model. Not the momentum.">
-              <AnimatedPhrase text="Change the model." />
-              <AnimatedPhrase text="Not the momentum." offset />
+            <p>The state of your work should not belong to one session, model, or tool.</p>
+            <h2 aria-label="The agents change. The project remembers.">
+              <AnimatedPhrase text="The agents change." />
+              <AnimatedPhrase text="The project remembers." offset />
             </h2>
           </div>
 
@@ -849,10 +843,10 @@ function WaitlistForm() {
     <div className={`dsr-waitlist-card is-${submission}`}>
       <div className="dsr-waitlist-heading">
         <span>EARLY ACCESS / PRIVATE BETA</span>
-        <h3>Be first in line.</h3>
+        <h3>Join the private beta.</h3>
         <p>
-          Join builders who want every AI coding session to start with the
-          context it needs.
+          Get early access to DaemonState and help shape a practical continuity
+          layer for coding agents.
         </p>
       </div>
 
@@ -916,8 +910,8 @@ function WaitlistForm() {
 function LandingNav({ menuOpen, setMenuOpen, closeMenu, waitlistOnlyMode }) {
   const links = [
     { href: "#problem", label: "Why" },
+    { href: "#docking-layer", label: "Layer" },
     { href: "#how-it-works", label: "Method" },
-    { href: "#project-memory", label: "Memory" },
   ];
 
   return (
@@ -1110,9 +1104,9 @@ function DeckVisual({ type }) {
     return (
       <div className="dsr-deck-visual dsr-handoff-visual" aria-hidden="true">
         <div>
-          <span><CircleDot /> HANDOFF READY</span>
+          <span><CircleDot /> STATE COMPILED</span>
           <strong>Continue provider adapter work</strong>
-          <small>Decisions restored · Blocker surfaced · Next action clear</small>
+          <small>Decision sourced · Blocker surfaced · Next action clear</small>
         </div>
         <ArrowRight />
       </div>
@@ -1222,7 +1216,7 @@ function AgentLogo({ name }) {
   }
 
   return (
-    <span className="dsr-agent-logo dsr-agent-logo-any" title="Any agent">
+    <span className="dsr-agent-logo dsr-agent-logo-any" title={name}>
       <Sparkles aria-hidden="true" />
     </span>
   );
@@ -1232,13 +1226,16 @@ function ToolsBand() {
   const repeatedTools = [...TOOL_MARQUEE_NAMES, ...TOOL_MARQUEE_NAMES];
 
   return (
-    <section className="dsr-tools" aria-labelledby="tools-heading">
+    <section id="docking-layer" className="dsr-tools" aria-labelledby="tools-heading">
       <div className="dsr-tools-proof">
         <div className="dsr-tools-proof-copy">
           <h2 id="tools-heading">
-            Switch tools. <span>Keep the thread.</span>
+            One project. <span>Many sessions.</span>
           </h2>
-          <p>Decisions, files, failed paths, and next steps move with you.</p>
+          <p>
+            A source-backed continuity layer between the repository, the captured
+            session, and the coding agent you choose next.
+          </p>
         </div>
         <div
           className="dsr-tools-proof-diagram"
@@ -1265,13 +1262,13 @@ function ToolsBand() {
             <circle cx="3" cy="25" r="2.5" />
             <circle cx="93" cy="20" r="2.5" />
           </svg>
-          <aside className="dsr-tools-context-note" aria-label="Project context carried forward">
-            <span>THE WORK SO FAR</span>
-            <strong>comes with you.</strong>
+          <aside className="dsr-tools-context-note" aria-hidden="true">
+            <span>DAEMONSTATE / DOCKING LAYER</span>
+            <strong>Working state, compiled.</strong>
             <ul>
-              <li><i /> Decisions</li>
-              <li><i /> Key files</li>
-              <li><i /> Next step</li>
+              <li><i /> Workspace Context</li>
+              <li><i /> Session Context</li>
+              <li><i /> Next action</li>
             </ul>
           </aside>
         </div>
@@ -1354,16 +1351,16 @@ function AnimatedPhrase({ text, offset = false }) {
 
 function MemoryConsole() {
   return (
-    <div className="dsr-memory-console" aria-label="Persistent project memory architecture">
+    <div className="dsr-memory-console" aria-label="Working-state handoff architecture">
       <header>
-        <span><Code2 /> PROJECT MEMORY</span>
-        <span className="dsr-memory-live"><i /> LIVE</span>
+        <span><Code2 /> WORKING STATE</span>
+        <span className="dsr-memory-live"><i /> CURRENT</span>
       </header>
 
       <div className="dsr-memory-console-body">
         <div className="dsr-memory-inputs">
-          <span><History /> Session history</span>
-          <span><Code2 /> Repository state</span>
+          <span><History /> Session checkpoint</span>
+          <span><Code2 /> Repository snapshot</span>
           <span><Database /> Decisions + evidence</span>
         </div>
         <div className="dsr-memory-flow" aria-hidden="true">
@@ -1389,7 +1386,7 @@ function MemoryConsole() {
           <Sparkles aria-hidden="true" />
           <div>
             <span>NEXT AGENT</span>
-            <strong>Already up to speed.</strong>
+            <strong>Ready to copy.</strong>
           </div>
           <ArrowRight aria-hidden="true" />
         </div>
@@ -1412,15 +1409,16 @@ function LandingFooter({ waitlistOnlyMode }) {
           <DaemonStateIcon size={34} />
           <span>DaemonState</span>
         </Link>
-        <p>Persistent project context for every coding agent.</p>
+        <p>Source-backed continuity for coding agents.</p>
       </div>
 
       <nav aria-label="Footer navigation">
         <div>
           <span>Explore</span>
           <a href="#problem">Why</a>
+          <a href="#docking-layer">The layer</a>
           <a href="#how-it-works">How it works</a>
-          <a href="#project-memory">Project memory</a>
+          <a href="#project-memory">Working state</a>
         </div>
         <div>
           <span>Product</span>
@@ -1437,7 +1435,7 @@ function LandingFooter({ waitlistOnlyMode }) {
 
       <div className="dsr-footer-bottom">
         <span>© 2026 DaemonState</span>
-        <span>Built for uninterrupted work.</span>
+        <span>Built for source-backed continuity.</span>
       </div>
     </footer>
   );

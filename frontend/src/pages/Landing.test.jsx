@@ -21,12 +21,12 @@ afterEach(() => {
 });
 
 describe("Landing", () => {
-  it("leads with the persistent-context promise and working calls to action", () => {
+  it("leads with the docking-layer category and working calls to action", () => {
     const { container } = renderLanding();
 
     expect(
       screen.getByRole("heading", {
-        name: "Your AI coding work shouldn’t reset every session.",
+        name: "The docking layer for AI agents.",
       }),
     ).toBeInTheDocument();
     expect(
@@ -59,23 +59,23 @@ describe("Landing", () => {
       .toHaveAttribute("href", "/permissions-terms");
   });
 
-  it("explains the recovery loop across supported coding agents", () => {
+  it("explains the blind start and source-backed handoff loop", () => {
     renderLanding();
 
     expect(
-      screen.getByRole("heading", { name: "Stop rebuilding context." }),
+      screen.getByRole("heading", { name: "Every new agent starts partially blind." }),
     ).toBeInTheDocument();
     expect(
-      screen.getByText("No re-explaining. No rediscovery. No starting over."),
+      screen.getByText("Start from captured work, not a reconstructed prompt."),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("heading", {
-        name: "One project. Every agent. Continuous context.",
+        name: "Capture. Compile. Dock.",
       }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Import your sessions" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Recover what matters" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Continue anywhere" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Capture the session" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Compile the state" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Dock the next agent" })).toBeInTheDocument();
 
     expect(screen.getAllByText("Codex").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Claude Code").length).toBeGreaterThan(0);
@@ -110,27 +110,28 @@ describe("Landing", () => {
     vi.useRealTimers();
   });
 
-  it("positions project history as usable infrastructure without invented proof", () => {
+  it("distinguishes working state from chat history without invented proof", () => {
     renderLanding();
 
     expect(
       screen.getByRole("heading", {
-        name: "Your coding history becomes infrastructure.",
+        name: "Not chat history. Working state.",
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Not another chat archive.")).toBeInTheDocument();
+    expect(screen.getByText("Bounded. Source-backed. Current."))
+      .toBeInTheDocument();
 
     [
-      "What you are building",
-      "What has already been completed",
-      "Which decisions were made",
-      "What failed and why",
-      "Which files matter",
-      "What needs to happen next",
+      "The current goal",
+      "Completed and remaining work",
+      "Decisions and their evidence",
+      "Failed approaches and blockers",
+      "Relevant and changed files",
+      "Checks and the exact next action",
     ].forEach((item) => expect(screen.getByText(item)).toBeInTheDocument());
 
     expect(
-      screen.getByRole("heading", { name: "Change the model. Not the momentum." }),
+      screen.getByRole("heading", { name: "The agents change. The project remembers." }),
     ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Follow the build" })).toHaveAttribute(
       "href",
@@ -164,9 +165,9 @@ describe("Landing", () => {
     expect(container.querySelectorAll(".dsr-graph-connectors path")).toHaveLength(3);
     expect(container.querySelectorAll(".dsr-tools-track > .is-any-agent")).toHaveLength(0);
     expect(
-      screen.getByRole("heading", { name: "Switch tools. Keep the thread." }),
+      screen.getByRole("heading", { name: "One project. Many sessions." }),
     ).toBeInTheDocument();
-    expect(screen.getByText("comes with you.")).toBeInTheDocument();
+    expect(screen.getByText("Working state, compiled.")).toBeInTheDocument();
     expect(screen.getByText("Provider-neutral handoff")).toBeInTheDocument();
     expect(screen.queryByText("COMPATIBILITY / ONE MEMORY")).not.toBeInTheDocument();
     expect(screen.queryByText(/SHARED MEMORY/i)).not.toBeInTheDocument();
@@ -176,6 +177,7 @@ describe("Landing", () => {
     expect(mainNavigation).not.toHaveTextContent("03");
 
     expect(container.querySelector("#problem")).toBeInTheDocument();
+    expect(container.querySelector("#docking-layer")).toBeInTheDocument();
     expect(container.querySelector("#how-it-works")).toBeInTheDocument();
     expect(container.querySelector("#project-memory")).toBeInTheDocument();
     expect(container.querySelector("#early-access")).toBeInTheDocument();
