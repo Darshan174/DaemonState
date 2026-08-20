@@ -59,7 +59,7 @@ describe("Landing", () => {
       .toHaveAttribute("href", "/permissions-terms");
   });
 
-  it("shows the five recognizable ways working state gets stranded", () => {
+  it("explains the blind start and source-backed handoff loop", () => {
     renderLanding();
 
     expect(
@@ -70,22 +70,12 @@ describe("Landing", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByRole("heading", {
-        name: "The work moved. The context stayed behind.",
+        name: "Capture. Compile. Dock.",
       }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/working state is still trapped inside five different windows/i),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Usage limit reached")).toBeInTheDocument();
-    expect(screen.getByText("You've hit your usage limit")).toBeInTheDocument();
-    expect(screen.getByText("Review pending")).toBeInTheDocument();
-    expect(screen.getByText("31 files changed")).toBeInTheDocument();
-    expect(screen.getByText("FAILED")).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", {
-        name: "Your work doesn't belong to the session.",
-      }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Capture the session" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Compile the state" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Dock the next agent" })).toBeInTheDocument();
 
     expect(screen.getAllByText("Codex").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Claude Code").length).toBeGreaterThan(0);
@@ -165,13 +155,12 @@ describe("Landing", () => {
     expect(screen.queryByText("Cards advance automatically")).not.toBeInTheDocument();
     expect(screen.queryByText(/Drag to explore/i)).not.toBeInTheDocument();
     expect(container.querySelector(".dsr-system-frame")).not.toBeInTheDocument();
-    expect(container.querySelectorAll(".dsr-agent-grid .dsr-agent-window"))
-      .toHaveLength(5);
-    expect(container.querySelectorAll(".dsr-agent-dock-sources > span"))
-      .toHaveLength(5);
-    expect(container.querySelectorAll(".dsr-agent-dock-packets > span"))
-      .toHaveLength(7);
+    expect(container.querySelectorAll(".dsr-stack-card")).toHaveLength(3);
+    expect(container.querySelectorAll(".dsr-agent-logo")).toHaveLength(15);
     expect(container.querySelectorAll(".dsr-tool-avatar")).toHaveLength(6);
+    expect(container.querySelectorAll(".dsr-agent-logo-gemini")).toHaveLength(2);
+    expect(container.querySelectorAll(".dsr-agent-logo-cursor")).toHaveLength(2);
+    expect(container.querySelectorAll(".dsr-agent-logo-grok")).toHaveLength(2);
     expect(container.querySelectorAll(".dsr-agent-logo-any")).toHaveLength(0);
     expect(container.querySelectorAll(".dsr-graph-connectors path")).toHaveLength(3);
     expect(container.querySelectorAll(".dsr-tools-track > .is-any-agent")).toHaveLength(0);
