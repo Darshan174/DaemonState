@@ -138,9 +138,9 @@
   height: 50px;
   padding: 0 14px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.48);
+  border: 1px solid rgba(255, 255, 255, 0.24);
   border-radius: 999px;
-  background: rgba(246, 246, 242, 0.12);
+  background: rgba(12, 12, 13, 0.62);
   color: var(--dsr-white);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.5),
@@ -150,7 +150,8 @@
 }
 
 .dsr-nav-pill.is-on-light {
-  background: rgba(246, 246, 242, 0.28);
+  border-color: rgba(255, 255, 255, 0.72);
+  background: rgba(246, 246, 242, 0.68);
   color: var(--dsr-ink);
 }
 

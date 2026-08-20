@@ -59,7 +59,7 @@ describe("Landing", () => {
       .toHaveAttribute("href", "/permissions-terms");
   });
 
-  it("explains the blind start and source-backed handoff loop", () => {
+  it("shows the five recognizable ways working state gets stranded", () => {
     renderLanding();
 
     expect(
@@ -76,6 +76,11 @@ describe("Landing", () => {
     expect(
       screen.getByText(/working state is still trapped inside five different windows/i),
     ).toBeInTheDocument();
+    expect(screen.getByText("Usage limit reached")).toBeInTheDocument();
+    expect(screen.getByText("You've hit your usage limit")).toBeInTheDocument();
+    expect(screen.getByText("Review pending")).toBeInTheDocument();
+    expect(screen.getByText("31 files changed")).toBeInTheDocument();
+    expect(screen.getByText("FAILED")).toBeInTheDocument();
     expect(
       screen.getByRole("heading", {
         name: "Your work doesn't belong to the session.",
