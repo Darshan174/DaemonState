@@ -1236,210 +1236,254 @@ function MacWindowChrome({ name, title, status }) {
   );
 }
 
-function CheckRow({ children, pending = false }) {
+function AgentCardHeader({ id, name, model, state, tone }) {
   return (
-    <li className={pending ? "is-pending" : undefined}>
-      <span aria-hidden="true">{pending ? "●" : "✓"}</span>
-      <span>{children}</span>
-    </li>
+    <header className="dsr-agent-card-header">
+      <div className="dsr-agent-card-identity">
+        <span aria-hidden="true"><AgentLogo name={name} /></span>
+        <div>
+          <h3 id={id}>{name}</h3>
+          <small>{model}</small>
+        </div>
+      </div>
+      <p className={`dsr-agent-card-state is-${tone}`}><i aria-hidden="true" />{state}</p>
+    </header>
   );
 }
 
 function AgentWindow({ type, name }) {
   if (type === "codex") {
     return (
-      <article className="dsr-agent-window is-codex" aria-label="Codex usage limit window">
-        <MacWindowChrome name={name} title="Codex — DaemonState" status="LOCAL" />
-        <div className="dsr-agent-window-body dsr-codex-ui">
-          <aside className="dsr-codex-rail" aria-hidden="true">
-            <span><AgentLogo name="Codex" /></span>
-            <i className="is-active" />
-            <i />
-            <i />
-            <i />
-          </aside>
-          <div className="dsr-codex-task">
-            <div className="dsr-agent-model-row">
-              <span>GPT-5.6 Sol</span>
-              <small>xhigh</small>
-            </div>
-            <p className="dsr-agent-prompt">Implement session restoration</p>
-            <ul className="dsr-agent-checklist">
-              <CheckRow>Parse previous sessions</CheckRow>
-              <CheckRow>Restore checkpoint state</CheckRow>
-              <CheckRow>Reconcile workspace changes</CheckRow>
-              <CheckRow>Update persistence layer</CheckRow>
-              <CheckRow pending>Integration tests <b>11 / 13</b></CheckRow>
-            </ul>
-            <code className="dsr-agent-terminal-line">
-              Running test_session_restore.py<span aria-hidden="true" />
-            </code>
-            <div className="dsr-codex-limit">
-              <span className="dsr-status-orb" aria-hidden="true" />
-              <div>
-                <strong>Usage limit reached</strong>
-                <small>Resets in 3h 42m</small>
+      <article className="dsr-agent-window is-codex" aria-labelledby="agent-codex-title">
+        <AgentCardHeader
+          id="agent-codex-title"
+          name={name}
+          model="GPT-5.6 Sol · xhigh"
+          state="Interrupted mid-run"
+          tone="danger"
+        />
+        <div className="dsr-agent-replica">
+          <MacWindowChrome name={name} title="DaemonState" status="local" />
+          <div className="dsr-agent-window-body dsr-codex-ui" aria-hidden="true">
+            <aside className="dsr-codex-sidebar">
+              <div className="dsr-codex-sidebar-brand"><AgentLogo name="Codex" /><strong>Codex</strong></div>
+              <button type="button"><span>＋</span> New task</button>
+              <small>THREADS</small>
+              <div className="dsr-codex-thread-row is-active"><i />Implement session restoration<span>now</span></div>
+              <div className="dsr-codex-thread-row"><i />Audit auth middleware<span>18m</span></div>
+              <div className="dsr-codex-thread-row"><i />Fix mobile navigation<span>1h</span></div>
+              <small>PROJECT</small>
+              <div className="dsr-codex-project">⌘&nbsp; daemonstate <b>main</b></div>
+            </aside>
+            <main className="dsr-codex-main">
+              <div className="dsr-codex-toolbar">
+                <div><strong>Implement session restoration</strong><small>daemonstate</small></div>
+                <span>GPT-5.6 Sol&nbsp;⌄</span>
               </div>
-            </div>
+              <div className="dsr-codex-transcript">
+                <div className="dsr-codex-user">Implement session restoration and run the integration suite.</div>
+                <p>I’ll trace the persistence path, restore the checkpoint, then verify the handoff.</p>
+                <div className="dsr-codex-tool"><span>⌄</span><strong>Searched codebase</strong><small>session restore · 18 matches</small></div>
+                <div className="dsr-codex-tool"><span>⌄</span><strong>Edited 4 files</strong><small>session-store.ts&nbsp; +27&nbsp; −4</small></div>
+                <div className="dsr-codex-tool is-running"><span>●</span><strong>Ran integration tests</strong><small>11 passed · 2 failed</small></div>
+                <code>pytest tests/test_session_restore.py -q<span /></code>
+              </div>
+              <div className="dsr-codex-composer">
+                <span>Follow up</span><small>⌘ ↵ send</small>
+              </div>
+              <div className="dsr-codex-limit">
+                <div><strong>Usage limit reached</strong><small>Resets in 3h 42m</small></div>
+                <button type="button">View usage</button>
+              </div>
+            </main>
+            <aside className="dsr-codex-changes">
+              <header><strong>Changes</strong><span>4</span></header>
+              <p><i className="is-modified">M</i>session-store.ts<b>+27 −4</b></p>
+              <p><i className="is-modified">M</i>workspace.ts<b>+14 −2</b></p>
+              <p><i className="is-added">A</i>restore.test.ts<b>+86</b></p>
+              <p><i className="is-modified">M</i>schema.ts<b>+8 −1</b></p>
+              <button type="button">Review changes</button>
+            </aside>
           </div>
         </div>
-        <footer className="dsr-agent-window-foot">
-          <span>INTERRUPTED</span>
-          <small>2 checks remain</small>
-        </footer>
       </article>
     );
   }
 
   if (type === "claude") {
     return (
-      <article className="dsr-agent-window is-claude" aria-label="Claude Code usage limit window">
-        <MacWindowChrome name={name} title="Claude Code — context-engine" status="zsh" />
-        <div className="dsr-agent-window-body dsr-claude-ui">
-          <div className="dsr-claude-command">
-            <span>❯</span>
-            <strong>Refactoring context compiler…</strong>
-          </div>
-          <span className="dsr-claude-model">Opus 5</span>
-          <ul className="dsr-agent-checklist">
-            <CheckRow>resolved stale-session merge</CheckRow>
-            <CheckRow>migrated continuation schema</CheckRow>
-            <CheckRow>updated 14 call sites</CheckRow>
-          </ul>
-          <div className="dsr-claude-next">
-            <span>Next</span>
-            <p>→ migrate workspace resolver</p>
-            <p>→ run regression suite</p>
-            <p>→ verify existing handoffs</p>
-          </div>
-          <blockquote>
-            “The remaining issue is likely in <b>workspaceResolver</b>…”
-          </blockquote>
-          <div className="dsr-claude-limit">
-            <strong>You&apos;ve hit your usage limit</strong>
-            <div><span>Weekly usage</span><b>100%</b></div>
-            <i aria-hidden="true"><span /></i>
-            <small>Resets Friday · 5:00 AM</small>
+      <article className="dsr-agent-window is-claude" aria-labelledby="agent-claude-title">
+        <AgentCardHeader
+          id="agent-claude-title"
+          name={name}
+          model="Opus 5"
+          state="The useful thought is stranded"
+          tone="danger"
+        />
+        <div className="dsr-agent-replica">
+          <MacWindowChrome name={name} title="context-engine — claude" status="zsh" />
+          <div className="dsr-agent-window-body dsr-claude-ui" aria-hidden="true">
+            <div className="dsr-claude-welcome">
+              <span className="dsr-claude-mark">✻</span>
+              <div><strong>Claude Code</strong><small>v2.4.8 · Opus 5</small></div>
+            </div>
+            <div className="dsr-claude-path">~/Projects/context-engine&nbsp;&nbsp; <span>main*</span></div>
+            <div className="dsr-claude-prompt"><b>❯</b><span>Refactor the context compiler without breaking existing handoffs.</span></div>
+            <div className="dsr-claude-output">
+              <p><i>●</i> I’ll map the continuation schema before changing the resolver.</p>
+              <p><i>●</i> Read <b>sessionCompiler.ts</b>, <b>workspaceResolver.ts</b> + 7 files</p>
+              <p><i>●</i> Update <b>continuation-schema.ts</b> <span>+42 −18</span></p>
+              <p><i>●</i> Update 14 call sites <span>done</span></p>
+              <p><i>●</i> Bash <b>pnpm test context-compiler</b> <span>1 failed</span></p>
+            </div>
+            <blockquote><span>⎿</span>The remaining issue is likely in <b>workspaceResolver</b>; its stale-session branch still assumes the old continuation shape…</blockquote>
+            <div className="dsr-claude-limit">
+              <strong>You&apos;ve hit your usage limit</strong>
+              <p><span>Weekly usage</span><b>100%</b></p>
+              <i><span /></i>
+              <small>Resets Friday · 5:00 AM</small>
+            </div>
+            <div className="dsr-claude-input"><b>❯</b><span>Type a message…</span></div>
+            <footer><span>Opus 5</span><span>context left · 18%</span><span>? for shortcuts</span></footer>
           </div>
         </div>
-        <footer className="dsr-agent-window-foot">
-          <span>THOUGHT STRANDED</span>
-          <small>deep refactor unfinished</small>
-        </footer>
       </article>
     );
   }
 
   if (type === "opencode") {
     return (
-      <article className="dsr-agent-window is-opencode" aria-label="OpenCode review pending window">
-        <MacWindowChrome name={name} title="opencode — daemonstate" status="main" />
-        <div className="dsr-agent-window-body dsr-opencode-ui">
-          <div className="dsr-opencode-topline">
-            <span>deepseek-v4-flash</span>
-            <small>08:42</small>
-          </div>
-          <div className="dsr-opencode-done">
-            <span aria-hidden="true">✓</span>
-            <div><strong>DONE</strong><small>Implementation complete</small></div>
-          </div>
-          <div className="dsr-opencode-stats">
-            <span><small>FILES</small><b>24</b></span>
-            <span><small>TESTS</small><b>47 passed</b></span>
-            <span><small>COST</small><b>$0.11</b></span>
-          </div>
-          <div className="dsr-opencode-diff">
-            <span>git diff --stat</span>
-            <p><b>+1,284</b><i>−463</i></p>
-          </div>
-          <div className="dsr-opencode-review">
-            <span className="dsr-status-orb" aria-hidden="true" />
-            <strong>Review pending</strong>
-            <small>24 files changed</small>
+      <article className="dsr-agent-window is-opencode" aria-labelledby="agent-opencode-title">
+        <AgentCardHeader
+          id="agent-opencode-title"
+          name={name}
+          model="DeepSeek V4 Flash"
+          state="Implementation done · review pending"
+          tone="warning"
+        />
+        <div className="dsr-agent-replica">
+          <MacWindowChrome name={name} title="daemonstate — opencode" status="main" />
+          <div className="dsr-agent-window-body dsr-opencode-ui" aria-hidden="true">
+            <header className="dsr-opencode-header">
+              <div><span className="dsr-opencode-wordmark">▣ opencode</span><small>daemonstate</small></div>
+              <div><span>main*</span><span>24 files</span></div>
+            </header>
+            <main className="dsr-opencode-session">
+              <div className="dsr-opencode-user"><small>YOU</small><p>Implement the workspace handoff flow, then run the suite.</p></div>
+              <div className="dsr-opencode-agent"><small>BUILD · DEEPSEEK V4 FLASH</small>
+                <p>I’ll wire the restored state into the new workspace flow and verify the affected routes.</p>
+                <ul>
+                  <li><i>◆</i> Read <b>8 files</b></li>
+                  <li><i>◆</i> Edit <b>workspace.tsx</b> <span>+186 −61</span></li>
+                  <li><i>◆</i> Edit <b>session-store.ts</b> <span>+94 −28</span></li>
+                  <li><i>◆</i> Bash <b>pnpm test</b> <span>47 passed</span></li>
+                </ul>
+                <p className="dsr-opencode-summary">Implementation complete. The workspace flow is wired and the suite passes.</p>
+              </div>
+            </main>
+            <aside className="dsr-opencode-changes">
+              <header><strong>CHANGES</strong><span>+1,284&nbsp; −463</span></header>
+              <p><i>M</i>src/workspace.tsx<b>+186</b></p>
+              <p><i>M</i>src/session-store.ts<b>+94</b></p>
+              <p><i>A</i>src/restore-flow.ts<b>+212</b></p>
+              <p><i>M</i>tests/handoff.test.ts<b>+78</b></p>
+              <p className="is-more">+ 20 more files</p>
+              <div><span>47 tests passed</span><span>$0.11 · 08:42</span></div>
+            </aside>
+            <div className="dsr-opencode-prompt"><span>Ask anything…</span><small>build&nbsp;&nbsp; deepseek/deepseek-v4-flash&nbsp;⌄</small></div>
+            <div className="dsr-opencode-status"><span>Review pending</span><small>ctrl+x leader&nbsp;&nbsp; / commands</small></div>
           </div>
         </div>
-        <footer className="dsr-agent-window-foot">
-          <span>IMPLEMENTATION COMPLETE</span>
-          <small>review required</small>
-        </footer>
       </article>
     );
   }
 
   if (type === "cursor") {
     return (
-      <article className="dsr-agent-window is-cursor" aria-label="Cursor large diff review window">
-        <MacWindowChrome name={name} title="context-engine — Cursor" status="Composer 2.5" />
-        <div className="dsr-agent-window-body dsr-cursor-ui">
-          <aside className="dsr-cursor-files" aria-hidden="true">
-            <strong>EXPLORER</strong>
-            <span>⌄ context-engine</span>
-            <span className="is-file">session-store.ts</span>
-            <span className="is-file">workspace.tsx</span>
-            <span className="is-file">context-router.ts</span>
-            <span className="is-file is-dim">api/client.ts</span>
-          </aside>
-          <div className="dsr-cursor-composer">
-            <div className="dsr-cursor-message">
-              <span>Composer 2.5</span>
-              <strong>Task completed</strong>
-              <ul>
-                <li>✓ Implemented new workspace flow</li>
-                <li>✓ Added loading states</li>
-                <li>✓ Updated API integration</li>
-                <li>✓ Refactored session cards</li>
-              </ul>
-            </div>
-            <div className="dsr-cursor-review">
-              <div>
-                <span>31 files changed</span>
-                <p><b>+2,418</b><i>−1,073</i></p>
+      <article className="dsr-agent-window is-cursor" aria-labelledby="agent-cursor-title">
+        <AgentCardHeader
+          id="agent-cursor-title"
+          name={name}
+          model="Composer 2.5"
+          state="31 files changed · 6 problems"
+          tone="danger"
+        />
+        <div className="dsr-agent-replica">
+          <MacWindowChrome name={name} title="context-engine — Cursor" status="Composer 2.5" />
+          <div className="dsr-agent-window-body dsr-cursor-ui" aria-hidden="true">
+            <nav className="dsr-cursor-activity"><span className="is-active">▱</span><span>⌕</span><span>⑂</span><span>▷</span><span>⊞</span><i /><span>⚙</span></nav>
+            <aside className="dsr-cursor-explorer">
+              <header>EXPLORER <span>•••</span></header>
+              <strong>⌄ CONTEXT-ENGINE</strong>
+              <p>⌄ src</p><p className="is-file is-active">TS&nbsp; session-store.ts <b>2</b></p><p className="is-file">TSX&nbsp; workspace.tsx <b>3</b></p><p className="is-file">TS&nbsp; context-router.ts <b>1</b></p><p className="is-file">TS&nbsp; api-client.ts</p>
+              <p>› tests</p><p>› public</p>
+            </aside>
+            <main className="dsr-cursor-editor">
+              <div className="dsr-cursor-tabs"><span className="is-active">session-store.ts&nbsp; M</span><span>workspace.tsx&nbsp; M</span></div>
+              <div className="dsr-cursor-breadcrumb">src&nbsp; › &nbsp;state&nbsp; › &nbsp;session-store.ts</div>
+              <pre><span><b>112</b><em> </em> export async function restoreSession(id: string) &#123;</span>
+                <span className="is-removed"><b>113</b><em>−</em> const snapshot = await db.sessions.get(id)</span>
+                <span className="is-added"><b>113</b><em>+</em> const checkpoint = await loadCheckpoint(id)</span>
+                <span className="is-added"><b>114</b><em>+</em> const snapshot = reconcileWorkspace(checkpoint)</span>
+                <span><b>115</b><em> </em> if (!snapshot) throw new SessionNotFound(id)</span>
+                <span className="is-added"><b>116</b><em>+</em> await persistContinuation(snapshot)</span>
+                <span><b>117</b><em> </em> return snapshot</span>
+                <span><b>118</b><em> </em> &#125;</span>
+              </pre>
+              <div className="dsr-cursor-panel">
+                <header><span className="is-active">PROBLEMS <b>6</b></span><span>OUTPUT</span><span>TERMINAL</span><i>×</i></header>
+                <p><b>●</b> Object is possibly &apos;undefined&apos;. <span>session-store.ts [114, 31]</span></p>
+                <p><b>●</b> Type &apos;SessionV1&apos; is not assignable to &apos;SessionV2&apos;. <span>workspace.tsx [88, 14]</span></p>
               </div>
-              <span className="dsr-cursor-review-button">Review changes</span>
-            </div>
-            <div className="dsr-cursor-problems">
-              <header><strong>PROBLEMS</strong><b>6</b></header>
-              <p><span>session-store.ts</span><b>2</b></p>
-              <p><span>workspace.tsx</span><b>3</b></p>
-              <p><span>context-router.ts</span><b>1</b></p>
-            </div>
+            </main>
+            <aside className="dsr-cursor-agent">
+              <header><strong>Agent</strong><span>＋ &nbsp;•••</span></header>
+              <div className="dsr-cursor-agent-task"><small>COMPOSER 2.5</small><p>Implement the new workspace flow and update the API integration.</p></div>
+              <div className="dsr-cursor-agent-output"><p>Task completed</p><ul><li>Implemented workspace flow</li><li>Added loading states</li><li>Updated API integration</li><li>Refactored session cards</li></ul></div>
+              <div className="dsr-cursor-diff-summary"><strong>31 files changed</strong><span><b>+2,418</b><i>−1,073</i></span></div>
+              <button type="button">Review changes</button>
+              <div className="dsr-cursor-agent-input">Ask a follow-up…<small>⌘ ↵</small></div>
+            </aside>
+            <footer className="dsr-cursor-status"><span>⑂ main*</span><span>× 6&nbsp;&nbsp; △ 0</span><span>Ln 114, Col 31&nbsp;&nbsp; UTF-8&nbsp;&nbsp; TypeScript</span></footer>
           </div>
         </div>
-        <footer className="dsr-agent-window-foot">
-          <span>AGENT SAYS DONE</span>
-          <small>31 files need review</small>
-        </footer>
       </article>
     );
   }
 
   return (
-    <article className="dsr-agent-window is-gemini" aria-label="Gemini verification failed window">
-      <MacWindowChrome name={name} title="Antigravity — dashboard-redesign" status="Gemini" />
-      <div className="dsr-agent-window-body dsr-gemini-ui">
-        <div className="dsr-gemini-task">
-          <div className="dsr-gemini-spark"><AgentLogo name="Gemini" /></div>
-          <span>Build with Gemini</span>
-          <h3>Dashboard redesign</h3>
-          <ul className="dsr-agent-checklist">
-            <CheckRow>Dashboard redesign complete</CheckRow>
-            <CheckRow>Responsive styles added</CheckRow>
-            <CheckRow>Navigation updated</CheckRow>
-          </ul>
-          <div className="dsr-gemini-complete"><span>✓</span><strong>Task completed</strong></div>
-        </div>
-        <div className="dsr-gemini-verify">
-          <header><span>VERIFY</span><strong>Needs attention</strong></header>
-          <div><span>Build</span><b>FAILED</b></div>
-          <div><span>Console errors</span><b>3</b></div>
-          <div><span>Visual checks</span><b>2 / 4</b></div>
-          <div><span>Unexpected files</span><b>4</b></div>
+    <article className="dsr-agent-window is-gemini" aria-labelledby="agent-gemini-title">
+      <AgentCardHeader
+        id="agent-gemini-title"
+        name="Gemini / Antigravity"
+        model="Gemini 3.7 Flash"
+        state="Task completed · verification failed"
+        tone="danger"
+      />
+      <div className="dsr-agent-replica">
+        <MacWindowChrome name={name} title="dashboard-redesign — Antigravity" status="Gemini" />
+        <div className="dsr-agent-window-body dsr-gemini-ui" aria-hidden="true">
+          <nav className="dsr-gemini-activity"><span className="is-active">◇</span><span>▱</span><span>⌕</span><span>⑂</span><span>▷</span><i /><span>⚙</span></nav>
+          <aside className="dsr-gemini-files">
+            <header>PROJECT <span>•••</span></header><strong>⌄ DASHBOARD-REDESIGN</strong><p>⌄ src</p><p className="is-file">JSX&nbsp; Dashboard.jsx</p><p className="is-file is-active">CSS&nbsp; dashboard.css</p><p className="is-file">JSX&nbsp; Navigation.jsx</p><p>› public</p><p>› tests</p>
+          </aside>
+          <main className="dsr-gemini-editor">
+            <div className="dsr-gemini-tabs"><span className="is-active">dashboard.css&nbsp; M</span><span>Dashboard.jsx&nbsp; M</span></div>
+            <div className="dsr-gemini-breadcrumb">src&nbsp; › &nbsp;styles&nbsp; › &nbsp;dashboard.css</div>
+            <pre><span><b>84</b> .dashboard-grid &#123;</span><span><b>85</b>&nbsp;&nbsp; display: grid;</span><span className="is-added"><b>86</b>&nbsp;&nbsp; grid-template-columns: repeat(12, 1fr);</span><span className="is-added"><b>87</b>&nbsp;&nbsp; gap: clamp(16px, 2vw, 28px);</span><span><b>88</b> &#125;</span><span>&nbsp;</span><span className="is-added"><b>90</b> @media (max-width: 720px) &#123;</span><span className="is-added"><b>91</b>&nbsp;&nbsp; .dashboard-grid &#123; grid-template-columns: 1fr; &#125;</span><span className="is-added"><b>92</b> &#125;</span></pre>
+            <div className="dsr-gemini-terminal"><header><span>TERMINAL</span><span>npm run build</span></header><p>$ npm run build</p><p className="is-error">error TS2322: Type &apos;NavItem[]&apos; is not assignable…</p><p>Build failed with 1 error.</p></div>
+          </main>
+          <aside className="dsr-gemini-agent">
+            <header><div><AgentLogo name="Gemini" /><strong>Agent</strong></div><span>•••</span></header>
+            <div className="dsr-gemini-task"><small>DASHBOARD REDESIGN</small><p>Redesign the dashboard and verify it in the browser at desktop and mobile sizes.</p></div>
+            <div className="dsr-gemini-complete"><span>✓</span><div><strong>Task completed</strong><small>3 files edited · 2m ago</small></div></div>
+            <div className="dsr-gemini-artifacts"><header><strong>Artifacts</strong><span>3</span></header><p>▤ Implementation plan <b>✓</b></p><p>▷ Browser recording <b>2:14</b></p><p>◫ Walkthrough <b>open</b></p></div>
+            <div className="dsr-gemini-verify"><header><span>Verification</span><strong>Needs attention</strong></header><p><span>Build</span><b>FAILED</b></p><p><span>Console errors</span><b>3</b></p><p><span>Visual checks</span><b>2 / 4</b></p><p><span>Unexpected files</span><b>4</b></p></div>
+            <div className="dsr-gemini-input">Give feedback…<small>⌘ ↵</small></div>
+          </aside>
+          <footer className="dsr-gemini-status"><span>main*</span><span>× 3&nbsp;&nbsp; △ 0</span><span>Gemini 3.7 Flash</span></footer>
         </div>
       </div>
-      <footer className="dsr-agent-window-foot">
-        <span>DONE ≠ VERIFIED</span>
-        <small>reality needs a second pass</small>
-      </footer>
     </article>
   );
 }
