@@ -12,7 +12,7 @@ artifacts; Session Context does not embed the Project Context payload.
 
 | Gesture | Behavior |
 |---|---|
-| Single click | Prepares and verifies the selected context, copies it, and pastes it into the editable field that was focused when the gesture began. It never presses Return or submits the prompt. |
+| Single click | Prepares and verifies the selected context, copies it, and pastes it into the verified editor associated with the gesture. For the attested OpenCode 1.18.18 build, it uses the focused window's one visible, empty, normal chat composer and does not request or claim a new session or project. It never presses Return or submits the prompt. |
 | Hover, then numbered session click | Unfolds the selected sessions around the control and immediately prepares and pastes that exact Session Context into the focused editor. No second logo click is required. |
 | Triple click | Switches between Session Context and Workspace Context and immediately prepares and pastes the newly chosen context. Session Context is the default on every launch. |
 | Double click | Resolves as one single-click action, never two insertions. |
@@ -30,6 +30,11 @@ memory. Right-click the logo and choose **Copy Recent Error Details** to copy
 the newest-first diagnostic history, including the operation that failed and
 its timestamp. The status bubble stays concise, but preserves a service request
 ID when one is available.
+
+OpenCode insertion also emits one content-free terminal event to the macOS
+unified log. It records only a fixed result phase such as `sentinel_readback`
+or `final_exact_readback`; it never records context, AX values, clipboard data,
+repository paths, or session data.
 
 Every non-successful `POST /api/context/prepare` compilation is also recorded
 by the service with its error class, context mode, workspace identity, error
@@ -115,6 +120,13 @@ The same settings can be supplied as `DAEMONSTATE_WORKSPACE_ID` and
   when needed, and verifies the exact provider, session, checkpoint, boundary,
   `copy_ready` flag, and SHA-256. Missing or ambiguous session identity fails
   closed.
+- The central Session Context action labels its handoff as `current_active`
+  only after that refresh and identity confirmation. The service independently
+  verifies that it is the workspace's newest scoped root session and that the
+  checkpoint boundary exactly matches both the direct provider transcript tip
+  and the latest authorized persisted event. Only that exact current tip may
+  bypass the historical two-compaction maturity gate. Numbered sessions and
+  other explicitly selected checkpoints retain the gate.
 - Checkpoint age is presentation metadata, not tip identity. A deliberately
   selected session remains eligible after its boundary is labeled
   `historical` when that boundary still equals the latest observed event and
@@ -130,11 +142,38 @@ The same settings can be supplied as `DAEMONSTATE_WORKSPACE_ID` and
 - Verified content is written to the clipboard before insertion. If the
   original focused editor disappears, the content remains copied and the
   control reports that it was not pasted.
-- Before Command-V, the control rechecks the exact editor, its owning process,
-  and the clipboard change count and contents. The key events are delivered
-  only to that captured process; a focus or clipboard race aborts insertion.
+- When OpenCode is frontmost, the gesture captures the exact focused AX window
+  together with the PID, bundle identifier, and canonical application path.
+  The accessibility object must have role `AXWindow` and be distinct from the
+  `AXApplication` root; an Electron app-global fallback is not accepted as
+  window authority. DaemonState activates no OpenCode URL and makes no project
+  or new-session claim.
+- A bounded, role-pruned traversal requires exactly one visible, empty, normal
+  OpenCode chat composer in that window. The candidate must own the captured
+  window, have a bounded parent chain, expose a finite positive in-window frame,
+  and pass an application-scoped center hit test. Terminal, shell, search,
+  hidden, stale, nonempty, or duplicate editors fail closed. DaemonState may
+  focus only that uniquely attested element, then rechecks the same app, PID,
+  window, element, value, and normal-mode identity before every mutation.
+- A temporary space/delete handshake and exact full-value readback prove that
+  OpenCode synchronized its input state. When the requested context ends in a
+  line feed, Chromium may serialize that one typed space immediately before its
+  structural final line feed. DaemonState accepts only that exact transient
+  value and UTF-16 range, deletes only the U+0020 sentinel, and still requires
+  the final value to equal the original context exactly.
+- Missing or ambiguous composer identity, app/PID/path/window/focus change,
+  clipboard race, incomplete accessibility traversal, or timeout fails closed.
+  The native control never guesses a target or sends a process-wide Command-V
+  that could race into the terminal. The verified context stays copied for
+  manual recovery.
+- For providers that use Command-V, the control rechecks the exact editor, its
+  owning process, and the clipboard change count and contents. The key events
+  are delivered only to that captured process; a focus or clipboard race
+  aborts insertion.
 - Secure, disabled, read-only, and non-text accessibility targets are rejected.
-- Only Command-V is synthesized. No Enter, Return, or submit event is sent.
+- No Enter, Return, or submit event is sent. OpenCode's verified insertion
+  synthesizes only its temporary space and matching backward delete; generic
+  fallback routes synthesize only Command-V.
 - Linked-session refresh reports the exact successfully refreshed identities,
   so the companion can prove the selected session was included even when a
   mature workspace reaches the bounded refresh batch size.

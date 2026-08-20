@@ -90,7 +90,13 @@ private struct LaunchConfiguration {
 @MainActor
 final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
     private let preferences = UserDefaults.standard
-    private let pasteService = FocusedTextPasteService()
+    // OpenCode 1.18's V2 layout does not consume its new-session deep link.
+    // Use the same focused-empty-editor boundary as Codex, while retaining
+    // OpenCode's normal-chat-composer identity checks.
+    private let pasteService = FocusedTextPasteService(
+        allowsLegacyOpenCodeEmptyComposerFallback: true,
+        allowsOpenCodeURLRouting: false
+    )
     private let statusController = StatusPanelController()
     private let promptDropdownController = PromptDropdownController()
     private var panelController: OverlayPanelController?
@@ -284,10 +290,22 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
                 }
                 let outcome = try await self.pasteService.deliver(
                     context.content,
-                    to: target
+                    to: target,
+                    openCodeProjectDirectory: (
+                        workspace.repoPath ?? workspace.repoPaths.first
+                    )
                 )
                 switch outcome {
+                case .alreadyPresentInVerifiedOpenCodeComposer:
+                    self.setVisualState(.success, resetAfter: 1.1)
+                    self.statusController.show(
+                        "\(requestedDisplayName) is already present",
+                        tone: .success,
+                        relativeTo: panel,
+                        dismissAfter: 2.4
+                    )
                 case .insertedWithAccessibility,
+                     .insertedIntoVerifiedEmptyComposerWithInputSync,
                      .markerReplacedWithVerifiedInputSync,
                      .commandVDispatched:
                     self.setVisualState(.success, resetAfter: 1.1)
@@ -356,9 +374,15 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             do {
+                let projectDirectory = self.workspaces.first {
+                    $0.id == workspaceID
+                }.flatMap { workspace in
+                    workspace.repoPath ?? workspace.repoPaths.first
+                }
                 let outcome = try await self.pasteService.deliver(
                     selection.combinedContent,
-                    to: target
+                    to: target,
+                    openCodeProjectDirectory: projectDirectory
                 )
                 do {
                     try await api.recordPromptUsage(
@@ -370,7 +394,17 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
                 }
                 self.setVisualState(.success, resetAfter: 1.1)
                 switch outcome {
+                case .alreadyPresentInVerifiedOpenCodeComposer:
+                    self.statusController.show(
+                        selection.count == 1
+                            ? "Selected prompt is already present"
+                            : "Selected prompts are already present",
+                        tone: .success,
+                        relativeTo: panel,
+                        dismissAfter: 2.4
+                    )
                 case .insertedWithAccessibility,
+                     .insertedIntoVerifiedEmptyComposerWithInputSync,
                      .markerReplacedWithVerifiedInputSync,
                      .commandVDispatched:
                     self.statusController.show(
@@ -817,7 +851,9 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
             pendingPasteTarget = nil
             return
         }
-        pendingPasteTarget = pasteService.captureTarget()
+        pendingPasteTarget = pasteService.captureTarget(
+            requireFocusedEmptyOpenCodeComposer: true
+        )
     }
 
     private func saveOrigin(_ origin: NSPoint) {

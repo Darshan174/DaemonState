@@ -190,16 +190,16 @@ behavior or architectural intent.
 
 The browser actions are literal: **Preview** displays rendered context, **Copy**
 writes user-controlled context to the clipboard, and **Continue** copies the
-latest Session Context, opens a new composer through a native link, and asks the
-macOS helper to paste into the verified target application. Codex and Claude
-links are prompt-free. OpenCode's link contains only a fresh non-sensitive
-marker; the helper finds that exact marker in one chat composer, replaces it,
-and verifies the full value. Replacement targets only that AX element, then a
-single-space type/delete handshake proves OpenCode's internal draft state was
-synchronized; raw AXValue readback alone is never accepted. It never treats
-OpenCode's integrated terminal or an unverified
-app-level Command-V fallback as a valid destination. On any failure, the complete
-context remains on the clipboard. Nothing presses Enter or submits a user turn.
+latest Session Context, opens the selected desktop application, and asks the
+macOS helper to paste into a verified target. Codex and Claude use prompt-free
+new-composer links. OpenCode is activated without a URL; DaemonState requires
+one visible, empty, normal chat composer in the focused window and does not
+claim a new session or project selection. Insertion targets only that AX
+element, then a single-space type/delete handshake proves OpenCode's internal
+draft state was synchronized; raw AXValue readback alone is never accepted. It
+never treats OpenCode's integrated terminal or an unverified app-level
+Command-V fallback as a valid destination. On any failure, the complete context
+remains on the clipboard. Nothing presses Enter or submits a user turn.
 
 The optional [macOS floating context control](floating-context-control.md) is a
 separate native delivery surface. It can copy and synthesize Command-V into the
@@ -294,24 +294,23 @@ or any method that starts a provider turn. Its bounded readiness check may use
 Codex app-server's read-only `account/read`, `model/list`, and
 `account/rateLimits/read` methods; it never calls `thread/start` or
 `turn/start`. The handoff copies the complete canonical `session_handoff.v1`
-rendering for the latest session, then uses only the selected app's registered
-macOS URL scheme:
+rendering for the latest session. Codex and Claude then use the selected app's
+registered macOS URL scheme:
 
 - Codex: `codex://threads/new`
 - Claude Desktop: `claude://code/new`
-- OpenCode Desktop: `opencode://new-session`
 
-The native link requests a new composer with the project directory. Codex and
-Claude carry no prompt. OpenCode carries only a random marker, never Session
-Context; the helper scans the frontmost OpenCode window for the unique normal
-chat composer whose exact value is that marker, focuses it, and replaces the
-marker only on that AX element. It then types and deletes one harmless space,
-requiring both intermediate and final exact readback; this proves OpenCode's
-input handler synchronized the internal prompt instead of merely changing
-Chromium's rendered AXValue. Terminal, shell-mode, missing, or
-ambiguous identity fails closed, and OpenCode never uses the generic app-level
-Command-V fallback. DaemonState does not create a provider session ID that it can
-truthfully persist before submission.
+Those links request a new composer with the project directory and carry no
+prompt. OpenCode Desktop is instead activated without a deep link because its
+V2 layout does not reliably consume `opencode://new-session`. The helper scans
+the focused OpenCode window for exactly one visible, empty, normal chat
+composer, focuses only that attested element, and inserts there. It then types
+and deletes one harmless space, requiring both intermediate and final exact
+readback; this proves OpenCode's input handler synchronized the internal prompt
+instead of merely changing Chromium's rendered AXValue. Terminal, shell-mode,
+nonempty, missing, or ambiguous identity fails closed, and OpenCode never uses
+the generic app-level Command-V fallback. DaemonState does not claim OpenCode
+navigation, a selected project, or a provider session ID before submission.
 The API therefore returns a handoff ID, context hash, `execution_started=false`,
 and `navigation_verified=false`, plus separate `open_verified`,
 `paste_requested`, `paste_verified`, and `paste_method` fields.
@@ -584,6 +583,13 @@ Session Context copy in Execute, not to this user-reviewed staging path. If
 latest-session discovery fails—or returns no eligible session—Continue stays
 disabled instead of falling back to an older indexed session.
 
+The native floating control's central Session Context action uses a similarly
+narrow, server-verified current-active handoff. The service accepts that origin
+only when the requested checkpoint is the newest scoped root session's exact
+direct and persisted tip; stale, older, mismatched, ambiguous, or non-local
+requests fail closed. Explicitly selected and numbered historical sessions
+continue to require two provider compactions.
+
 Desktop-stage eligibility is evaluated against the Session Context that the
 card actually sends. Execution Prompt overhead, Project Context renderer
 overhead, and missing legacy Project Context foundation coverage therefore do
@@ -604,20 +610,20 @@ still-ambiguous prefix retains the checkpoint's blocking result.
 Selecting a ready card resolves the latest session task, refreshes evidence,
 compiles the audit pack and execution contract, applies task-specific quality
 gates, copies the canonical Session Context, and requests the selected Codex,
-Claude, or OpenCode desktop app's native new-composer route. Codex and Claude
-routes are prompt-free; OpenCode carries only a fresh composer-identity marker.
+or Claude desktop app's native new-composer route. Codex and Claude routes are
+prompt-free. OpenCode is only activated, and no `opencode://` URL is sent.
 The Project Context artifact collector resolves images independently against
 every active source user turn, so a follow-up attachment is not dropped merely
 because the task's root event had no image. Each provider descriptor is checked
 only against the request and source document from that same event. The native
 helper then verifies the frontmost bundle and requests a paste. For
-OpenCode it additionally requires a unique marker-valued chat composer and
-replaces that marker only on the exact element, followed by the bounded
-single-space input-sync handshake and exact readback; an integrated terminal or
-shell-mode prompt can never qualify. The clipboard remains the complete, non-truncated
-fallback. Scheme registration and Launch Services dispatch do not prove route
-rendering, and a generic app-level Command-V dispatch alone does not prove
-editor insertion. Continue does not submit a task, claim agent
+OpenCode it additionally requires one unique visible empty normal chat composer,
+followed by the bounded single-space input-sync handshake and exact readback;
+an integrated terminal, shell-mode prompt, nonempty draft, or ambiguous
+composer can never qualify. The clipboard remains the complete, non-truncated
+fallback. App activation does not prove a new OpenCode session, and a generic
+app-level Command-V dispatch alone does not prove editor insertion. Continue
+does not submit a task, claim agent
 activity, run verifiers, or report changed files before the user submits the
 draft. Library, Memory, and Evidence remain optional inspection surfaces.
 

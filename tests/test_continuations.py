@@ -85,10 +85,10 @@ def _native_paste_launch_result(
         "launched": True,
         "open_requested": True,
         "open_verified": True,
-        "navigation_requested": True,
+        "navigation_requested": provider != "opencode",
         "navigation_verified": False,
         "mode": "desktop_composer",
-        "navigation": "new_session",
+        "navigation": "app" if provider == "opencode" else "new_session",
         "exact_session_supported": False,
         "prefill_requested": False,
         "context_copied": True,
@@ -101,10 +101,10 @@ def _native_paste_launch_result(
         ),
         "paste_message": "Context delivery requested. Nothing was submitted.",
         "paste_action": "Review the complete draft.",
-        "target_policy": "opencode-chat-composer-v1",
+        "target_policy": "opencode-focused-chat-composer-v1",
         "target_kind": "chat_composer",
         "target_identity_verified": True,
-        "marker_replaced": True,
+        "marker_replaced": False,
         "execution_started": False,
         "context_delivery": (
             (
@@ -194,7 +194,7 @@ def test_staged_handoff_rejects_unsafe_native_paste_envelopes(
     )
 
 
-def test_staged_opencode_handoff_requires_verified_marker_replacement() -> None:
+def test_staged_opencode_handoff_requires_verified_focused_composer() -> None:
     restored = staged_continuation_payload(
         _durable_native_paste_request(
             verified=True,
@@ -208,6 +208,16 @@ def test_staged_opencode_handoff_requires_verified_marker_replacement() -> None:
             _durable_native_paste_request(
                 verified=False,
                 target_provider="opencode",
+            )
+        )
+        is None
+    )
+    assert (
+        staged_continuation_payload(
+            _durable_native_paste_request(
+                verified=True,
+                target_provider="opencode",
+                overrides={"marker_replaced": True},
             )
         )
         is None
@@ -1032,6 +1042,237 @@ async def test_prepare_continuation_uses_the_exact_requested_source_session(
     assert body["checkpoint"]["goal"] == goal
     assert body["manifest"]["continuation"]["provider"] == "claude"
     assert body["manifest"]["continuation"]["session_id"] == ("requested-claude-session")
+
+
+async def test_explicit_checkpoint_must_match_explicit_source_session(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    goal = "Continue the exact checkpoint-bound source session."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id="checkpoint-source-a",
+        provider="codex",
+    )
+    await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id="checkpoint-source-b",
+        provider="codex",
+        workspace=workspace,
+    )
+    _initialize_git_repository(tmp_path)
+    checkpoint = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="checkpoint-source-a",
+        trigger="manual",
+    )
+    workspace_id = workspace.id
+    checkpoint_id = checkpoint.id
+    await db_session.commit()
+
+    mismatch = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace_id),
+            "repo_path": str(tmp_path),
+            "checkpoint_id": str(checkpoint_id),
+            "source_provider": "codex",
+            "source_session_id": "checkpoint-source-b",
+        },
+    )
+
+    assert mismatch.status_code == 422, mismatch.text
+    assert mismatch.json()["detail"]["code"] == (
+        "checkpoint_source_session_mismatch"
+    )
+
+    matching = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace_id),
+            "repo_path": str(tmp_path),
+            "checkpoint_id": str(checkpoint_id),
+            "source_provider": "codex",
+            "source_session_id": "checkpoint-source-a",
+        },
+    )
+
+    assert matching.status_code == 200, matching.text
+    body = matching.json()
+    assert body["checkpoint"]["id"] == str(checkpoint_id)
+    assert body["source_session"]["session_id"] == "checkpoint-source-a"
+
+
+async def test_stage_exact_source_excludes_similar_checkpoint_from_other_session(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    older_goal = "Fix the continuation lead mismatch."
+    current_goal = "Fix the continuation lead mismatch safely."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=older_goal,
+        session_id="older-similar-checkpoint",
+        provider="codex",
+        occurred_at="2026-07-23T10:00:00Z",
+    )
+    _initialize_git_repository(tmp_path)
+    older_tip = await db_session.scalar(
+        select(SessionEvent)
+        .where(
+            SessionEvent.workspace_id == workspace.id,
+            SessionEvent.provider == "codex",
+            SessionEvent.session_id == "older-similar-checkpoint",
+        )
+        .order_by(SessionEvent.sequence_number.desc(), SessionEvent.id.desc())
+        .limit(1)
+    )
+    assert older_tip is not None
+    older_checkpoint = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="older-similar-checkpoint",
+        boundary_event_id=older_tip.id,
+        trigger="manual",
+    )
+    await _seed_session(
+        db_session,
+        tmp_path,
+        goal=current_goal,
+        session_id="exact-current-source",
+        provider="codex",
+        occurred_at="2026-07-23T09:00:00Z",
+        workspace=workspace,
+    )
+    launch_calls: list[dict[str, str]] = []
+
+    def launch(provider: str, *, cwd: str, prompt: str) -> dict[str, object]:
+        launch_calls.append({"provider": provider, "cwd": cwd, "prompt": prompt})
+        return _native_paste_launch_result(provider=provider)
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.launch_harness_composer",
+        launch,
+    )
+
+    response = await client.post(
+        "/api/continuations/stage",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "idempotency_key": "stage-exact-source-checkpoint-scope",
+            "target_provider": "codex",
+            "source_provider": "codex",
+            "source_session_id": "exact-current-source",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    checkpoint = body["preparation"]["checkpoint"]
+    captured_checkpoint = await db_session.get(
+        WorkCheckpoint,
+        UUID(checkpoint["id"]),
+    )
+    assert captured_checkpoint is not None
+    assert checkpoint["id"] != str(older_checkpoint.id)
+    assert captured_checkpoint.session_id == "exact-current-source"
+    assert body["preparation"]["source_session"]["session_id"] == ("exact-current-source")
+    assert body["delivery"]["source_session_id"] == "exact-current-source"
+    assert body["preparation"]["execution_contract"]["task"]["request_verbatim"] == (
+        current_goal
+    )
+    assert len(launch_calls) == 1
+
+
+async def test_exact_source_excludes_workflow_prerequisite_capture_from_other_session(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    selected_goal = "Ship the exact source continuation."
+    prerequisite_goal = "Repair the prerequisite continuation service."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=selected_goal,
+        session_id="workflow-selected-source",
+        provider="codex",
+    )
+    await _seed_session(
+        db_session,
+        tmp_path,
+        goal=prerequisite_goal,
+        session_id="workflow-prerequisite-source",
+        provider="codex",
+        workspace=workspace,
+    )
+    _initialize_git_repository(tmp_path)
+    original_resolve = continuation_module.TaskWorkflowService.resolve
+
+    async def resolve_with_prerequisite(service, **kwargs):
+        resolved = await original_resolve(service, **kwargs)
+        prerequisite = {
+            **resolved.workflow["selected_intent"],
+            "id": "objective:workflow-prerequisite-source",
+            "component_id": None,
+            "title": prerequisite_goal,
+            "objective": prerequisite_goal,
+        }
+        return SimpleNamespace(
+            workflow={
+                **resolved.workflow,
+                "execution_task": prerequisite,
+                "execution_reason": "unfinished_prerequisite",
+                "now": [prerequisite],
+            },
+            selected_objective=resolved.selected_objective,
+            execution_objective=prerequisite_goal,
+            selected_component_id=resolved.selected_component_id,
+            execution_component_id=None,
+            blocking_issues=[],
+        )
+
+    monkeypatch.setattr(
+        continuation_module.TaskWorkflowService,
+        "resolve",
+        resolve_with_prerequisite,
+    )
+
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "source_provider": "codex",
+            "source_session_id": "workflow-selected-source",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["checkpoint"] is None
+    assert body["manifest"]["continuation"]["checkpoint_id"] is None
+    captured_prerequisite = await db_session.scalar(
+        select(WorkCheckpoint).where(
+            WorkCheckpoint.workspace_id == workspace.id,
+            WorkCheckpoint.provider == "codex",
+            WorkCheckpoint.session_id == "workflow-prerequisite-source",
+        )
+    )
+    assert captured_prerequisite is not None
 
 
 async def test_assistant_updates_cannot_evict_the_exact_source_user_request(
@@ -4657,7 +4898,8 @@ async def test_stage_opens_visible_desktop_with_incomplete_foundation_warning(
     assert launch_calls[0]["prompt"].startswith("# Continuation Brief v2\n")
     assert body["delivery"]["context_render_variant"] == "compact_v2"
     assert "Workspace Context readiness: **INCOMPLETE**" not in (launch_calls[0]["prompt"])
-    assert "> Continue from **Start here**." in (launch_calls[0]["prompt"])
+    assert "> Restore the prior task state from this brief." in (launch_calls[0]["prompt"])
+    assert "supplies context, not permission to act" in (launch_calls[0]["prompt"])
     assert (
         list(
             await db_session.scalars(select(AgentRun).where(AgentRun.workspace_id == workspace.id))
@@ -5013,7 +5255,8 @@ async def test_stage_opencode_destination_complaint_without_context_contaminatio
     assert "Expected destination" in prompt and "chat composer" in prompt
     assert "A1 supports R1" in prompt
     assert image_sha256 in prompt
-    assert "Task type: report." in prompt
+    assert "Task type: unconfirmed (read-only fallback only)." in prompt
+    assert "Task type: report." not in prompt
     assert "Intent classification: unconfirmed" in prompt
     assert "apply only the minimum requirement-specific delta" not in prompt
     assert "transparency comes from" not in prompt

@@ -48,6 +48,39 @@ struct RefreshFailureEnvelope: Decodable {
     }
 }
 
+struct LatestLocalSessionRequest: Encodable {
+    let workspaceID: String
+
+    private enum CodingKeys: String, CodingKey {
+        case workspaceID = "workspace_id"
+    }
+}
+
+struct LatestLocalSessionEnvelope: Decodable {
+    let sync: LatestLocalSessionSyncEnvelope?
+    let session: LatestLocalSessionDescriptorEnvelope?
+}
+
+struct LatestLocalSessionSyncEnvelope: Decodable {
+    let workspaceID: String?
+    let mode: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case workspaceID = "workspace_id"
+        case mode
+    }
+}
+
+struct LatestLocalSessionDescriptorEnvelope: Decodable {
+    let connectorType: String?
+    let sessionID: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case connectorType = "connector_type"
+        case sessionID = "session_id"
+    }
+}
+
 struct ContextDigestEnvelope: Decodable {
     let workspaceID: String?
     let activity: DigestActivityEnvelope?
@@ -213,9 +246,16 @@ struct CaptureCheckpointRequest: Encodable {
 
 struct CheckpointHandoffRequest: Encodable {
     let workspaceID: String
+    let handoffOrigin: String?
+
+    init(workspaceID: String, handoffOrigin: String? = nil) {
+        self.workspaceID = workspaceID
+        self.handoffOrigin = handoffOrigin
+    }
 
     private enum CodingKeys: String, CodingKey {
         case workspaceID = "workspace_id"
+        case handoffOrigin = "handoff_origin"
     }
 }
 

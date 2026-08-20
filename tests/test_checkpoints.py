@@ -41,6 +41,7 @@ from app.services.checkpoints import (
     _session_attachment_dependency_role,
     _session_handoff_evidence_access,
     _sentences,
+    _validated_compiler_composite_request,
     build_session_handoff_artifact,
     build_session_handoff_contract,
     capture_checkpoint,
@@ -400,6 +401,348 @@ async def test_session_context_requires_two_compactions_at_the_handoff_api(
         json={"workspace_id": str(workspace.id)},
     )
     assert handoff.status_code == 200, handoff.text
+
+
+async def test_current_active_handoff_allows_one_compaction_at_exact_tip(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    events = [
+        *_events(),
+        NormalizedSessionEvent(
+            provider_event_id="current-tip",
+            sequence_number=6,
+            event_type="assistant_update",
+            role="assistant",
+            content="The current task is ready to continue from this exact tip.",
+        ),
+    ]
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="current-active-session",
+        events=events,
+    )
+    checkpoint = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="current-active-session",
+        trigger="manual",
+    )
+    await db_session.commit()
+    monkeypatch.setattr(
+        "app.api.checkpoints.latest_scoped_root_session_tip",
+        _async_value(SimpleNamespace(
+            provider="codex",
+            session_id="current-active-session",
+            provider_event_id="current-tip",
+            sequence_number=6,
+        )),
+    )
+
+    response = await client.post(
+        f"/api/checkpoints/{checkpoint.id}/handoff",
+        json={
+            "workspace_id": str(workspace.id),
+            "handoff_origin": "current_active",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    handoff = response.json()
+    assert handoff["session_id"] == "current-active-session"
+    assert handoff["checkpoint_id"] == str(checkpoint.id)
+    assert handoff["boundary"]["snapshot_phase"] == "session_tip"
+    assert handoff["boundary"]["has_newer_events"] is False
+
+
+async def test_current_active_handoff_allows_compaction_boundary_as_exact_tip(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="current-boundary-session",
+        events=_events(),
+    )
+    checkpoint = (
+        await capture_missing_compaction_checkpoints(
+            db_session,
+            workspace_id=workspace.id,
+            provider="codex",
+            session_id="current-boundary-session",
+        )
+    )[0]
+    await db_session.commit()
+    monkeypatch.setattr(
+        "app.api.checkpoints.latest_scoped_root_session_tip",
+        _async_value(SimpleNamespace(
+            provider="codex",
+            session_id="current-boundary-session",
+            provider_event_id="compact-1",
+            sequence_number=5,
+        )),
+    )
+
+    response = await client.post(
+        f"/api/checkpoints/{checkpoint.id}/handoff",
+        json={
+            "workspace_id": str(workspace.id),
+            "handoff_origin": "current_active",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    handoff = response.json()
+    assert handoff["boundary"]["snapshot_phase"] == "pre_compaction"
+    assert handoff["boundary"]["has_newer_events"] is False
+
+
+async def test_current_active_handoff_rejects_tip_drift_during_rendering(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="drifting-current-session",
+        events=[
+            *_events(),
+            NormalizedSessionEvent(
+                provider_event_id="captured-tip",
+                sequence_number=6,
+                event_type="assistant_update",
+                role="assistant",
+                content="This tip is current when rendering begins.",
+            ),
+        ],
+    )
+    checkpoint = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="drifting-current-session",
+        trigger="manual",
+    )
+    await db_session.commit()
+    resolver_calls = 0
+
+    async def _changing_tip(*_args, **_kwargs):
+        nonlocal resolver_calls
+        resolver_calls += 1
+        return SimpleNamespace(
+            provider="codex",
+            session_id="drifting-current-session",
+            provider_event_id=(
+                "captured-tip" if resolver_calls == 1 else "newer-tip"
+            ),
+            sequence_number=6 if resolver_calls == 1 else 7,
+        )
+
+    monkeypatch.setattr(
+        "app.api.checkpoints.latest_scoped_root_session_tip",
+        _changing_tip,
+    )
+
+    response = await client.post(
+        f"/api/checkpoints/{checkpoint.id}/handoff",
+        json={
+            "workspace_id": str(workspace.id),
+            "handoff_origin": "current_active",
+        },
+    )
+
+    assert resolver_calls == 2
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == (
+        "current_active_handoff_mismatch"
+    )
+
+
+async def test_current_active_handoff_rejects_a_different_older_session(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="older-session",
+        events=[
+            *_events(),
+            NormalizedSessionEvent(
+                provider_event_id="older-tip",
+                sequence_number=6,
+                event_type="assistant_update",
+                role="assistant",
+                content="This is an older session tip.",
+            ),
+        ],
+    )
+    checkpoint = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="older-session",
+        trigger="manual",
+    )
+    await db_session.commit()
+    monkeypatch.setattr(
+        "app.api.checkpoints.latest_scoped_root_session_tip",
+        _async_value(SimpleNamespace(
+            provider="codex",
+            session_id="newest-session",
+            provider_event_id="newest-tip",
+            sequence_number=10,
+        )),
+    )
+
+    response = await client.post(
+        f"/api/checkpoints/{checkpoint.id}/handoff",
+        json={
+            "workspace_id": str(workspace.id),
+            "handoff_origin": "current_active",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == (
+        "current_active_handoff_mismatch"
+    )
+
+
+async def test_current_active_handoff_rejects_a_stale_checkpoint(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="stale-current-session",
+        events=[
+            *_events(),
+            NormalizedSessionEvent(
+                provider_event_id="captured-tip",
+                sequence_number=6,
+                event_type="assistant_update",
+                role="assistant",
+                content="This was the tip when the checkpoint was captured.",
+            ),
+        ],
+    )
+    checkpoint = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="stale-current-session",
+        trigger="manual",
+    )
+    await db_session.commit()
+    monkeypatch.setattr(
+        "app.api.checkpoints.latest_scoped_root_session_tip",
+        _async_value(SimpleNamespace(
+            provider="codex",
+            session_id="stale-current-session",
+            provider_event_id="newer-tip",
+            sequence_number=7,
+        )),
+    )
+
+    response = await client.post(
+        f"/api/checkpoints/{checkpoint.id}/handoff",
+        json={
+            "workspace_id": str(workspace.id),
+            "handoff_origin": "current_active",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == (
+        "current_active_handoff_mismatch"
+    )
+
+
+async def test_current_active_handoff_rejects_a_non_tip_compaction_boundary(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="boundary-only-session",
+        events=[
+            *_events(),
+            NormalizedSessionEvent(
+                provider_event_id="after-boundary",
+                sequence_number=6,
+                event_type="assistant_update",
+                role="assistant",
+                content="This event makes the compaction checkpoint non-tip.",
+            ),
+        ],
+    )
+    checkpoint = (
+        await capture_missing_compaction_checkpoints(
+            db_session,
+            workspace_id=workspace.id,
+            provider="codex",
+            session_id="boundary-only-session",
+        )
+    )[0]
+    await db_session.commit()
+    monkeypatch.setattr(
+        "app.api.checkpoints.latest_scoped_root_session_tip",
+        _async_value(SimpleNamespace(
+            provider="codex",
+            session_id="boundary-only-session",
+            provider_event_id="after-boundary",
+            sequence_number=6,
+        )),
+    )
+
+    response = await client.post(
+        f"/api/checkpoints/{checkpoint.id}/handoff",
+        json={
+            "workspace_id": str(workspace.id),
+            "handoff_origin": "current_active",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == (
+        "current_active_handoff_mismatch"
+    )
 
 
 async def test_session_handoff_api_preserves_verbatim_pre_compaction_context_only(
@@ -2851,29 +3194,46 @@ async def test_session_handoff_narrows_context_dependency_and_recovers_prior_tur
     assert menu_response.json()["supporting_context"] == []
 
 
+@pytest.mark.parametrize(
+    "nested_reference",
+    [False, True],
+    ids=["top-level-conversation", "prior-conversation"],
+)
 async def test_session_handoff_materializes_adopted_referenced_context(
     client,
     db_session,
     tmp_path,
     monkeypatch,
+    nested_reference,
 ) -> None:
+    conversation = [
+        {
+            "role": "user",
+            "content": "How should the two context products work?",
+        },
+        {
+            "role": "assistant",
+            "content": (
+                "Use two separate context products.\n\n"
+                "- Session Context must paste the current session checkpoint.\n"
+                "- Project Context must use task-relevant workspace knowledge.\n"
+                "- Keep provenance in an advanced audit view."
+            ),
+        },
+    ]
     referenced = {
         "conversationId": "chat-idea",
-        "conversation": [
+        **(
             {
-                "role": "user",
-                "content": "How should the two context products work?",
-            },
-            {
-                "role": "assistant",
-                "content": (
-                    "Use two separate context products.\n\n"
-                    "- Session Context must paste the current session checkpoint.\n"
-                    "- Project Context must use task-relevant workspace knowledge.\n"
-                    "- Keep provenance in an advanced audit view."
-                ),
-            },
-        ],
+                "title": "Prompt Quality Inspection",
+                "priorConversation": {
+                    "conversation": conversation,
+                    "diff": None,
+                },
+            }
+            if nested_reference
+            else {"conversation": conversation}
+        ),
     }
     request = (
         "## Referenced ChatGPT conversation:\n"
@@ -3017,19 +3377,44 @@ async def test_fresh_continuation_lead_cannot_reuse_historical_reference(
     assert "HISTORICAL_A_REQUIREMENT" not in response.text
 
 
+@pytest.mark.parametrize(
+    "nested_reference",
+    [False, True],
+    ids=["top-level-conversation", "prior-conversation"],
+)
 async def test_session_handoff_rejects_unmaterialized_external_goal_dependency(
     client,
     db_session,
     tmp_path,
+    nested_reference,
 ) -> None:
     workspace, document = await _session_source(db_session, tmp_path)
     events = _events()
+    decoy_conversation = [
+        {
+            "role": "assistant",
+            "content": "DECOY_ID_MUST_NOT_BE_USED",
+        }
+    ]
+    decoy_reference = {
+        "conversationId": "different-conversation",
+        **(
+            {
+                "title": "Wrong conversation",
+                "priorConversation": {
+                    "conversation": decoy_conversation,
+                    "diff": None,
+                },
+            }
+            if nested_reference
+            else {"conversation": decoy_conversation}
+        ),
+    }
     events[0] = replace(
         events[0],
         content=(
             "## Referenced ChatGPT conversation:\n"
-            '{"conversationId":"different-conversation","conversation":['
-            '{"role":"assistant","content":"DECOY_ID_MUST_NOT_BE_USED"}]}\n'
+            f"{json.dumps(decoy_reference)}\n"
             "## My request for Codex:\n"
             "[Missing idea](chatgpt-conversation://not-embedded) "
             "Implement the idea in the last prompt."
@@ -3060,9 +3445,17 @@ async def test_session_handoff_rejects_unmaterialized_external_goal_dependency(
     )
 
     assert response.status_code == 422
-    assert "could not be materialized" in response.json()["detail"]
-    assert "chatgpt-conversation://" not in response.json()["detail"]
-    assert "DECOY_ID_MUST_NOT_BE_USED" not in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail == {
+        "code": "session_context_materialization_required",
+        "message": (
+            "The session goal depends on referenced conversation context that "
+            "could not be materialized into a self-contained handoff."
+        ),
+        "retryable": False,
+    }
+    assert "chatgpt-conversation://" not in response.text
+    assert "DECOY_ID_MUST_NOT_BE_USED" not in response.text
 
 
 async def test_session_handoff_quality_blocks_incomplete_repository_baseline(
@@ -5684,10 +6077,12 @@ async def test_policy_vocabulary_can_be_the_subject_of_a_real_user_task(
     assert request in handoff.json()["content"]
 
 
-async def test_checkpoint_and_handoff_ignore_standalone_done_as_a_new_goal(
+@pytest.mark.parametrize("terminal_turn", ("done", "/status"))
+async def test_checkpoint_and_handoff_ignore_control_turn_as_a_new_goal(
     db_session,
     tmp_path,
     monkeypatch,
+    terminal_turn,
 ) -> None:
     workspace, document = await _session_source(db_session, tmp_path)
     request = "Push changes made from this session."
@@ -5696,7 +6091,7 @@ async def test_checkpoint_and_handoff_ignore_standalone_done_as_a_new_goal(
         workspace_id=workspace.id,
         source_document=document,
         provider="codex",
-        session_id="done-acknowledgement-session",
+        session_id="control-turn-session",
         events=[
             NormalizedSessionEvent(
                 provider_event_id="push-request",
@@ -5713,11 +6108,11 @@ async def test_checkpoint_and_handoff_ignore_standalone_done_as_a_new_goal(
                 content="The branch is ready after GitHub authentication.",
             ),
             NormalizedSessionEvent(
-                provider_event_id="done-acknowledgement",
+                provider_event_id="control-turn",
                 sequence_number=3,
                 event_type="user_request",
                 role="user",
-                content="done",
+                content=terminal_turn,
             ),
         ],
     )
@@ -5730,7 +6125,7 @@ async def test_checkpoint_and_handoff_ignore_standalone_done_as_a_new_goal(
         db_session,
         workspace_id=workspace.id,
         provider="codex",
-        session_id="done-acknowledgement-session",
+        session_id="control-turn-session",
     )
     loaded = await get_checkpoint(db_session, checkpoint.id)
     assert loaded is not None
@@ -5751,13 +6146,345 @@ async def test_checkpoint_and_handoff_ignore_standalone_done_as_a_new_goal(
         item["text"]
         for item in handoff["requirements"]
     ] == [request]
-    assert "Original user request (authoritative):\n> done" not in handoff["content"]
+    assert f"Original user request (authoritative):\n> {terminal_turn}" not in handoff[
+        "content"
+    ]
 
 
-async def test_handoff_repairs_an_existing_checkpoint_whose_goal_is_done(
+@pytest.mark.parametrize(
+    ("reaction", "expected_act"),
+    (
+        ("ARE U FUCKING SERIOUS MOTHERFUCKER", "failure_feedback"),
+        ("Wrong.", "failure_feedback"),
+        ("no", "reject"),
+    ),
+)
+async def test_checkpoint_and_handoff_preserve_goal_after_failure_feedback(
     db_session,
     tmp_path,
     monkeypatch,
+    reaction,
+    expected_act,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    request = "Implement reliable checkpoint selection."
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="failure-feedback-session",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="failure-feedback:request",
+                sequence_number=1,
+                event_type="user_request",
+                role="user",
+                content=request,
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="failure-feedback:assistant",
+                sequence_number=2,
+                event_type="assistant_update",
+                role="assistant",
+                content="Implemented end to end; the Session Context is ready.",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="failure-feedback:reaction",
+                sequence_number=3,
+                event_type="user_request",
+                role="user",
+                content=reaction,
+            ),
+        ],
+    )
+    snapshot = _snapshot(tmp_path)
+    monkeypatch.setattr(
+        "app.services.checkpoints.capture_repository_snapshot",
+        _async_value(snapshot),
+    )
+
+    checkpoint = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="failure-feedback-session",
+    )
+    loaded = await get_checkpoint(db_session, checkpoint.id)
+    assert loaded is not None
+    data = checkpoint_to_dict(loaded)
+    goal = data["sections"]["goal"][0]
+    state = goal["payload"]["conversation_state"]
+
+    assert goal["statement"] == request
+    assert goal["payload"]["request_verbatim"] == request
+    assert [
+        item["request_verbatim"] for item in goal["payload"]["request_fragments"]
+    ] == [request]
+    assert state["lifecycle"] == "direction_required"
+    assert state["transitions"][-1]["act"] == expected_act
+    assert data["sections"]["exact_next_action"][0]["statement"].startswith(
+        "Wait for explicit current user direction"
+    )
+
+    handoff = build_session_handoff_artifact(
+        loaded,
+        request_verbatim=request,
+        checkpoint_data=data,
+        repository_comparison={
+            "status": "unchanged",
+            "reason": "The current checkout matches the captured checkpoint.",
+            "checked_at": utc_now(),
+            "current": snapshot.to_dict(),
+        },
+    )
+    assert handoff["current_goal"]["request_verbatim"] == request
+    assert handoff["readiness"]["status"] == "direction_required"
+    assert handoff["quality_report"]["automatic_execution_ready"] is False
+    assert "Status: **Direction Required**" in handoff["content"]
+    assert "supplies context, not permission to act" in handoff["content"]
+    if reaction != "no":
+        assert reaction not in handoff["content"]
+    assert "Status: **Execution Ready**" not in handoff["content"]
+
+
+@pytest.mark.parametrize(
+    ("feedback", "directive"),
+    (
+        ("You didn't fix it, now fix the compiler.", "fix the compiler."),
+        ("Still broken — fix it.", "fix it."),
+    ),
+)
+async def test_checkpoint_keeps_actionable_tail_after_failure_feedback(
+    db_session,
+    tmp_path,
+    monkeypatch,
+    feedback,
+    directive,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    request = "Implement reliable checkpoint selection."
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="feedback-direction-session",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="feedback-direction:request",
+                sequence_number=1,
+                event_type="user_request",
+                role="user",
+                content=request,
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="feedback-direction:assistant",
+                sequence_number=2,
+                event_type="assistant_update",
+                role="assistant",
+                content="Done.",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="feedback-direction:turn",
+                sequence_number=3,
+                event_type="user_request",
+                role="user",
+                content=feedback,
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.checkpoints.capture_repository_snapshot",
+        _async_value(_snapshot(tmp_path)),
+    )
+
+    checkpoint = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="feedback-direction-session",
+    )
+    loaded = await get_checkpoint(db_session, checkpoint.id)
+    assert loaded is not None
+    data = checkpoint_to_dict(loaded)
+    goal = data["sections"]["goal"][0]
+    state = goal["payload"]["conversation_state"]
+
+    assert state["active_goal"]["root_request_verbatim"] == request
+    assert [
+        item["request_verbatim"] for item in goal["payload"]["request_fragments"]
+    ] == [request, directive]
+    assert state["transitions"][-1]["act"] == "amend"
+    assert state["lifecycle"] == "active"
+    assert directive in goal["statement"]
+
+
+async def test_checkpoint_preserves_hash_bound_composite_rejected_by_unary_parser(
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    root_request = (
+        "What is this error? I clicked the Codex card in Continue and this "
+        "appeared.\n<image name=[Image #1] path=\"/tmp/failure.png\">\n</image>"
+    )
+    failure_follow_up = (
+        "fix it and inspect the old session where you kept saying it was fixed "
+        "but it was never fixed. you failed to fix it. also solve the old "
+        "session issues."
+    )
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="composite-failure-follow-up",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="composite-failure:root",
+                sequence_number=1,
+                event_type="user_request",
+                role="user",
+                content=root_request,
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="composite-failure:result",
+                sequence_number=2,
+                event_type="assistant_update",
+                role="assistant",
+                content="The Continue card is fixed.",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="composite-failure:follow-up",
+                sequence_number=3,
+                event_type="user_request",
+                role="user",
+                content=failure_follow_up,
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.checkpoints.capture_repository_snapshot",
+        _async_value(_snapshot(tmp_path)),
+    )
+
+    checkpoint = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="composite-failure-follow-up",
+    )
+    loaded = await get_checkpoint(db_session, checkpoint.id)
+    assert loaded is not None
+    raw_goal = next(item for item in loaded.items if item.category == "goal")
+    raw_payload = json.loads(raw_goal.payload_json)
+    composite_request = raw_payload["request_verbatim"]
+
+    assert len(raw_payload["request_fragments"]) == 2
+    assert composite_request.startswith(root_request)
+    assert composite_request.endswith(failure_follow_up)
+    recaptured = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="composite-failure-follow-up",
+    )
+    assert recaptured.id == loaded.id
+    recaptured_goal = next(item for item in recaptured.items if item.category == "goal")
+    assert recaptured_goal.id == raw_goal.id
+    corrupted_payload = json.loads(json.dumps(raw_payload))
+    corrupted_payload["request_fragments"][1]["request_sha256"] = "0" * 64
+    assert (
+        _validated_compiler_composite_request(
+            composite_request,
+            corrupted_payload,
+        )
+        is None
+    )
+    forged_payload = json.loads(json.dumps(raw_payload))
+    forged_fragment = forged_payload["request_fragments"][1]
+    forged_fragment.update(
+        {
+            "request_verbatim": "done",
+            "request_sha256": hashlib.sha256(b"done").hexdigest(),
+            "dialogue_act": "amend",
+            "resolved_statement": None,
+            "resolved_statement_sha256": None,
+        }
+    )
+    forged_state = forged_payload["conversation_state"]
+    forged_active_fragment = forged_state["active_goal"]["fragments"][1]
+    forged_active_fragment.update(
+        {
+            "request_verbatim": "done",
+            "normalized_request": "done",
+            "act": "amend",
+            "resolved_statement": None,
+        }
+    )
+    forged_request = (
+        f"{root_request.strip()}\n\n"
+        "## Additional user-authored requirements\n\n"
+        "### Follow-up 1\n"
+        "done"
+    )
+    forged_payload["request_verbatim"] = forged_request
+    forged_payload["request_sha256"] = hashlib.sha256(
+        forged_request.encode("utf-8")
+    ).hexdigest()
+    forged_state["active_goal"]["composite_request_verbatim"] = forged_request
+    unsigned_forged_state = {
+        key: value
+        for key, value in forged_state.items()
+        if key != "state_sha256"
+    }
+    forged_state["state_sha256"] = hashlib.sha256(
+        json.dumps(
+            unsigned_forged_state,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert (
+        _validated_compiler_composite_request(
+            forged_request,
+            forged_payload,
+        )
+        is None
+    )
+    projected = checkpoint_to_dict(loaded)
+    assert projected["projection"]["valid"] is True
+    assert projected["sections"]["goal"][0]["statement"] == composite_request
+    assert (
+        projected["sections"]["goal"][0]["payload"]["request_verbatim"]
+        == composite_request
+    )
+
+    recovered_request = await resolve_session_handoff_request_verbatim(
+        db_session,
+        loaded,
+    )
+    assert recovered_request == composite_request
+    assert recovered_request != failure_follow_up
+
+
+@pytest.mark.parametrize(
+    ("poisoned_goal", "direction_required"),
+    (
+        ("done", False),
+        ("/status", False),
+        ("ARE U FUCKING SERIOUS MOTHERFUCKER", True),
+        ("The banner is still displayed in the app.", True),
+    ),
+)
+async def test_handoff_repairs_an_existing_checkpoint_whose_goal_is_non_task_dialogue(
+    db_session,
+    tmp_path,
+    monkeypatch,
+    poisoned_goal,
+    direction_required,
 ) -> None:
     workspace, document = await _session_source(db_session, tmp_path)
     request = "Push changes made from this session."
@@ -5776,11 +6503,11 @@ async def test_handoff_repairs_an_existing_checkpoint_whose_goal_is_done(
                 content=request,
             ),
             NormalizedSessionEvent(
-                provider_event_id="done-acknowledgement",
+                provider_event_id="poisoned-goal-dialogue",
                 sequence_number=2,
                 event_type="user_request",
                 role="user",
-                content="done",
+                content=poisoned_goal,
             ),
         ],
     )
@@ -5801,15 +6528,26 @@ async def test_handoff_repairs_an_existing_checkpoint_whose_goal_is_done(
     raw_goal = next(item for item in loaded.items if item.category == "goal")
     # Simulate an already-stored checkpoint produced by the old unary goal
     # selector. The current resolver itself must never create this state.
-    raw_goal.statement = "done"
+    raw_goal.statement = poisoned_goal
     raw_goal.payload_json = json.dumps(
         {
-            "request_verbatim": "done",
-            "request_sha256": hashlib.sha256(b"done").hexdigest(),
+            "request_verbatim": poisoned_goal,
+            "request_sha256": hashlib.sha256(poisoned_goal.encode()).hexdigest(),
+            "conversation_state": {
+                "schema_version": "conversation_state.v1",
+                "active_goal": {
+                    "root_request_verbatim": poisoned_goal,
+                    "composite_request_verbatim": poisoned_goal,
+                },
+                "lifecycle": "active",
+                "transitions": [],
+                "decisions": [],
+                "unresolved_references": [],
+            },
         }
     )
     await db_session.flush()
-    assert raw_goal.statement == "done"
+    assert raw_goal.statement == poisoned_goal
 
     recovered_request = await resolve_session_handoff_request_verbatim(
         db_session,
@@ -5825,7 +6563,69 @@ async def test_handoff_repairs_an_existing_checkpoint_whose_goal_is_done(
         repository_comparison={"relation": "matches"},
     )
     assert handoff["current_goal"]["text"] == request
-    assert "Original user request (authoritative):\n> done" not in handoff["content"]
+    assert f"Original user request (authoritative):\n> {poisoned_goal}" not in handoff["content"]
+    if direction_required:
+        assert repaired_data["sections"]["goal"][0]["payload"]["conversation_state"][
+            "lifecycle"
+        ] == "direction_required"
+        assert handoff["readiness"]["status"] == "direction_required"
+        assert poisoned_goal not in handoff["content"]
+    else:
+        assert repaired_data["sections"]["goal"][0]["payload"]["conversation_state"][
+            "lifecycle"
+        ] == "active"
+
+
+async def test_legacy_standalone_bug_report_remains_an_active_goal(
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    request = "The banner is still displayed in the app."
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="legacy-standalone-bug-report",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="standalone-bug-report",
+                sequence_number=1,
+                event_type="user_request",
+                role="user",
+                content=request,
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.checkpoints.capture_repository_snapshot",
+        _async_value(_snapshot(tmp_path)),
+    )
+    checkpoint = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="legacy-standalone-bug-report",
+    )
+    loaded = await get_checkpoint(db_session, checkpoint.id)
+    assert loaded is not None
+    raw_goal = next(item for item in loaded.items if item.category == "goal")
+    legacy_payload = json.loads(raw_goal.payload_json)
+    legacy_payload.pop("dialogue_classifier_version")
+    raw_goal.payload_json = json.dumps(legacy_payload)
+    await db_session.flush()
+
+    recovered_request = await resolve_session_handoff_request_verbatim(
+        db_session,
+        loaded,
+    )
+    assert recovered_request == request
+    repaired_data = checkpoint_to_dict(loaded, recovered_goal=recovered_request)
+    repaired_goal = repaired_data["sections"]["goal"][0]
+    assert repaired_goal["statement"] == request
+    assert repaired_goal["payload"]["conversation_state"]["lifecycle"] == "active"
 
 
 async def test_latest_checkpoint_uses_boundary_time_not_import_or_insert_time(

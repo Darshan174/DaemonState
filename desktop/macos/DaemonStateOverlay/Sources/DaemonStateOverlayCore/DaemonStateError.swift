@@ -16,6 +16,10 @@ public enum DaemonStateError: Error, Equatable, Sendable {
     case invalidSHA256(scope: ContextScope)
     case integrityMismatch(scope: ContextScope, expected: String, actual: String)
     case identityMismatch(field: String, expected: String, actual: String?)
+    case sessionContextCompactionsRequired(
+        compactionCount: Int,
+        minimumCompactions: Int
+    )
     case activeSessionUnavailable(String)
     case sessionRefreshUnconfirmed(String)
 }
@@ -60,6 +64,10 @@ extension DaemonStateError: LocalizedError {
             return "\(scope.displayName) failed its content integrity check."
         case let .identityMismatch(field, expected, actual):
             return "Context identity mismatch for \(field): expected “\(expected)”, received “\(actual ?? "missing")”."
+        case let .sessionContextCompactionsRequired(compactionCount, minimumCompactions):
+            let minimum = max(minimumCompactions, 1)
+            let count = min(max(compactionCount, 0), minimum)
+            return "Session Context is not ready yet: \(count) of \(minimum) provider compactions detected. Continue the source session, then try again."
         case let .activeSessionUnavailable(message):
             return "Current Session Context is unavailable: \(message)"
         case let .sessionRefreshUnconfirmed(message):

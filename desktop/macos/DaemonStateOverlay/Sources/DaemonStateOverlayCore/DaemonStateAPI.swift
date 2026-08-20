@@ -4,6 +4,19 @@ import FoundationNetworking
 import CryptoKit
 import Foundation
 
+private enum SessionContextHandoffOrigin: Equatable, Sendable {
+    case selected
+    case currentActive
+
+    var requiresCompactionEligibility: Bool {
+        self == .selected
+    }
+
+    var requestValue: String? {
+        self == .currentActive ? "current_active" : nil
+    }
+}
+
 public final class DaemonStateAPI: @unchecked Sendable {
     public let baseURL: URL
     private let session: URLSession
@@ -207,7 +220,8 @@ public final class DaemonStateAPI: @unchecked Sendable {
         )
         return try await fetchVerifiedSessionContext(
             workspaceID: workspaceID,
-            activeSession: selectedSession
+            activeSession: selectedSession,
+            handoffOrigin: .selected
         )
     }
 
@@ -226,46 +240,52 @@ public final class DaemonStateAPI: @unchecked Sendable {
                 try await Task.sleep(for: retryDelay)
             }
         }
-        return try await fetchSessionContextOnce(workspaceID: workspaceID)
+        do {
+            return try await fetchSessionContextOnce(workspaceID: workspaceID)
+        } catch let error as DaemonStateError {
+            if case let .httpError(statusCode, code, _) = error,
+               statusCode == 409,
+               code == "current_active_handoff_mismatch"
+            {
+                throw DaemonStateError.activeSessionUnavailable(
+                    "the session changed while its context was being prepared. "
+                        + "Wait for the current provider response to finish, then try again."
+                )
+            }
+            throw error
+        }
     }
 
     private func fetchSessionContextOnce(
         workspaceID: String
     ) async throws -> VerifiedContext {
-        let refresh: RefreshLinkedEnvelope = try await send(
+        let discovery: LatestLocalSessionEnvelope = try await send(
             method: "POST",
-            path: ["connectors", "ai-session", "refresh-linked"],
-            body: RefreshLinkedRequest(workspaceID: workspaceID)
+            path: ["session-library", "latest"],
+            body: LatestLocalSessionRequest(workspaceID: workspaceID)
         )
-        let digest: ContextDigestEnvelope = try await send(
-            method: "GET",
-            path: ["context", "digest"],
-            queryItems: [URLQueryItem(name: "workspace_id", value: workspaceID)]
-        )
-        let activeSession = try ContextValidator.activeSession(
-            from: digest,
+        let activeSession = try ContextValidator.latestLocalSession(
+            from: discovery,
             workspaceID: workspaceID
-        )
-        try ContextValidator.confirmRefresh(
-            refresh,
-            workspaceID: workspaceID,
-            activeSession: activeSession
         )
         return try await fetchVerifiedSessionContextOnce(
             workspaceID: workspaceID,
-            activeSession: activeSession
+            activeSession: activeSession,
+            handoffOrigin: .currentActive
         )
     }
 
     private func fetchVerifiedSessionContext(
         workspaceID: String,
-        activeSession: ActiveSessionIdentity
+        activeSession: ActiveSessionIdentity,
+        handoffOrigin: SessionContextHandoffOrigin
     ) async throws -> VerifiedContext {
         for retryDelay in sessionContextRetryDelays {
             do {
                 return try await fetchVerifiedSessionContextOnce(
                     workspaceID: workspaceID,
-                    activeSession: activeSession
+                    activeSession: activeSession,
+                    handoffOrigin: handoffOrigin
                 )
             } catch {
                 guard Self.isTransientSessionContextError(error) else {
@@ -276,18 +296,22 @@ public final class DaemonStateAPI: @unchecked Sendable {
         }
         return try await fetchVerifiedSessionContextOnce(
             workspaceID: workspaceID,
-            activeSession: activeSession
+            activeSession: activeSession,
+            handoffOrigin: handoffOrigin
         )
     }
 
     private func fetchVerifiedSessionContextOnce(
         workspaceID: String,
-        activeSession: ActiveSessionIdentity
+        activeSession: ActiveSessionIdentity,
+        handoffOrigin: SessionContextHandoffOrigin
     ) async throws -> VerifiedContext {
-        try await requireSessionContextEligibility(
-            workspaceID: workspaceID,
-            activeSession: activeSession
-        )
+        if handoffOrigin.requiresCompactionEligibility {
+            try await requireSessionContextEligibility(
+                workspaceID: workspaceID,
+                activeSession: activeSession
+            )
+        }
 
         var checkpoint: LatestCheckpointEnvelope?
         do {
@@ -332,7 +356,10 @@ public final class DaemonStateAPI: @unchecked Sendable {
         let handoff: SessionHandoffEnvelope = try await send(
             method: "POST",
             path: ["checkpoints", checkpointID, "handoff"],
-            body: CheckpointHandoffRequest(workspaceID: workspaceID)
+            body: CheckpointHandoffRequest(
+                workspaceID: workspaceID,
+                handoffOrigin: handoffOrigin.requestValue
+            )
         )
         return try ContextValidator.verifiedSessionContext(
             handoff,
@@ -347,8 +374,12 @@ public final class DaemonStateAPI: @unchecked Sendable {
         switch error {
         case .network, .invalidHTTPResponse:
             return true
-        case let .httpError(statusCode, _, _):
+        case let .httpError(statusCode, code, _):
             return (500..<600).contains(statusCode)
+                || (
+                    statusCode == 409
+                        && code == "current_active_handoff_mismatch"
+                )
         default:
             return false
         }
@@ -384,8 +415,9 @@ public final class DaemonStateAPI: @unchecked Sendable {
         guard eligibility.eligible == true else {
             let minimum = max(eligibility.minimumCompactions ?? 2, 1)
             let count = min(max(eligibility.compactionCount ?? 0, 0), minimum)
-            throw DaemonStateError.activeSessionUnavailable(
-                eligibility.message ?? "\(minimum) compactions required (\(count)/\(minimum))."
+            throw DaemonStateError.sessionContextCompactionsRequired(
+                compactionCount: count,
+                minimumCompactions: minimum
             )
         }
     }

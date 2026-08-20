@@ -7,10 +7,12 @@ from dataclasses import asdict, dataclass
 from typing import Any, Iterable, Sequence
 
 from app.services.session_summary import (
+    extract_user_failure_feedback_directive,
     extract_delegated_user_request,
     extract_user_authored_request,
     is_continuation_control,
     is_session_instruction_noise,
+    is_user_failure_feedback,
     normalize_substantive_user_request,
 )
 
@@ -43,9 +45,14 @@ _SELECTION_RE = re.compile(
 )
 _CONTEXTUAL_ACTION_RE = re.compile(
     r"^\s*(?:please\s+)?(?:fix|do|apply|use|implement|change|update|remove|"
-    r"replace|redo|rework|finish|complete|proceed with)\s+"
+    r"replace|correct|restore|revert|redo|rework|review|finish|complete|proceed with)\s+"
     r"(?:it|this|that|those changes?|these changes?|the fix|the first one|the second one)"
-    r"[.!?…]*\s*$",
+    r"[.!?…]*\s*$|"
+    r"^\s*(?:please\s+)?try\s+again[.!?…]*\s*$|"
+    r"^\s*(?:please\s+)?try\s+(?:it|this|that)\s+again[.!?…]*\s*$|"
+    r"^\s*(?:please\s+)?explain\s+why[.!?…]*\s*$|"
+    r"^\s*(?:please\s+)?engineer\s+(?:it|this|that)\s+and\s+"
+    r"fix\s+(?:it|this|that)[.!?…]*\s*$",
     re.IGNORECASE,
 )
 _TASK_RESET_RE = re.compile(
@@ -281,6 +288,14 @@ def resolve_conversation_state(
         event_id = _event_id(event)
         sequence = _event_sequence(event)
         active_root_id = root_fragment.event_id if root_fragment is not None else None
+        feedback_directive = extract_user_failure_feedback_directive(
+            user_text,
+            # An actionable tail supplies evidence that the prefix refers to
+            # prior work even when that root is missing from the bounded log.
+            # Extraction may therefore use contextual feedback grammar; the
+            # no-root branch below still fails closed for deictic directives.
+            active_task=True,
+        )
         transition: TurnTransition
 
         if _CANCEL_RE.fullmatch(user_text):
@@ -326,7 +341,10 @@ def resolve_conversation_state(
                             request_verbatim=request_verbatim,
                         )
                     )
-            lifecycle = "active" if root_fragment is not None else "unresolved"
+            if resolved:
+                lifecycle = "active" if root_fragment is not None else "unresolved"
+            elif root_fragment is None:
+                lifecycle = "unresolved"
             pending = None
         elif _ACCEPT_RE.fullmatch(user_text) or _REJECT_RE.fullmatch(user_text):
             accepted = bool(_ACCEPT_RE.fullmatch(user_text))
@@ -359,13 +377,29 @@ def resolve_conversation_state(
                             request_verbatim=request_verbatim,
                         )
                     )
-            lifecycle = (
-                "user_accepted_unverified"
-                if accepted and pending_kind in {"completion_claim", "result"}
-                else "active"
-                if root_fragment is not None
-                else "unresolved"
+            rejected_result = bool(
+                not accepted
+                and root_fragment is not None
+                and (
+                    pending_kind in {"completion_claim", "result"}
+                    or (
+                        pending_kind == "binary_question"
+                        and pending is not None
+                        and _COMPLETION_RE.search(pending.prompt)
+                    )
+                    or pending_kind is None
+                )
             )
+            if rejected_result:
+                lifecycle = "direction_required"
+            elif not (resolved is None and lifecycle == "direction_required"):
+                lifecycle = (
+                    "user_accepted_unverified"
+                    if accepted and pending_kind in {"completion_claim", "result"}
+                    else "active"
+                    if root_fragment is not None
+                    else "unresolved"
+                )
             pending = None
         elif _ACK_RE.fullmatch(user_text):
             if user_text.casefold().rstrip(".!?…") in {"done", "finished", "completed"} and (
@@ -392,16 +426,96 @@ def resolve_conversation_state(
             )
             if resolved:
                 decisions.append(_decision(transition, resolved))
-            if lifecycle != "user_accepted_unverified":
+            if lifecycle != "user_accepted_unverified" and not (
+                lifecycle == "direction_required" and resolved is None
+            ):
                 lifecycle = "active" if root_fragment is not None else "unresolved"
+            pending = None
+        elif feedback_directive is not None:
+            contextual_without_root = bool(
+                root_fragment is None
+                and _CONTEXTUAL_ACTION_RE.fullmatch(feedback_directive)
+            )
+            act = (
+                "unresolved_reference"
+                if contextual_without_root
+                else "amend"
+                if root_fragment is not None
+                else "new_goal"
+            )
+            resolved = (
+                "User rejected or reported a failure in the prior result, then directed: "
+                + feedback_directive
+            )
+            if not contextual_without_root:
+                fragment = _fragment(
+                    event,
+                    feedback_directive,
+                    act,
+                    resolved if root_fragment is not None else None,
+                    pending,
+                    request_verbatim=feedback_directive,
+                )
+                if root_fragment is None:
+                    root_fragment = fragment
+                    fragments = [fragment]
+                    decisions = []
+                else:
+                    fragments.append(fragment)
+            transition = _transition(
+                event_id,
+                sequence,
+                user_text,
+                act,
+                root_fragment.event_id if root_fragment is not None else None,
+                pending,
+                None if contextual_without_root else resolved,
+                (
+                    "contextual direction after failure feedback has no active task"
+                    if contextual_without_root
+                    else "actionable direction was separated from failure feedback"
+                ),
+                0.0 if contextual_without_root else 0.98,
+                blocks_copy=contextual_without_root,
+            )
+            lifecycle = "unresolved" if contextual_without_root else "active"
+            pending = None
+        elif is_user_failure_feedback(
+            user_text,
+            active_task=root_fragment is not None,
+        ):
+            transition = _transition(
+                event_id,
+                sequence,
+                user_text,
+                "failure_feedback",
+                active_root_id,
+                pending,
+                "User rejected or reported a failure in the prior result; the active goal is preserved.",
+                "failure feedback preserves the active task and requires new user direction",
+                0.98,
+            )
+            lifecycle = "direction_required" if root_fragment is not None else "unresolved"
             pending = None
         elif _CONTEXTUAL_ACTION_RE.fullmatch(user_text):
             resolved = _resolve_contextual_action(user_text, pending)
+            resumed_after_feedback = bool(
+                resolved is None
+                and lifecycle == "direction_required"
+                and root_fragment is not None
+            )
+            if resumed_after_feedback and root_fragment is not None:
+                resolved = (
+                    f"Apply the user's follow-up `{user_text}` to the preserved active task "
+                    f"after the prior result was rejected: {root_fragment.normalized_request}"
+                )
             blocks = root_fragment is None or resolved is None
             transition = _transition(
                 event_id, sequence, user_text, "amend" if not blocks else "unresolved_reference",
                 active_root_id, pending, resolved,
-                "referential action bound to the latest concrete assistant context"
+                "referential action resumed the preserved task after failure feedback"
+                if resumed_after_feedback
+                else "referential action bound to the latest concrete assistant context"
                 if resolved
                 else "referential action has no unique concrete antecedent",
                 0.86 if resolved else 0.0,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,6 +17,7 @@ from app.services.access import AccessScope, source_access_predicate
 from app.services.checkpoint_verifier import compare_checkpoint_repository, verify_checkpoint
 from app.services.checkpoints import (
     MAX_CONTINUATION_LEAD_CHARS,
+    SessionContextMaterializationRequiredError,
     build_session_handoff_artifact,
     capture_checkpoint,
     checkpoint_to_dict,
@@ -31,6 +33,7 @@ from app.services.checkpoints import (
 )
 from app.services.harness_launcher import HarnessLaunchError, launch_harness_session
 from app.services.project_scope import normalize_local_path, workspace_references
+from app.services.session_library import latest_scoped_root_session_tip
 from app.services.session_context_policy import (
     SessionContextCompactionsRequiredError,
     require_session_context_compactions,
@@ -61,6 +64,7 @@ class CheckpointResumeRequest(BaseModel):
 
 class CheckpointHandoffRequest(BaseModel):
     workspace_id: UUID
+    handoff_origin: Literal["selected", "current_active"] = "selected"
     repo_path: str | None = Field(default=None, min_length=1)
     continuation_lead: str | None = Field(
         default=None,
@@ -381,19 +385,27 @@ async def create_session_handoff(
     checkpoint = await _accessible_checkpoint(
         session, checkpoint_id, body.workspace_id, access_scope
     )
-    try:
-        await require_session_context_compactions(
+    if body.handoff_origin == "current_active":
+        await _require_current_active_session_tip(
             session,
             workspace_id=body.workspace_id,
-            provider=checkpoint.provider,
-            session_id=checkpoint.session_id,
+            checkpoint=checkpoint,
             access_scope=access_scope,
         )
-    except SessionContextCompactionsRequiredError as exc:
-        raise HTTPException(
-            status_code=exc.status_code,
-            detail=exc.detail(),
-        ) from exc
+    else:
+        try:
+            await require_session_context_compactions(
+                session,
+                workspace_id=body.workspace_id,
+                provider=checkpoint.provider,
+                session_id=checkpoint.session_id,
+                access_scope=access_scope,
+            )
+        except SessionContextCompactionsRequiredError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=exc.detail(),
+            ) from exc
     request_verbatim = await resolve_session_handoff_request_verbatim(
         session,
         checkpoint,
@@ -444,7 +456,7 @@ async def create_session_handoff(
         selected_repo_path=body.repo_path,
     )
     try:
-        return build_session_handoff_artifact(
+        artifact = build_session_handoff_artifact(
             checkpoint,
             request_verbatim=request_verbatim,
             supporting_context=supporting_context,
@@ -457,8 +469,21 @@ async def create_session_handoff(
             target_model=body.target_model,
             token_budget=body.token_budget,
         )
+    except SessionContextMaterializationRequiredError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.detail(),
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if body.handoff_origin == "current_active":
+        await _require_current_active_session_tip(
+            session,
+            workspace_id=body.workspace_id,
+            checkpoint=checkpoint,
+            access_scope=access_scope,
+        )
+    return artifact
 
 
 async def _require_workspace(
@@ -472,6 +497,99 @@ async def _require_workspace(
     if workspace is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return workspace
+
+
+async def _require_current_active_session_tip(
+    session: AsyncSession,
+    *,
+    workspace_id: UUID,
+    checkpoint: WorkCheckpoint,
+    access_scope: AccessScope,
+) -> None:
+    """Authorize the narrow current-session exception to the maturity gate."""
+
+    if access_scope.principal_id != "local":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "local_action_required",
+                "message": (
+                    "Current-active Session Context handoff is available only "
+                    "from the local app."
+                ),
+            },
+        )
+
+    current_tip = await latest_scoped_root_session_tip(
+        session,
+        workspace_id,
+    )
+    current_session_key = (
+        (current_tip.provider, current_tip.session_id)
+        if current_tip is not None
+        else None
+    )
+    checkpoint_key = normalize_session_key(
+        checkpoint.provider,
+        checkpoint.session_id,
+    )
+    if current_session_key is None or checkpoint_key != current_session_key:
+        raise _current_active_handoff_conflict()
+    assert checkpoint_key is not None
+
+    boundary = checkpoint.boundary_event
+    boundary_key = normalize_session_key(
+        getattr(boundary, "provider", ""),
+        getattr(boundary, "session_id", ""),
+    )
+    if (
+        boundary is None
+        or boundary_key != checkpoint_key
+        or current_tip is None
+        or boundary.provider_event_id != current_tip.provider_event_id
+        or boundary.sequence_number != current_tip.sequence_number
+    ):
+        raise _current_active_handoff_conflict()
+
+    normalized_provider, normalized_session_id = checkpoint_key
+    latest_event = await session.scalar(
+        select(SessionEvent)
+        .join(
+            SourceDocument,
+            SessionEvent.source_document_id == SourceDocument.id,
+        )
+        .where(
+            SessionEvent.workspace_id == workspace_id,
+            SessionEvent.provider.in_(
+                session_provider_values(normalized_provider)
+            ),
+            SessionEvent.session_id == normalized_session_id,
+            source_access_predicate(
+                access_scope,
+                workspace_id=workspace_id,
+            ),
+        )
+        .order_by(
+            SessionEvent.sequence_number.desc(),
+            SessionEvent.id.desc(),
+        )
+        .limit(1)
+    )
+    if latest_event is None or latest_event.id != checkpoint.boundary_event_id:
+        raise _current_active_handoff_conflict()
+
+
+def _current_active_handoff_conflict() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "current_active_handoff_mismatch",
+            "message": (
+                "Current-active handoff requires the workspace's latest root "
+                "session and its exact current session-tip checkpoint."
+            ),
+        },
+    )
 
 
 async def _resolved_checkpoint_repository_comparison(

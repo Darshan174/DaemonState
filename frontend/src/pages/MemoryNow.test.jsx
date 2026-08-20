@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "../api/client";
 import MemoryNow from "./MemoryNow";
 import {
   readExecuteSessionContexts,
@@ -43,6 +44,11 @@ const SECTION_IDS = [
   "dismissed",
   "revisions",
 ];
+
+const MATERIALIZATION_REQUIRED_MESSAGE = (
+  "The session goal depends on referenced conversation context that "
+  + "could not be materialized into a self-contained handoff."
+);
 
 function record(section, title, overrides = {}) {
   return {
@@ -1143,13 +1149,28 @@ describe("ExecutePage", () => {
         title: "Claude architecture task",
         compaction_count: 2,
       },
+      {
+        source_document_id: "source-opencode-selected",
+        connector_type: "opencode",
+        session_id: "opencode-selected",
+        title: "OpenCode workspace context task",
+        compaction_count: 2,
+      },
     ]);
 
     renderMemory("/app/execute?from=continue");
 
     const control = screen.getByRole("button", {
-      name: "Edit selected session contexts, 2 of 3 selected",
+      name: "Edit selected session contexts, 3 of 3 selected",
     });
+    const executeHeader = control.closest("header");
+    expect(executeHeader).toHaveClass("overflow-visible");
+    expect(executeHeader.querySelector("[data-execute-banner-decor]")).toHaveClass(
+      "overflow-hidden",
+      "rounded-[inherit]",
+    );
+    expect(control.querySelector(".isolate")).toBeInTheDocument();
+    expect(control.querySelectorAll(".z-10")).toHaveLength(3);
     expect(control).toHaveAttribute("aria-haspopup", "menu");
     expect(screen.getByText("Continue sessions")).toBeInTheDocument();
     expect(screen.queryByRole("menu", {
@@ -1167,6 +1188,12 @@ describe("ExecutePage", () => {
     expect(within(menu).getByRole("menuitem", {
       name: /Claude architecture task/,
     })).toBeInTheDocument();
+    expect(within(menu).getByRole("menuitem", {
+      name: /OpenCode workspace context task/,
+    })).toBeInTheDocument();
+    expect(menu.parentElement).toHaveClass(
+      "w-[min(20rem,calc(100vw-2rem))]",
+    );
     expect(within(menu).getByRole("menuitem", {
       name: "Edit selected sessions",
     })).toBeInTheDocument();
@@ -1839,6 +1866,61 @@ describe("ExecutePage", () => {
     expect(mocks.handoff.mutateAsync).toHaveBeenCalledTimes(4);
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
     expect(screen.queryByText("Failed to fetch")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [
+      "structured API code",
+      () => new ApiError(422, {
+        code: "session_context_materialization_required",
+        message: MATERIALIZATION_REQUIRED_MESSAGE,
+        retryable: false,
+      }),
+    ],
+    [
+      "legacy API message",
+      () => Object.assign(new Error(MATERIALIZATION_REQUIRED_MESSAGE), { status: 422 }),
+    ],
+  ])("blocks copy when referenced conversation context cannot be materialized (%s)", async (
+    _scenario,
+    makeError,
+  ) => {
+    mocks.handoff.mutateAsync.mockRejectedValue(makeError());
+    selectDefaultSession();
+    renderMemory();
+
+    const sessionCard = screen.getByRole("article", {
+      name: "Harden checkpoint capture",
+    });
+    const preview = within(sessionCard).getByRole("button", {
+      name: "Preview Harden checkpoint capture Session Context",
+    });
+    await waitFor(() => expect(preview).toHaveTextContent("Unavailable"));
+    expect(preview).toBeDisabled();
+    expect(within(sessionCard).queryByText("Retry preview")).not.toBeInTheDocument();
+    expect(within(sessionCard).queryByText(
+      "The prompt could not be prepared automatically. Retry the preview.",
+    )).not.toBeInTheDocument();
+    expect(within(sessionCard).getByText(
+      "The prompt cannot be prepared from the available session evidence.",
+    )).toBeInTheDocument();
+    expect(within(sessionCard).getByText(
+      /Restate the goal with that context included in the source session/,
+    )).toBeInTheDocument();
+    expect(within(sessionCard).getByRole("alert")).toHaveTextContent(
+      "a trustworthy Session Context cannot be produced",
+    );
+
+    const copy = within(sessionCard).getByRole("button", {
+      name: "Copy Harden checkpoint capture Session Context",
+    });
+    expect(copy).toBeDisabled();
+    expect(mocks.handoff.mutateAsync).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(copy);
+
+    expect(mocks.handoff.mutateAsync).toHaveBeenCalledTimes(1);
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
   });
 
   it("keeps copy enabled and shows an advisory for budget-only overflow", async () => {

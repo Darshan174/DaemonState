@@ -377,6 +377,21 @@ class ContinuationService:
                 checkpoint_id=durable_checkpoint_id,
                 access_scope=access_scope,
             )
+            if (
+                source_session_filter is not None
+                and normalize_session_key(
+                    requested_checkpoint.provider,
+                    requested_checkpoint.session_id,
+                )
+                != source_session_filter
+            ):
+                raise ContinuationError(
+                    "checkpoint_source_session_mismatch",
+                    (
+                        "The requested checkpoint belongs to a different "
+                        "source session."
+                    ),
+                )
             requested_checkpoint_recovered_goal = (
                 await resolve_session_handoff_request_verbatim(
                     self.session,
@@ -484,6 +499,18 @@ class ContinuationService:
                 legacy_document,
                 metadata=metadata,
             )
+            if (
+                source_session_filter is not None
+                and normalize_session_key(provider, legacy_session_id)
+                != source_session_filter
+            ):
+                raise ContinuationError(
+                    "checkpoint_source_session_mismatch",
+                    (
+                        "The requested checkpoint belongs to a different "
+                        "source session."
+                    ),
+                )
             try:
                 legacy_restore = restore_session_checkpoint(
                     legacy_document.content,
@@ -893,12 +920,30 @@ class ContinuationService:
                 ),
             ))
 
+        source_scoped_checkpoint_candidates = (
+            [
+                checkpoint
+                for checkpoint in (captured_checkpoint, *checkpoints)
+                if checkpoint is not None
+                if normalize_session_key(
+                    checkpoint.provider,
+                    checkpoint.session_id,
+                )
+                == source_session_filter
+            ]
+            if source_session_filter is not None
+            else [
+                checkpoint
+                for checkpoint in (captured_checkpoint, *checkpoints)
+                if checkpoint is not None
+            ]
+        )
         checkpoint_candidates = (
             [requested_checkpoint]
             if requested_checkpoint_execution_compatible
             else []
             if legacy_restore is not None
-            else [captured_checkpoint, *checkpoints]
+            else source_scoped_checkpoint_candidates
         )
         recovered_checkpoint_goals = {
             checkpoint.id: recovered_goal

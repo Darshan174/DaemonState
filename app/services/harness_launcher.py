@@ -5,7 +5,6 @@ import os
 import platform
 import plistlib
 import re
-import secrets
 import selectors
 import subprocess
 import time
@@ -42,9 +41,11 @@ NATIVE_COMPOSER_PASTE_SCHEMA = "daemonstate.composer_paste.v1"
 NATIVE_COMPOSER_PASTE_MAX_OUTPUT_BYTES = 32_768
 NATIVE_COMPOSER_PASTE_MAX_STRING_CHARS = 4_096
 OPENCODE_CHAT_COMPOSER_TARGET_POLICY = "opencode-chat-composer-v1"
-OPENCODE_CHAT_COMPOSER_MARKER_PREFIX = "ds-"
-OPENCODE_CHAT_COMPOSER_MARKER_BYTES = 16
+OPENCODE_FOCUSED_CHAT_COMPOSER_TARGET_POLICY = (
+    "opencode-focused-chat-composer-v1"
+)
 OPENCODE_VERIFIED_INPUT_METHOD = "accessibility_verified_input_sync"
+OPENCODE_AUDITED_DESKTOP_VERSION = "1.18.18"
 NATIVE_COMPOSER_PASTE_SUCCESS_DETAILS = {
     "desktop_context_inserted": (
         "The complete context was inserted into the selected provider app's "
@@ -58,6 +59,12 @@ NATIVE_COMPOSER_PASTE_SUCCESS_DETAILS = {
     ),
 }
 NATIVE_COMPOSER_PASTE_ERROR_DETAILS = {
+    "desktop_app_version_unsupported": (
+        "The installed OpenCode Desktop build has not been audited for "
+        "safe focused-composer insertion.",
+        f"Install OpenCode Desktop {OPENCODE_AUDITED_DESKTOP_VERSION}, then "
+        "retry Continue.",
+    ),
     "desktop_accessibility_permission_required": (
         "DaemonState needs macOS Accessibility access to paste into the selected "
         "AI desktop app. The full context remains on the clipboard.",
@@ -115,6 +122,8 @@ class MacOSDesktopApp:
     bundle_path: Path
     bundle_id: str
     url_schemes: frozenset[str]
+    short_version: str | None = None
+    build_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -306,7 +315,10 @@ def probe_harness_composer_dispatch_readiness(
                 "The desktop app can be opened, but DaemonState's native "
                 "paste helper is unavailable."
             ),
-            action="Repair or reinstall DaemonState, then retry Continue.",
+            action=(
+                "Run bash scripts/ensure-native-context-helper.sh, then retry "
+                "Continue."
+            ),
         )
 
     provider = dispatch.provider
@@ -746,10 +758,52 @@ def _probe_harness_composer_dispatch(
         )
 
     required_scheme = spec.url_scheme.lower()
-    if not any(
-        required_scheme in installation.url_schemes
+    if connector_type == "opencode":
+        scheme_registered = any(
+            required_scheme in installation.url_schemes
+            for installation in installations
+        )
+        if not any(
+            _opencode_installation_supports_verified_composer(installation)
+            for installation in installations
+        ):
+            return HarnessComposerReadiness(
+                provider=connector_type,
+                ready=False,
+                desktop_available=True,
+                url_scheme_registered=scheme_registered,
+                required_url_scheme=required_scheme,
+                code="desktop_app_version_unsupported",
+                message=(
+                    "OpenCode Desktop is installed, but this build has not "
+                    "been audited for safe focused-composer insertion."
+                ),
+                action=(
+                    f"Install OpenCode Desktop {OPENCODE_AUDITED_DESKTOP_VERSION}, "
+                    "then check again."
+                ),
+            )
+        return HarnessComposerReadiness(
+            provider=connector_type,
+            ready=True,
+            desktop_available=True,
+            url_scheme_registered=scheme_registered,
+            required_url_scheme=required_scheme,
+            code="desktop_dispatch_available",
+            message=(
+                "OpenCode Desktop is installed and its focused-composer "
+                "integration is available. No deep-link navigation is used."
+            ),
+            action=f"Verify account access in {label}.",
+            paste_automation_available=_native_paste_helper_available(),
+        )
+
+    scheme_installations = tuple(
+        installation
         for installation in installations
-    ):
+        if required_scheme in installation.url_schemes
+    )
+    if not scheme_installations:
         return HarnessComposerReadiness(
             provider=connector_type,
             ready=False,
@@ -765,7 +819,6 @@ def _probe_harness_composer_dispatch(
                 f"Update or reinstall {spec.install_product}, then check again."
             ),
         )
-
     return HarnessComposerReadiness(
         provider=connector_type,
         ready=True,
@@ -775,8 +828,8 @@ def _probe_harness_composer_dispatch(
         code="desktop_dispatch_available",
         message=(
             f"{label} desktop app and its {required_scheme}:// handler are "
-            "installed. This proves only dispatch capability; account access, "
-            "model access, and route rendering are not verified."
+            "installed. This proves only dispatch capability; account "
+            "access, model access, and route rendering are not verified."
         ),
         action=f"Verify account access in {label}.",
         paste_automation_available=_native_paste_helper_available(),
@@ -903,12 +956,12 @@ def launch_harness_composer(
 ) -> dict[str, Any]:
     """Open a visible desktop composer and request a safe native paste.
 
-    The complete context is copied first, then a new-session deep link is sent.
-    OpenCode receives only a short random marker in its prompt query so the
-    native helper can attest that it found and replaced the chat composer;
-    every other provider receives a prompt-free link. The real context is sent
-    only to the helper over stdin and is never placed in the URL. The helper
-    inserts it without ever pressing Return.
+    The complete context is copied first. Codex and Claude receive their
+    prompt-free new-session links. OpenCode is only activated: its audited
+    focused empty chat composer is discovered locally, without dispatching a
+    deep link that its V2 renderer may defer. The real context is sent only to
+    the helper over stdin and is never placed in a URL. The helper inserts it
+    without ever pressing Return.
     """
 
     connector_type = connector_type.strip().lower()
@@ -937,13 +990,16 @@ def launch_harness_composer(
     app = _resolve_macos_desktop_app(
         connector_type,
         spec,
-        require_url_scheme=True,
+        require_url_scheme=connector_type != "opencode",
     )
     if not _native_paste_helper_available():
         raise HarnessLaunchError(
             "The native DaemonState paste helper is missing or stale.",
             code="desktop_paste_helper_missing",
-            action="Run DaemonState setup to rebuild the native helper, then retry Continue.",
+            action=(
+                "Run bash scripts/ensure-native-context-helper.sh, then retry "
+                "Continue."
+            ),
         )
 
     context = str(prompt)
@@ -965,11 +1021,14 @@ def launch_harness_composer(
         )
     _copy_macos_clipboard(context, deadline=deadline)
 
-    target_marker = _new_opencode_composer_marker() if connector_type == "opencode" else None
-    target = _macos_composer_target(
-        connector_type,
-        working_directory,
-        target_marker,
+    target = (
+        None
+        if connector_type == "opencode"
+        else _macos_composer_target(
+            connector_type,
+            working_directory,
+            None,
+        )
     )
     _request_registered_macos_app_open(
         connector_type,
@@ -982,7 +1041,6 @@ def launch_harness_composer(
         connector_type,
         app,
         context,
-        target_marker=target_marker,
         deadline=deadline,
     )
 
@@ -990,17 +1048,21 @@ def launch_harness_composer(
         "launched": paste.get("open_verified") is True,
         "open_requested": True,
         "open_verified": paste.get("open_verified") is True,
-        "navigation_requested": True,
+        "navigation_requested": target is not None,
         "navigation_verified": False,
         "connector_type": connector_type,
         "harness": HARNESS_LABELS[connector_type],
         "mode": "desktop_composer",
-        "navigation": "new_session",
+        "navigation": (
+            "app"
+            if connector_type == "opencode"
+            else "new_session"
+        ),
         "exact_session_supported": False,
         "topic_anchor_supported": False,
         "prefill_requested": False,
         "context_copied": True,
-        "context_loaded": paste.get("paste_verified") is True,
+        "context_loaded": paste.get("context_loaded") is True,
         "paste_requested": paste.get("paste_requested") is True,
         "paste_verified": paste.get("paste_verified") is True,
         "paste_method": paste.get("paste_method"),
@@ -1096,6 +1158,26 @@ def _macos_bundle_metadata(bundle: Path) -> MacOSDesktopApp | None:
         bundle_path=canonical_bundle,
         bundle_id=raw_identifier.strip(),
         url_schemes=frozenset(schemes),
+        short_version=(
+            info.get("CFBundleShortVersionString").strip()
+            if isinstance(info.get("CFBundleShortVersionString"), str)
+            else None
+        ),
+        build_version=(
+            info.get("CFBundleVersion").strip()
+            if isinstance(info.get("CFBundleVersion"), str)
+            else None
+        ),
+    )
+
+
+def _opencode_installation_supports_verified_composer(
+    app: MacOSDesktopApp,
+) -> bool:
+    return (
+        app.bundle_id == "ai.opencode.desktop"
+        and app.short_version == OPENCODE_AUDITED_DESKTOP_VERSION
+        and app.build_version == OPENCODE_AUDITED_DESKTOP_VERSION
     )
 
 
@@ -1113,12 +1195,47 @@ def _resolve_macos_desktop_app(
             code="desktop_app_missing",
         )
     if not require_url_scheme:
-        return installations[0]
+        if connector_type != "opencode":
+            return installations[0]
+        for app in installations:
+            if _opencode_installation_supports_verified_composer(app):
+                return app
+        raise HarnessLaunchError(
+            (
+                "OpenCode Desktop is installed, but this build has not been "
+                "audited for safe focused-composer insertion."
+            ),
+            code="desktop_app_version_unsupported",
+            action=(
+                f"Install OpenCode Desktop {OPENCODE_AUDITED_DESKTOP_VERSION}, "
+                "then retry Continue."
+            ),
+        )
 
     required_scheme = spec.url_scheme.lower()
     for app in installations:
+        if required_scheme not in app.url_schemes:
+            continue
+        if connector_type == "opencode" and not (
+            _opencode_installation_supports_verified_composer(app)
+        ):
+            continue
         if required_scheme in app.url_schemes:
             return app
+    if connector_type == "opencode" and any(
+        required_scheme in app.url_schemes for app in installations
+    ):
+        raise HarnessLaunchError(
+            (
+                "OpenCode Desktop is installed, but this build has not been "
+                "audited for safe focused-composer insertion."
+            ),
+            code="desktop_app_version_unsupported",
+            action=(
+                f"Install OpenCode Desktop {OPENCODE_AUDITED_DESKTOP_VERSION}, "
+                "then retry Continue."
+            ),
+        )
     raise HarnessLaunchError(
         (
             f"{HARNESS_LABELS[connector_type]} desktop app does not register "
@@ -1170,20 +1287,11 @@ def _native_overlay_launcher() -> Path:
     return Path(__file__).resolve().parents[2] / "scripts" / "overlay.sh"
 
 
-def _new_opencode_composer_marker() -> str:
-    """Return a short, nonsecret nonce used only to identify the safe target."""
-
-    return OPENCODE_CHAT_COMPOSER_MARKER_PREFIX + secrets.token_hex(
-        OPENCODE_CHAT_COMPOSER_MARKER_BYTES
-    )
-
-
 def _request_native_composer_paste(
     connector_type: str,
     app: MacOSDesktopApp,
     context: str,
     *,
-    target_marker: str | None,
     deadline: float,
 ) -> Mapping[str, Any]:
     launcher = _native_overlay_launcher()
@@ -1193,11 +1301,19 @@ def _request_native_composer_paste(
         raise HarnessLaunchError(
             "The native DaemonState paste helper is unavailable.",
             code="desktop_paste_helper_missing",
+            action=(
+                "Run bash scripts/ensure-native-context-helper.sh, then retry "
+                "Continue."
+            ),
         ) from exc
     if not launcher_exists or not os.access(launcher, os.X_OK):
         raise HarnessLaunchError(
             "The native DaemonState paste helper is unavailable.",
             code="desktop_paste_helper_missing",
+            action=(
+                "Run bash scripts/ensure-native-context-helper.sh, then retry "
+                "Continue."
+            ),
         )
 
     command = [
@@ -1215,17 +1331,10 @@ def _request_native_composer_paste(
         str(DESKTOP_COMPOSER_ROUTE_GRACE_MILLISECONDS),
     ]
     if connector_type == "opencode":
-        if not target_marker:
-            raise HarnessLaunchError(
-                "The OpenCode composer target marker is unavailable.",
-                code="desktop_paste_request_invalid",
-            )
         command.extend(
             [
                 "--target-policy",
-                OPENCODE_CHAT_COMPOSER_TARGET_POLICY,
-                "--target-marker",
-                target_marker,
+                OPENCODE_FOCUSED_CHAT_COMPOSER_TARGET_POLICY,
             ]
         )
     try:
@@ -1252,6 +1361,16 @@ def _request_native_composer_paste(
             "The native DaemonState paste helper could not be started.",
             code="desktop_paste_helper_failed",
         ) from exc
+
+    if completed.returncode == 70 and not (completed.stdout or "").strip():
+        raise HarnessLaunchError(
+            "The native DaemonState paste helper became stale before context delivery.",
+            code="desktop_paste_helper_missing",
+            action=(
+                "Run bash scripts/ensure-native-context-helper.sh, then retry "
+                "Continue."
+            ),
+        )
 
     output = (completed.stdout or "").encode("utf-8", errors="replace")
     if len(output) > NATIVE_COMPOSER_PASTE_MAX_OUTPUT_BYTES:
@@ -1326,11 +1445,12 @@ def _request_native_composer_paste(
         )
     )
     opencode_target_identity_verified = (
-        payload.get("target_policy") == OPENCODE_CHAT_COMPOSER_TARGET_POLICY
+        payload.get("target_policy")
+        == OPENCODE_FOCUSED_CHAT_COMPOSER_TARGET_POLICY
         and payload.get("target_kind") == "chat_composer"
         and payload.get("target_identity_verified") is True
     )
-    opencode_marker_replaced = payload.get("marker_replaced") is True
+    opencode_marker_not_replaced = payload.get("marker_replaced") is False
     if valid_base_success and connector_type == "opencode":
         if not opencode_target_identity_verified:
             message, action = NATIVE_COMPOSER_PASTE_ERROR_DETAILS[
@@ -1341,7 +1461,7 @@ def _request_native_composer_paste(
                 code="desktop_composer_focus_unverified",
                 action=action,
             )
-        if not opencode_marker_replaced:
+        if not opencode_marker_not_replaced:
             message, action = NATIVE_COMPOSER_PASTE_ERROR_DETAILS[
                 "desktop_context_insertion_unverified"
             ]
@@ -1368,8 +1488,9 @@ def _request_native_composer_paste(
         message, action = NATIVE_COMPOSER_PASTE_SUCCESS_DETAILS[code]
         if connector_type == "opencode" and paste_verified:
             message = (
-                "The complete context replaced the verified OpenCode chat-composer "
-                "marker and exact readback succeeded. Nothing was submitted."
+                "The complete context was inserted into the verified focused "
+                "OpenCode chat composer and exact readback succeeded. Nothing "
+                "was submitted."
             )
         result = {
             "schema_version": NATIVE_COMPOSER_PASTE_SCHEMA,
@@ -1386,10 +1507,12 @@ def _request_native_composer_paste(
         if connector_type == "opencode":
             result.update(
                 {
-                    "target_policy": OPENCODE_CHAT_COMPOSER_TARGET_POLICY,
+                    "target_policy": (
+                        OPENCODE_FOCUSED_CHAT_COMPOSER_TARGET_POLICY
+                    ),
                     "target_kind": "chat_composer",
                     "target_identity_verified": True,
-                    "marker_replaced": True,
+                    "marker_replaced": False,
                 }
             )
         return result
@@ -1443,6 +1566,9 @@ def _request_registered_macos_app_open(
     *,
     deadline: float,
 ) -> None:
+    # The card click authorizes this one foreground transition. OpenCode is
+    # activated without a URL; the helper only targets its already-focused
+    # empty normal composer. It never reactivates the provider afterward.
     command = ["/usr/bin/open", "-a", str(app.bundle_path)]
     if target is not None:
         command.append(target)

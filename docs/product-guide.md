@@ -202,28 +202,27 @@ silently treated as ready.
 
 ### Browser dispatch
 
-The browser uses local-only staging and does not start a provider CLI. On macOS
-it requests a fresh composer through the installed application's registered
-URL scheme:
+The browser uses local-only staging and does not start a provider CLI. On macOS,
+Codex and Claude request a fresh composer through the installed application's
+registered URL scheme:
 
 - `codex://threads/new`
 - `claude://code/new`
-- `opencode://new-session`
 
-The link carries the project directory. Codex and Claude carry no prompt;
-OpenCode carries only a fresh non-sensitive marker. After dispatch, DaemonState
-waits for the exact provider bundle and requests a native paste. OpenCode must
-expose one marker-valued normal chat composer in its focused window; the helper
-focuses that exact element and replaces the marker only on that element. A
-harmless type/delete handshake then proves OpenCode synchronized its internal
-input state, and exact readback verifies the full value. Its integrated terminal,
-shell mode, and unverified app-level Command-V fallback are
+Those links carry the project directory and no prompt. OpenCode is activated
+without an `opencode://` URL because its V2 desktop layout does not reliably
+consume the new-session link. DaemonState does not claim that OpenCode opened a
+new session or selected a project. It requires exactly one visible, empty,
+normal chat composer in the focused OpenCode window, focuses only that attested
+element, and uses a harmless type/delete handshake plus exact readback to prove
+OpenCode synchronized its internal input state. Its integrated terminal, shell
+mode, ambiguous or nonempty drafts, and app-level Command-V fallback are
 rejected. The clipboard always remains the complete fallback. The response
-reports a handoff, hash,
-open state, and paste state—not a provider session ID or agent run.
+reports a handoff, hash, open state, and paste state—not a provider session ID
+or agent run.
 
 Staging is idempotent. Reloads and same-key retries do not dispatch twice.
-Because route rendering and Command-V insertion may remain unverified, the user
+Because composer discovery and Command-V insertion may remain unverified, the user
 can deliberately choose **Request again**, which creates a new key after
 checking the target app.
 

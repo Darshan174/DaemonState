@@ -8,6 +8,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Iterable
 from uuid import UUID
 
@@ -60,15 +61,18 @@ from app.services.session_scope import (
 )
 from app.services.session_summary import (
     extract_delegated_user_request,
+    extract_user_failure_feedback_directive,
     extract_user_authored_request,
     is_continuation_control,
     is_session_instruction_noise,
+    is_user_failure_feedback,
     normalize_substantive_user_request,
 )
 from app.time import utc_now
 
 
 CHECKPOINT_SCHEMA_VERSION = "work_checkpoint.v10"
+DIALOGUE_CLASSIFIER_VERSION = "failure_feedback.v2"
 SESSION_HANDOFF_SCHEMA_VERSION = "session_handoff.v1"
 SESSION_CONTEXT_REQUIRED_HEADINGS = (
     "# Session Context — task-level working memory",
@@ -121,6 +125,25 @@ MAX_CONTINUATION_LEAD_CHARS = 12_000
 SESSION_HANDOFF_TOKEN_ESTIMATION_METHOD = "chars_div_4.v1"
 SESSION_HANDOFF_SOFT_GENERATED_TOKEN_TARGET = 1_750
 COMPACT_SESSION_HANDOFF_SOFT_GENERATED_TOKEN_TARGET = 1_250
+
+
+class SessionContextMaterializationRequiredError(ValueError):
+    code = "session_context_materialization_required"
+    status_code = 422
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The session goal depends on referenced conversation context that "
+            "could not be materialized into a self-contained handoff."
+        )
+
+    def detail(self) -> dict[str, object]:
+        return {
+            "code": self.code,
+            "message": str(self),
+            "retryable": False,
+        }
+
 
 _DECISION_SIGNAL = re.compile(
     r"\b(?:decid(?:e|ed)|we(?:'ll| will)|will use|keep|remove|replace|exclude|"
@@ -874,6 +897,170 @@ class DraftItem:
     payload: dict[str, Any] = field(default_factory=dict)
 
 
+def _legacy_goal_requires_dialogue_replay(
+    request_verbatim: str,
+    payload: dict[str, Any] | None,
+) -> bool:
+    """Detect goals stored before feedback-aware dialogue replay was available."""
+
+    goal_payload = payload if isinstance(payload, dict) else {}
+    if goal_payload.get("dialogue_classifier_version") == DIALOGUE_CLASSIFIER_VERSION:
+        return False
+    return bool(
+        is_user_failure_feedback(request_verbatim, active_task=True)
+        or extract_user_failure_feedback_directive(
+            request_verbatim,
+            active_task=True,
+        )
+        is not None
+    )
+
+
+def _validated_compiler_composite_request(
+    request_verbatim: str,
+    payload: dict[str, Any] | None,
+) -> str | None:
+    """Validate a compiler-produced multi-turn request without unary parsing.
+
+    A composite can legitimately contain failure feedback in a later fragment.
+    Running the assembled value through the single-turn dialogue classifier can
+    therefore reject it even though the current compiler already bound every
+    fragment into one hash-consistent conversation state. Accept that shape
+    only when all redundant compiler bindings agree exactly.
+    """
+
+    goal_payload = payload if isinstance(payload, dict) else {}
+    if (
+        goal_payload.get("dialogue_classifier_version") != DIALOGUE_CLASSIFIER_VERSION
+        or not isinstance(request_verbatim, str)
+        or not request_verbatim.strip()
+        or goal_payload.get("request_sha256") != _sha256(request_verbatim)
+    ):
+        return None
+
+    stored_fragments = goal_payload.get("request_fragments")
+    conversation_state = goal_payload.get("conversation_state")
+    if (
+        not isinstance(stored_fragments, list)
+        or len(stored_fragments) < 2
+        or not isinstance(conversation_state, dict)
+        or conversation_state.get("schema_version") != "conversation_state.v1"
+    ):
+        return None
+
+    state_sha256 = conversation_state.get("state_sha256")
+    unsigned_state = {
+        key: value for key, value in conversation_state.items() if key != "state_sha256"
+    }
+    if state_sha256 != _sha256(_canonical_json(unsigned_state)):
+        return None
+
+    active_goal = conversation_state.get("active_goal")
+    active_fragments = active_goal.get("fragments") if isinstance(active_goal, dict) else None
+    if (
+        not isinstance(active_goal, dict)
+        or active_goal.get("composite_request_verbatim") != request_verbatim
+        or not isinstance(active_fragments, list)
+        or len(active_fragments) != len(stored_fragments)
+    ):
+        return None
+
+    event_ids: list[str] = []
+    requests: list[str] = []
+    resolved_statements: list[str | None] = []
+    previous_sequence: int | None = None
+    for stored, active in zip(
+        stored_fragments,
+        active_fragments,
+        strict=True,
+    ):
+        if not isinstance(stored, dict) or not isinstance(active, dict):
+            return None
+        event_id = str(stored.get("provider_event_id") or "").strip()
+        sequence_number = stored.get("sequence_number")
+        fragment_request = stored.get("request_verbatim")
+        fragment_act = str(stored.get("dialogue_act") or "").strip()
+        resolved_statement = stored.get("resolved_statement")
+        if (
+            not event_id
+            or event_id in event_ids
+            or isinstance(sequence_number, bool)
+            or not isinstance(sequence_number, int)
+            or sequence_number < 0
+            or (previous_sequence is not None and sequence_number <= previous_sequence)
+            or not isinstance(fragment_request, str)
+            or not fragment_request.strip()
+            or stored.get("request_sha256") != _sha256(fragment_request)
+            or not fragment_act
+            or (resolved_statement is not None and not isinstance(resolved_statement, str))
+            or (
+                isinstance(resolved_statement, str)
+                and not resolved_statement.strip()
+            )
+        ):
+            return None
+        expected_resolved_sha256 = (
+            _sha256(resolved_statement)
+            if isinstance(resolved_statement, str) and resolved_statement
+            else None
+        )
+        if stored.get("resolved_statement_sha256") != expected_resolved_sha256:
+            return None
+        if (
+            active.get("event_id") != event_id
+            or active.get("sequence_number") != sequence_number
+            or active.get("request_verbatim") != fragment_request
+            or active.get("act") != fragment_act
+            or active.get("resolved_statement") != resolved_statement
+            or not isinstance(active.get("normalized_request"), str)
+            or not str(active.get("normalized_request") or "").strip()
+        ):
+            return None
+        if not event_ids:
+            if (
+                fragment_act != "new_goal"
+                or _validated_session_request(fragment_request) != fragment_request
+            ):
+                return None
+        elif fragment_act not in {"amend", "select", "accept", "reject"}:
+            return None
+        elif fragment_act == "amend":
+            if (
+                resolved_statement is None
+                and _validated_session_request(fragment_request) != fragment_request
+            ):
+                return None
+        elif resolved_statement is None:
+            return None
+        event_ids.append(event_id)
+        requests.append(fragment_request)
+        resolved_statements.append(resolved_statement)
+        previous_sequence = sequence_number
+
+    if (
+        active_goal.get("root_event_id") != event_ids[0]
+        or active_goal.get("root_request_verbatim") != requests[0]
+        or active_goal.get("source_event_ids") != event_ids
+    ):
+        return None
+
+    lines = [requests[0].strip(), "", "## Additional user-authored requirements"]
+    for index, (fragment_request, resolved_statement) in enumerate(
+        zip(requests[1:], resolved_statements[1:], strict=True),
+        start=1,
+    ):
+        lines.extend(["", f"### Follow-up {index}", fragment_request.strip()])
+        if resolved_statement:
+            lines.extend(
+                [
+                    "",
+                    "Resolved against the immediately preceding assistant context:",
+                    resolved_statement,
+                ]
+            )
+    return request_verbatim if "\n".join(lines).strip() == request_verbatim else None
+
+
 def _checkpoint_is_materialized(checkpoint: WorkCheckpoint) -> bool:
     """Return whether the immutable row and its normalized items are complete."""
 
@@ -902,6 +1089,42 @@ def _checkpoint_is_materialized(checkpoint: WorkCheckpoint) -> bool:
         or any(not isinstance(sections.get(category), list) for category in CHECKPOINT_CATEGORIES)
     ):
         return False
+
+    stored_goals = sections.get("goal") or []
+    if len(stored_goals) > 1:
+        return False
+    if stored_goals:
+        stored_goal = stored_goals[0]
+        stored_payload = stored_goal.get("payload") if isinstance(stored_goal, dict) else {}
+        stored_request = (
+            stored_payload.get("request_verbatim")
+            if isinstance(stored_payload, dict)
+            else None
+        ) or (stored_goal.get("statement") if isinstance(stored_goal, dict) else None)
+        stored_statement = stored_goal.get("statement") if isinstance(stored_goal, dict) else None
+        compiler_composite = _validated_compiler_composite_request(
+            str(stored_request or ""),
+            stored_payload if isinstance(stored_payload, dict) else None,
+        )
+        if (
+            (
+                compiler_composite is None
+                and normalize_dialogue_user_request(str(stored_request or "")) is None
+            )
+            or (
+                compiler_composite is None
+                and normalize_dialogue_user_request(str(stored_statement or "")) is None
+            )
+            or (compiler_composite is not None and stored_statement != compiler_composite)
+            or _legacy_goal_requires_dialogue_replay(
+                str(stored_request or ""),
+                stored_payload if isinstance(stored_payload, dict) else {},
+            )
+        ):
+            # Semantic classification is part of materialization integrity. A
+            # row produced by an older unary goal selector must be replayed
+            # instead of remaining permanently valid because its hashes match.
+            return False
 
     expected_items: list[tuple[str, str]] = []
     for category in CHECKPOINT_CATEGORIES:
@@ -1973,6 +2196,68 @@ def _boundary_context(
     }
 
 
+def _recovered_goal_conversation_state(
+    request_verbatim: str,
+    *,
+    failure_feedback: bool,
+) -> dict[str, Any]:
+    """Build a coherent safe state when an older stored goal is reclassified."""
+
+    root_event_id = "recovered-goal-at-boundary"
+    fragment = {
+        "event_id": root_event_id,
+        "sequence_number": 0,
+        "request_verbatim": request_verbatim,
+        "normalized_request": request_verbatim.strip(),
+        "act": "recovered_goal",
+        "resolved_statement": None,
+        "assistant_event_id": None,
+    }
+    active_goal = {
+        "root_event_id": root_event_id,
+        "root_request_verbatim": request_verbatim,
+        "fragments": [fragment],
+        "composite_request_verbatim": request_verbatim,
+        "source_event_ids": [root_event_id],
+    }
+    transitions = (
+        [
+            {
+                "event_id": "reclassified-failure-feedback-at-boundary",
+                "sequence_number": 0,
+                "user_text": "Prior user turn rejected the assistant result.",
+                "act": "failure_feedback",
+                "active_goal_event_id": root_event_id,
+                "assistant_event_id": None,
+                "resolved_statement": (
+                    "User rejected or reported a failure in the prior result; "
+                    "the active goal is preserved."
+                ),
+                "reason": (
+                    "stored checkpoint goal was reclassified as failure feedback"
+                ),
+                "confidence": 1.0,
+                "blocks_copy": False,
+            }
+        ]
+        if failure_feedback
+        else []
+    )
+    unsigned = {
+        "schema_version": "conversation_state.v1",
+        "active_goal": active_goal,
+        "lifecycle": "direction_required" if failure_feedback else "active",
+        "transitions": transitions,
+        "decisions": [],
+        "pending_interaction": None,
+        "unresolved_references": [],
+    }
+    return {
+        **unsigned,
+        "state_sha256": _sha256(_canonical_json(unsigned)),
+    }
+
+
 def _safe_checkpoint_projection(
     checkpoint: WorkCheckpoint,
     sections: dict[str, list[dict[str, Any]]],
@@ -1983,11 +2268,30 @@ def _safe_checkpoint_projection(
     """Make stored checkpoints safe to consume without mutating audit records."""
 
     projected = {category: list(sections.get(category) or []) for category in CHECKPOINT_CATEGORIES}
-    goals = [
-        item
-        for item in projected["goal"]
-        if normalize_dialogue_user_request(str(item.get("statement") or "")) is not None
-    ]
+    goals: list[dict[str, Any]] = []
+    for item in projected["goal"]:
+        item_payload = item.get("payload") if isinstance(item, dict) else {}
+        stored_request = (
+            item_payload.get("request_verbatim")
+            if isinstance(item_payload, dict)
+            else None
+        ) or (item.get("statement") if isinstance(item, dict) else None)
+        stored_statement = item.get("statement") if isinstance(item, dict) else None
+        compiler_composite = _validated_compiler_composite_request(
+            str(stored_request or ""),
+            item_payload if isinstance(item_payload, dict) else None,
+        )
+        if (
+            (
+                normalize_dialogue_user_request(str(stored_request or "")) is not None
+                and normalize_dialogue_user_request(str(stored_statement or "")) is not None
+            )
+            or (compiler_composite is not None and stored_statement == compiler_composite)
+        ) and not _legacy_goal_requires_dialogue_replay(
+            str(stored_request or ""),
+            item_payload if isinstance(item_payload, dict) else {},
+        ):
+            goals.append(item)
     validated_recovery = _validated_session_request(recovered_goal)
     recovered_goal_projection = (
         not goals and validated_recovery is not None and len(projected["goal"]) <= 1
@@ -1995,6 +2299,24 @@ def _safe_checkpoint_projection(
     synthesized_missing_goal = bool(recovered_goal_projection and not projected["goal"])
     recovered_goal_evidence: set[tuple[str, ...]] = set()
     if recovered_goal_projection:
+        stored_goal_item = projected["goal"][0] if projected["goal"] else {}
+        stored_goal_statement = str(stored_goal_item.get("statement") or "")
+        stored_goal_payload = stored_goal_item.get("payload") or {}
+        stored_goal_request = str(
+            (
+                stored_goal_payload.get("request_verbatim")
+                if isinstance(stored_goal_payload, dict)
+                else None
+            )
+            or stored_goal_statement
+        )
+        recovered_from_failure_feedback = bool(
+            stored_goal_request.strip() != validated_recovery.strip()
+            and is_user_failure_feedback(
+                stored_goal_request,
+                active_task=True,
+            )
+        )
         recovered_item = (
             dict(projected["goal"][0])
             if projected["goal"]
@@ -2007,11 +2329,25 @@ def _safe_checkpoint_projection(
             }
         )
         recovered_payload = dict(recovered_item.get("payload") or {})
+        for stale_key in (
+            "conversation_state",
+            "request_fragments",
+            "requirements",
+            "supporting_context",
+            "supporting_context_sha256",
+            "task_mode",
+        ):
+            recovered_payload.pop(stale_key, None)
         recovered_payload.update(
             {
                 "request_verbatim": validated_recovery,
                 "request_sha256": _sha256(validated_recovery),
                 "derived_from_same_session_boundary": True,
+                "dialogue_classifier_version": DIALOGUE_CLASSIFIER_VERSION,
+                "conversation_state": _recovered_goal_conversation_state(
+                    validated_recovery,
+                    failure_feedback=recovered_from_failure_feedback,
+                ),
             }
         )
         recovered_item.update(
@@ -3017,10 +3353,19 @@ async def resolve_session_handoff_request_verbatim(
         expected_sha256 = str(goal_payload.get("request_sha256") or "").strip()
         stored_is_intact = not expected_sha256 or _sha256(stored_verbatim) == expected_sha256
         if stored_is_intact:
-            request = _validated_session_request(stored_verbatim)
-            if request is not None:
+            request = _validated_compiler_composite_request(
+                stored_verbatim,
+                goal_payload,
+            ) or _validated_session_request(stored_verbatim)
+            requires_dialogue_replay = _legacy_goal_requires_dialogue_replay(
+                stored_verbatim,
+                goal_payload,
+            )
+            if request is not None and not requires_dialogue_replay:
                 return request
-            stored_goal_is_intact_but_non_substantive = True
+            stored_goal_is_intact_but_non_substantive = bool(
+                request is None or requires_dialogue_replay
+            )
 
     goal_evidence = [
         evidence
@@ -3094,7 +3439,10 @@ async def resolve_session_handoff_request_verbatim(
         request_verbatim = _checkpoint_request_verbatim(event)
         if request_verbatim:
             request = _validated_session_request(request_verbatim)
-            if request is not None:
+            if request is not None and not _legacy_goal_requires_dialogue_replay(
+                request,
+                {},
+            ):
                 return request
         prefix = _truncated_request_prefix(event.content)
         if prefix is not None:
@@ -3175,6 +3523,7 @@ async def _nearest_authoritative_session_request(
                         SessionEvent.event_type == "runtime_instruction",
                         SessionEvent.role == "user",
                     ),
+                    SessionEvent.event_type == "assistant_update",
                 ),
                 source_access_predicate(
                     effective_scope,
@@ -3182,22 +3531,23 @@ async def _nearest_authoritative_session_request(
                 ),
             )
             .order_by(
-                SessionEvent.sequence_number.desc(),
-                SessionEvent.id.desc(),
+                SessionEvent.sequence_number,
+                SessionEvent.id,
             )
         )
     )
+    replay_events: list[Any] = []
     for event in events:
-        raw_request = _checkpoint_request_verbatim(event)
-        request = _validated_session_request(raw_request)
-        if request is not None:
-            return request
-
         # A recognized historical truncation is the nearest authoritative
         # turn, but it does not authorize silently falling back to older work.
-        # Recover it from that event's access-checked source revision or fail
-        # closed when the prefix is ambiguous/unavailable.
-        if _truncated_request_prefix(event.content) is not None:
+        # Materialize it before replay or fail closed when the prefix is
+        # ambiguous/unavailable.
+        content = event.content
+        event_type = event.event_type
+        role = event.role
+        if event.event_type in {"user_request", "runtime_instruction"} and (
+            _truncated_request_prefix(event.content) is not None
+        ):
             source = await session.get(SourceDocument, event.source_document_id)
             if source is None:
                 return None
@@ -3207,8 +3557,30 @@ async def _nearest_authoritative_session_request(
                 event_type=event.event_type,
             )
             if recognized:
-                return _validated_session_request(recovered)
-    return None
+                if recovered is None:
+                    return None
+                content = recovered
+                event_type = "user_request"
+                role = "user"
+        replay_events.append(
+            SimpleNamespace(
+                id=event.id,
+                provider_event_id=event.provider_event_id,
+                sequence_number=event.sequence_number,
+                event_type=event_type,
+                role=role,
+                content=content,
+            )
+        )
+    state = resolve_conversation_state(
+        replay_events,
+        boundary_sequence=boundary_sequence,
+    )
+    return (
+        state.active_goal.composite_request_verbatim
+        if state.active_goal is not None
+        else None
+    )
 
 
 async def resolve_session_handoff_supporting_context(
@@ -3494,6 +3866,7 @@ def _materialized_referenced_context(
     request_marker = _CURRENT_CODEX_REQUEST_MARKER_RE.search(text, marker.end())
     payload_region = text[marker.end() : request_marker.start() if request_marker else None]
     parsed: dict[str, Any] | None = None
+    parsed_conversation: list[Any] | None = None
     decoder = json.JSONDecoder()
     requested_conversation_ids = set(_CHATGPT_CONVERSATION_ID_RE.findall(request_verbatim))
     if (
@@ -3508,7 +3881,17 @@ def _materialized_referenced_context(
             value, _ = decoder.raw_decode(payload_region[candidate.start() :])
         except json.JSONDecodeError:
             continue
-        if not isinstance(value, dict) or not isinstance(value.get("conversation"), list):
+        if not isinstance(value, dict):
+            continue
+        conversation = value.get("conversation")
+        if not isinstance(conversation, list):
+            prior_conversation = value.get("priorConversation")
+            conversation = (
+                prior_conversation.get("conversation")
+                if isinstance(prior_conversation, dict)
+                else None
+            )
+        if not isinstance(conversation, list):
             continue
         embedded_conversation_id = str(value.get("conversationId") or "").strip()
         if (
@@ -3518,12 +3901,13 @@ def _materialized_referenced_context(
             continue
         if embedded_conversation_id or not requested_conversation_ids:
             parsed = value
+            parsed_conversation = conversation
             break
-    if parsed is None:
+    if parsed is None or parsed_conversation is None:
         return []
 
     turns: list[dict[str, str]] = []
-    for raw_turn in parsed.get("conversation") or []:
+    for raw_turn in parsed_conversation:
         if not isinstance(raw_turn, dict):
             continue
         role = str(raw_turn.get("role") or "").strip().lower()
@@ -6504,8 +6888,10 @@ def _session_handoff_readiness(
         for item in required_evidence
     )
     no_active_blockers = not bool(reconciliation.get("active_reported_blockers"))
+    intent_confirmed = intent.get("task_type_basis") != "safety_default_unconfirmed"
     checks = [
         ("goal_normalized", 15, bool(intent.get("normalized_requirement"))),
+        ("intent_confirmed", 0, intent_confirmed),
         (
             "task_type_correct",
             10,
@@ -6551,6 +6937,7 @@ def _session_handoff_readiness(
     counts = reconciliation.get("counts") or {}
     hard_prerequisites_met = bool(
         requirements
+        and intent_confirmed
         and (not target["required"] or target["status"] == "resolved")
         and (task_type != "change" or implementation_known)
         and (task_type != "change" or acceptance_ready)
@@ -6563,7 +6950,9 @@ def _session_handoff_readiness(
             int(counts.get(state) or 0) for state in ("unknown", "reported_done", "contradicted")
         )
     )
-    if score >= 80 and hard_prerequisites_met:
+    if not intent_confirmed:
+        status = "intent_resolution_required"
+    elif score >= 80 and hard_prerequisites_met:
         status = "execution_ready"
     elif score >= 50:
         status = "discovery_required"
@@ -6594,6 +6983,12 @@ def _session_handoff_readiness(
                 "Validate whether each reported blocker still exists in the "
                 "current runtime, record the evidence, and resolve or explicitly "
                 "carry the blocker before continuing."
+            )
+        elif not intent_confirmed:
+            next_action = (
+                "Preserve the recovered context and ask the user for an explicit "
+                "current objective or direction. Do not treat the read-only `report` "
+                "fallback as a requested task."
             )
         elif reported_behavior and task_type != "change":
             next_action = (
@@ -6899,10 +7294,7 @@ def build_session_handoff_contract(
     normalized_supporting = _normalize_supporting_context(list(supporting_context))
     dependency_required = _request_requires_materialized_context(effective_request)
     if dependency_required and not normalized_supporting:
-        raise ValueError(
-            "The session goal depends on referenced conversation context that "
-            "could not be materialized into a self-contained handoff."
-        )
+        raise SessionContextMaterializationRequiredError()
 
     data = checkpoint_data or checkpoint_to_dict(
         checkpoint,
@@ -7060,6 +7452,7 @@ def build_session_handoff_contract(
         files=files,
         attachment_dependencies=attachment_dependencies,
     )
+    direction_required = (conversation_state or {}).get("lifecycle") == "direction_required"
     readiness = _session_handoff_readiness(
         intent=intent,
         requirements=enriched_requirements,
@@ -7086,6 +7479,25 @@ def build_session_handoff_contract(
         ),
         repository_available=bool(repository.get("root")),
     )
+    if direction_required:
+        readiness.update(
+            {
+                "status": "direction_required",
+                "label": "Direction Required",
+                "next_action": (
+                    "Restore the recovered task and failure feedback as context only. "
+                    "Do not continue, inspect, or edit until the user gives an explicit "
+                    "current direction."
+                ),
+            }
+        )
+        readiness.setdefault("checks", []).append(
+            {
+                "code": "current_user_direction_resolved",
+                "weight": 0,
+                "passed": False,
+            }
+        )
     implementation_summary = [
         {
             "statement": _redacted_historical_text(item["statement"]),
@@ -7135,7 +7547,7 @@ def build_session_handoff_contract(
         blocking_codes = {
             str(item.get("code") or "") for item in quality.get("blocking_issues") or []
         }
-        if "repository_snapshot_present" in blocking_codes and (
+        if not direction_required and "repository_snapshot_present" in blocking_codes and (
             (repository.get("resolution") or {}).get("status")
             == "selection_required"
         ):
@@ -7143,7 +7555,7 @@ def build_session_handoff_contract(
                 "Choose the verified workspace repository that belongs to this "
                 "session, then regenerate Session Context."
             )
-        elif blocking_codes - {"session_boundary_current"}:
+        elif not direction_required and blocking_codes - {"session_boundary_current"}:
             readiness["next_action"] = (
                 "Resolve the Session Context quality warnings or blockers and "
                 "recapture a complete current repository snapshot before execution."
@@ -7152,8 +7564,12 @@ def build_session_handoff_contract(
     return {
         "task_mode": task_mode,
         "execution_policy": {
-            "permission_mode": ("workspace_write" if task_mode == "change" else "read_only"),
-            "may_edit": task_mode == "change",
+            "permission_mode": (
+                "workspace_write"
+                if task_mode == "change" and not direction_required
+                else "read_only"
+            ),
+            "may_edit": task_mode == "change" and not direction_required,
             "required_capability": (
                 "repository_write"
                 if task_mode == "change" and repository.get("root")
@@ -10122,6 +10538,9 @@ def _compact_markdown_literal_code(value: str) -> str:
 
 
 def _compact_session_task_type_label(handoff: dict[str, Any]) -> str:
+    intent = handoff.get("intent") or {}
+    if intent.get("task_type_basis") == "safety_default_unconfirmed":
+        return "unconfirmed (read-only fallback only)"
     task_mode = str(handoff.get("task_mode") or "report")
     return {
         "change": "code change",
@@ -10131,6 +10550,16 @@ def _compact_session_task_type_label(handoff: dict[str, Any]) -> str:
         "review": "review",
         "test_only": "test-only task",
     }.get(task_mode, task_mode.replace("_", " "))
+
+
+def _compact_session_status_label(handoff: dict[str, Any]) -> str:
+    """Describe context usability without implying that the brief grants authority."""
+
+    readiness = handoff.get("readiness") or {}
+    status = str(readiness.get("status") or "")
+    if status == "execution_ready":
+        return "Context Ready"
+    return str(readiness.get("label") or "Readiness not evaluated")
 
 
 def _compact_session_capture_permission_label(handoff: dict[str, Any]) -> str:
@@ -10202,6 +10631,8 @@ def _compact_session_start_steps(handoff: dict[str, Any]) -> list[str]:
     """Turn the next action into a deterministic, evidence-aware sequence."""
 
     action = _compact_session_start_action(handoff)
+    if (handoff.get("conversation_state") or {}).get("lifecycle") == "direction_required":
+        return [action]
     policy = handoff.get("execution_policy") or {}
     may_edit = bool(policy.get("may_edit"))
     intent = handoff.get("intent") or {}
@@ -10368,16 +10799,16 @@ def render_compact_session_handoff(
     repository = handoff["repository"]
     protected = handoff["files"].get("pre_existing_at_handoff") or []
     intent = handoff.get("intent") or {}
-    readiness = handoff.get("readiness") or {}
-    readiness_label = str(readiness.get("label") or "Readiness not evaluated")
+    readiness_label = _compact_session_status_label(handoff)
     may_edit = bool(handoff.get("execution_policy", {}).get("may_edit"))
     lines = [
         "# Continuation Brief v2",
         "",
         (
-            "> Continue from **Start here**. The latest user-authored lead and "
-            "explicit constraints carry authority; prior-agent statements and "
-            "prior session permissions are historical evidence."
+            "> Restore the prior task state from this brief. It supplies context, "
+            "not permission to act: follow an accompanying current user direction, "
+            "or ask what to do next. Prior-agent statements and prior session "
+            "permissions are historical evidence."
         ),
         "",
         f"Status: **{readiness_label}**",
@@ -10809,6 +11240,16 @@ def _append_compact_conversation_state(
                 + _compact_markdown_code(user_text)
                 + "."
             )
+    feedback = [
+        item
+        for item in state.get("transitions") or []
+        if isinstance(item, dict) and item.get("act") == "failure_feedback"
+    ]
+    for item in feedback[-2:]:
+        lines.append(
+            "- Latest user feedback: the prior result was rejected or reported "
+            "failing. The active goal was preserved; await explicit current direction."
+        )
 
 
 def _append_compact_session_supporting_context(
@@ -11165,7 +11606,6 @@ def _compact_session_handoff_missing_fragments(
     goal = str((handoff.get("current_goal") or {}).get("text") or "")
     continuation_lead = str((handoff.get("continuation_lead") or {}).get("text") or "")
     intent = handoff.get("intent") or {}
-    readiness = handoff.get("readiness") or {}
     expected: list[tuple[str, str]] = [
         *(
             (f"goal_line_{index}", line.strip())
@@ -11198,7 +11638,7 @@ def _compact_session_handoff_missing_fragments(
             "normalized_requirement",
             str(intent.get("normalized_requirement") or ""),
         ),
-        ("readiness", str(readiness.get("label") or "")),
+        ("readiness", _compact_session_status_label(handoff)),
         *(
             (f"continuation_lead_line_{index}", line.strip())
             for index, line in enumerate(
@@ -11349,6 +11789,18 @@ def _compact_session_handoff_missing_fragments(
             (
                 f"conversation_unresolved_reference_{index}",
                 _compact_markdown_code(unresolved.get("user_text"), fallback=""),
+            )
+        )
+    failure_feedback = [
+        item
+        for item in conversation_state.get("transitions") or []
+        if isinstance(item, dict) and item.get("act") == "failure_feedback"
+    ]
+    for index, feedback in enumerate(failure_feedback[-2:], start=1):
+        expected.append(
+            (
+                f"conversation_failure_feedback_{index}",
+                "Latest user feedback: the prior result was rejected or reported failing",
             )
         )
     for item in handoff.get("attachment_dependencies") or []:
@@ -12441,6 +12893,7 @@ def _build_sections(
             supporting_context=supporting_context,
         )
         goal_payload: dict[str, Any] = {
+            "dialogue_classifier_version": DIALOGUE_CLASSIFIER_VERSION,
             "request_fragments": [
                 {
                     "provider_event_id": fragment.event_id,
@@ -12921,6 +13374,7 @@ def _build_sections(
         goal_statement,
         sections["blockers"],
         continuation_events[-1] if continuation_events else None,
+        direction_required=conversation_state.lifecycle == "direction_required",
     )
     if next_item is not None:
         sections["exact_next_action"] = [next_item]
@@ -12933,7 +13387,29 @@ def _derive_next_action(
     goal_statement: str | None,
     blockers: list[DraftItem],
     continuation_event: SessionEvent | None,
+    *,
+    direction_required: bool = False,
 ) -> DraftItem | None:
+    if direction_required:
+        feedback_event = next(
+            (
+                event
+                for event in reversed(events)
+                if event.event_type == "user_request"
+                and is_user_failure_feedback(event.content, active_task=True)
+            ),
+            None,
+        )
+        return DraftItem(
+            category="exact_next_action",
+            statement=(
+                "Wait for explicit current user direction; the latest user turn "
+                "rejected or reported a failure in the prior result."
+            ),
+            truth_state="reported",
+            events=[feedback_event] if feedback_event is not None else [],
+            payload={"source": "failure_feedback_requires_direction"},
+        )
     for event in reversed(events):
         if (
             event.event_type != "assistant_update"

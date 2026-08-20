@@ -585,6 +585,36 @@ export default function NowPage() {
       }
     }
   };
+  const retryContinuationProviderReadiness = async () => {
+    const refresh = continuationProvidersQuery.refreshReadinessAsync
+      || continuationProvidersQuery.refetch;
+    if (!refresh) return;
+    let refreshed;
+    try {
+      refreshed = await refresh();
+    } catch {
+      // The query owns and displays refresh failures. Keep the original stage
+      // blocker until a later readiness refresh actually succeeds.
+      return;
+    }
+    if (
+      continuationState !== "blocked"
+      || !continuationReadinessBlockerCanRecover(continuationError)
+    ) return;
+    const blockedProvider = normalizeProvider(continuationError?.provider);
+    const refreshedData = refreshed?.data || refreshed;
+    const providerRecovered = blockedProvider && resolvedContinuationProviders({
+      data: refreshedData,
+    }).some((provider) => (
+      provider.provider === blockedProvider && provider.ready === true
+    ));
+    if (!providerRecovered) return;
+    // A successful readiness refresh only enables another click. It does not
+    // prove the previously failed handoff opened or pasted anything.
+    setContinuationState("idle");
+    setContinuationResult(null);
+    setContinuationError(null);
+  };
   const actionInputsPending = latestSessionDiscoveryPending;
   const continueAction = latestSessionDiscoveryFailed
     ? {
@@ -644,7 +674,10 @@ export default function NowPage() {
     },
   ];
   const continuationTaskReady = continueAction.kind === "continue";
-  const providerRetryVisible = continuationProviders.some((provider) => !provider.ready);
+  const providerRetryVisible = (
+    continuationProviders.some((provider) => !provider.ready)
+    || continuationReadinessBlockerCanRecover(continuationError)
+  );
   const activeContinuationRun = continuationProvidersQuery.data?.active_run || null;
   const latestContinuationRun = continuationProvidersQuery.data?.latest_run || null;
   const stagedContinuationHandoff = continuationProvidersQuery.data?.staged_handoff || null;
@@ -949,10 +982,7 @@ export default function NowPage() {
                   {providerRetryVisible ? (
                     <button
                       type="button"
-                      onClick={() => (
-                        continuationProvidersQuery.refreshReadiness
-                        || continuationProvidersQuery.refetch
-                      )?.()}
+                      onClick={retryContinuationProviderReadiness}
                       disabled={continuationProvidersQuery.isFetching}
                       className="inline-flex min-h-11 items-center gap-1.5 rounded-full border border-[#d1d1c8] bg-white/65 px-3 text-xs font-semibold text-[#5f5f57] transition-colors hover:border-[#9d9d93] hover:text-[#171713] disabled:cursor-wait disabled:opacity-60 dark:border-white/15 dark:bg-white/[0.04] dark:text-[#d0d0c8] dark:hover:border-white/30 dark:hover:text-white"
                     >
@@ -3980,11 +4010,40 @@ function normalizeWorkflowTaskTitles(value) {
 function continuationStagingConfirmed(result) {
   const delivery = result?.delivery;
   const session = delivery?.harness_session;
+  const provider = normalizeProvider(
+    delivery?.provider || session?.provider,
+  );
   const pasteMethod = String(
     session?.paste_method || "",
   ).trim().toLocaleLowerCase();
   const pasteVerified = session?.paste_verified === true;
   const contextLoaded = session?.context_loaded === true;
+  const openCodeTargetAttested = (
+    (
+      session?.target_policy === "opencode-chat-composer-v1"
+      && session?.marker_replaced === true
+    )
+    || (
+      session?.target_policy === "opencode-focused-chat-composer-v1"
+      && session?.marker_replaced === false
+    )
+  );
+  const openCodePasteVerified = (
+    provider === "opencode"
+    && pasteMethod === "accessibility_verified_input_sync"
+    && pasteVerified
+    && contextLoaded
+    && session?.target_kind === "chat_composer"
+    && session?.target_identity_verified === true
+    && openCodeTargetAttested
+  );
+  const standardPasteAccepted = (
+    provider !== "opencode"
+    && (
+      (pasteMethod === "accessibility_insert" && pasteVerified)
+      || (pasteMethod === "command_v" && !pasteVerified)
+    )
+  );
   const safePasteEnvelope = (
     session?.open_requested === true
     && session?.open_verified === true
@@ -3992,10 +4051,7 @@ function continuationStagingConfirmed(result) {
     && session?.context_copied === true
     && session?.paste_requested === true
     && contextLoaded === pasteVerified
-    && (
-      (pasteMethod === "accessibility_insert" && pasteVerified)
-      || (pasteMethod === "command_v" && !pasteVerified)
-    )
+    && (standardPasteAccepted || openCodePasteVerified)
   );
   return (
     String(result?.status || "").trim().toLocaleLowerCase() === "awaiting_user"
@@ -4103,6 +4159,7 @@ function normalizeContinuationBlocker(blocker, {
       message: preserveContinuationText(blocker) || fallbackMessage,
       affectedTasks: [],
       action: "",
+      provider: normalizeProvider(targetProvider),
     };
   }
   const source = blocker && typeof blocker === "object" ? blocker : {};
@@ -4136,7 +4193,28 @@ function normalizeContinuationBlocker(blocker, {
     || source.recovery_action
     || source.detail?.action,
   );
-  return { title, message, affectedTasks, action, code };
+  return {
+    title,
+    message,
+    affectedTasks,
+    action,
+    code,
+    provider: normalizeProvider(provider),
+  };
+}
+
+function continuationReadinessBlockerCanRecover(blocker) {
+  const code = preserveContinuationText(blocker?.code).toLocaleLowerCase();
+  return new Set([
+    "desktop_account_access_unverified",
+    "desktop_account_rate_limited",
+    "desktop_account_sign_in_required",
+    "desktop_app_missing",
+    "desktop_paste_helper_missing",
+    "desktop_readiness_required",
+    "desktop_readiness_timeout",
+    "desktop_url_scheme_missing",
+  ]).has(code);
 }
 
 function preserveContinuationText(value) {

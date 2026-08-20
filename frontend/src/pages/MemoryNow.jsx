@@ -610,7 +610,7 @@ function ExecuteSessionPickerControl({
           </span>
         </span>
         {continueOrigin && selectedCount ? (
-          <span className="flex -space-x-2" aria-hidden="true">
+          <span className="isolate flex -space-x-2" aria-hidden="true">
             {selectedSessions.map((session, index) => (
               <span key={executeSessionIdentity(session)} className="relative">
                 <HarnessLogo
@@ -619,7 +619,7 @@ function ExecuteSessionPickerControl({
                   decorative
                   className="!h-7 !w-7 !rounded-lg"
                 />
-                <span className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-[#171713] px-0.5 font-mono text-[8px] font-black text-white ring-1 ring-white dark:bg-[#d9ff68] dark:text-[#171713] dark:ring-[#171713]">
+                <span className="absolute -right-1 -top-1 z-10 grid h-4 min-w-4 place-items-center rounded-full bg-[#171713] px-0.5 font-mono text-[8px] font-black text-white ring-1 ring-white dark:bg-[#d9ff68] dark:text-[#171713] dark:ring-[#171713]">
                   {index + 1}
                 </span>
               </span>
@@ -645,7 +645,7 @@ function ExecuteSessionPickerControl({
 
       {continueOrigin && selectedCount && menuOpen ? (
         <div
-          className="absolute right-0 top-full min-w-64 pt-2"
+          className="absolute right-0 top-full w-[min(20rem,calc(100vw-2rem))] pt-2"
         >
           <div
             role="menu"
@@ -661,7 +661,7 @@ function ExecuteSessionPickerControl({
                   focusSessionCard(index + 1);
                   setMenuOpen(false);
                 }}
-                className="flex min-h-11 items-center gap-3 rounded-xl px-2.5 text-left transition hover:bg-[#ecece4] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#9dbc47] dark:hover:bg-white/[0.07]"
+                className="flex min-h-11 w-full min-w-0 items-center gap-3 rounded-xl px-2.5 text-left transition hover:bg-[#ecece4] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#9dbc47] dark:hover:bg-white/[0.07]"
               >
                 <HarnessLogo type={session.provider} size="small" decorative />
                 <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[#171713] px-1 font-mono text-[9px] font-black text-white dark:bg-[#d9ff68] dark:text-[#171713]">
@@ -1253,6 +1253,7 @@ function SelectedSessionContextCard({
           loading={preparing}
           available={Boolean(context)}
           error={error}
+          errorRetryable={retryable}
           unavailableMessage={compactionRequirement
             || (repositorySelectionRequired && !selectedRepoPath
               ? "Choose the repository that belongs to this session."
@@ -1274,6 +1275,7 @@ function SelectedSessionContextCard({
             disabled={
               !contextEligible
               || (repositorySelectionRequired && !selectedRepoPath)
+              || (!context && error && !retryable)
             }
             className="btn-secondary min-h-11 px-4 text-xs"
           >
@@ -1305,7 +1307,10 @@ function SelectedSessionContextCard({
         </div>
 
         {error ? (
-          <p className="relative z-20 mt-3 text-xs leading-5 text-attention">
+          <p
+            role={previewOpen ? undefined : "alert"}
+            className="relative z-20 mt-3 text-xs leading-5 text-attention"
+          >
             {error}
           </p>
         ) : context && !copyReady ? (
@@ -1365,6 +1370,7 @@ function PromptPreview({
   loading,
   available,
   error,
+  errorRetryable = true,
   unavailableMessage,
   compact = false,
   allowAncestorWatermark = false,
@@ -1437,7 +1443,9 @@ function PromptPreview({
               {loading
                 ? "Preparing the exact prompt…"
                 : error
-                  ? "The prompt could not be prepared automatically. Retry the preview."
+                  ? errorRetryable
+                    ? "The prompt could not be prepared automatically. Retry the preview."
+                    : "The prompt cannot be prepared from the available session evidence."
                   : available
                     ? "The exact prompt is temporarily unavailable."
                     : unavailableMessage}
@@ -2890,6 +2898,26 @@ function sessionGoalIsUnavailable(error) {
 }
 
 
+function sessionContextMaterializationIsRequired(error) {
+  const code = rawText(
+    error?.code
+    || error?.detail?.code
+    || error?.detail?.detail?.code,
+  ).toLowerCase();
+  const message = rawText(
+    error?.message
+    || error?.detail?.message
+    || error?.detail?.detail?.message,
+  ).toLowerCase();
+  return (
+    code === "session_context_materialization_required"
+    || message.includes(
+      "the session goal depends on referenced conversation context that could not be materialized into a self-contained handoff",
+    )
+  );
+}
+
+
 function unavailableSessionGoalError() {
   const error = new Error(
     "This session no longer retains its original user request, so a trustworthy Session Context cannot be produced. Choose another session or checkpoint in Library.",
@@ -2910,6 +2938,17 @@ function sessionContextFailure(error, fallback) {
   if (sessionGoalIsUnavailable(error)) {
     return {
       message: unavailableSessionGoalError().message,
+      retryable: false,
+    };
+  }
+  if (sessionContextMaterializationIsRequired(error)) {
+    return {
+      message: (
+        "This session’s goal relies on referenced conversation context that is unavailable, "
+        + "so a trustworthy Session Context cannot be produced. Restate the goal with that "
+        + "context included in the source session, then choose its updated checkpoint in "
+        + "Library—or choose another self-contained session."
+      ),
       retryable: false,
     };
   }

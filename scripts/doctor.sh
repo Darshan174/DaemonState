@@ -187,16 +187,24 @@ process.exit(supported ? 0 : 1);
       warn "Swift is missing; browser-to-desktop Continue cannot paste context"
       BARE_METAL_READY=0
     fi
-    native_helper="desktop/macos/DaemonStateOverlay/.build/release/DaemonStateOverlay"
     native_package="desktop/macos/DaemonStateOverlay"
-    if [[ -x "${native_helper}" ]] \
-      && [[ ! "${native_package}/Package.swift" -nt "${native_helper}" ]] \
-      && ! find "${native_package}/Sources" -type f -newer "${native_helper}" -print -quit \
-        | grep -q .
-    then
+    native_helper_fresh=0
+    for native_helper in \
+      "${native_package}/.build/release/DaemonStateOverlay" \
+      "${native_package}/.build/debug/DaemonStateOverlay"
+    do
+      if [[ -x "${native_helper}" ]] \
+        && [[ ! "${native_package}/Package.swift" -nt "${native_helper}" ]] \
+        && [[ -z "$(find "${native_package}/Sources" -type f -newer "${native_helper}" -print -quit)" ]]
+      then
+        native_helper_fresh=1
+        break
+      fi
+    done
+    if [[ "${native_helper_fresh}" -eq 1 ]]; then
       ok "fresh native context helper build present"
     else
-      warn "native context helper is missing or stale; run: bash scripts/setup.sh"
+      warn "native context helper is missing or stale; run: bash scripts/ensure-native-context-helper.sh"
     fi
   fi
 fi
