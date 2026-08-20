@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "daemonstate-public-toolkit"
+version = "0.1.0"
+description = "Offline synthetic demonstration and public integration boundary for DaemonState"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+  { name = "DaemonState contributors" },
+]
+dependencies = []
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+]
+
+[project.scripts]
+daemonstate-demo = "daemonstate_public.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["daemonstate_public*"]
+
+[tool.setuptools.package-data]
+"daemonstate_public.examples" = ["*.json"]

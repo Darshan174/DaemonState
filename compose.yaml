@@ -1,0 +1,13 @@
+services:
+  demo:
+    build:
+      context: .
+    command:
+      - demo
+    network_mode: none
+    read_only: true
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

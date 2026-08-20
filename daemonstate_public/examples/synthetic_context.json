@@ -1,0 +1,82 @@
+{
+  "schema_version": "daemonstate.public.context_bundle.v1",
+  "bundle_id": "synthetic-taskboard-session-001",
+  "workspace": {
+    "id": "workspace-synthetic-taskboard",
+    "name": "TaskBoard Demo",
+    "purpose": "A fictional command-line task tracker used only to demonstrate the public context format.",
+    "capabilities": [
+      "Create and list local tasks",
+      "Mark a task complete",
+      "Export tasks as JSON"
+    ],
+    "architecture": [
+      {
+        "component": "taskboard.cli",
+        "responsibility": "Parses fictional command-line input and formats output."
+      },
+      {
+        "component": "taskboard.store",
+        "responsibility": "Reads and writes the fictional local task file."
+      }
+    ],
+    "conventions": [
+      "Keep storage operations separate from presentation.",
+      "Sort exported tasks by stable numeric identifier.",
+      "Use the Python standard library in this fictional project."
+    ],
+    "commands": [
+      {
+        "name": "tests",
+        "command": "python -m unittest",
+        "evidence": "Declared by the fictional TaskBoard README."
+      }
+    ],
+    "verified_facts": [
+      {
+        "statement": "The fictional store returns task dictionaries with id, title, and completed fields.",
+        "evidence": "Synthetic file taskboard/store.py in the demonstration narrative.",
+        "status": "synthetic"
+      },
+      {
+        "statement": "JSON export is expected to preserve stable task ordering.",
+        "evidence": "Synthetic acceptance criterion in the demonstration narrative.",
+        "status": "synthetic"
+      }
+    ]
+  },
+  "session": {
+    "id": "session-synthetic-001",
+    "title": "Add deterministic JSON export",
+    "goal": "Add a JSON export command to the fictional TaskBoard CLI.",
+    "status": "in_progress",
+    "progress": [
+      "Added an export subcommand parser in the fictional CLI.",
+      "Added a serializer that sorts fictional tasks by numeric identifier."
+    ],
+    "decisions": [
+      "Write JSON to stdout so callers can redirect it.",
+      "Keep pretty printing optional to preserve script-friendly output."
+    ],
+    "changed_files": [
+      "taskboard/cli.py",
+      "taskboard/export.py",
+      "tests/test_export.py"
+    ],
+    "verification": [
+      {
+        "command": "python -m unittest tests.test_export",
+        "status": "passed",
+        "evidence": "Synthetic result: 4 fictional tests passed. The public demo did not execute this command."
+      }
+    ],
+    "blockers": [],
+    "next_action": "Add the fictional pretty-print flag test, then run the complete fictional test suite."
+  },
+  "provenance": {
+    "synthetic": true,
+    "notice": "This fictional bundle was authored for documentation and was not extracted from a repository, customer, or coding session.",
+    "source": "Bundled DaemonState Public Toolkit fixture",
+    "generated_at": "2026-08-20T00:00:00Z"
+  }
+}

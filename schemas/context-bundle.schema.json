@@ -1,0 +1,224 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:daemonstate:public-demo:context-bundle:v1",
+  "title": "DaemonState public synthetic context bundle",
+  "description": "A deliberately simplified educational schema. It is not a production DaemonState contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bundle_id",
+    "workspace",
+    "session",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "daemonstate.public.context_bundle.v1"
+    },
+    "bundle_id": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "purpose",
+        "capabilities",
+        "architecture",
+        "conventions",
+        "commands",
+        "verified_facts"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "purpose": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "architecture": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "component",
+              "responsibility"
+            ],
+            "properties": {
+              "component": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "responsibility": {
+                "$ref": "#/$defs/nonEmptyString"
+              }
+            }
+          }
+        },
+        "conventions": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "command",
+              "evidence"
+            ],
+            "properties": {
+              "name": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "command": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "evidence": {
+                "$ref": "#/$defs/nonEmptyString"
+              }
+            }
+          }
+        },
+        "verified_facts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "statement",
+              "evidence",
+              "status"
+            ],
+            "properties": {
+              "statement": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "evidence": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "status": {
+                "$ref": "#/$defs/nonEmptyString"
+              }
+            }
+          }
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "goal",
+        "status",
+        "progress",
+        "decisions",
+        "changed_files",
+        "verification",
+        "blockers",
+        "next_action"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "title": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "goal": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "status": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "progress": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "decisions": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "changed_files": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "verification": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "command",
+              "status",
+              "evidence"
+            ],
+            "properties": {
+              "command": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "status": {
+                "$ref": "#/$defs/nonEmptyString"
+              },
+              "evidence": {
+                "$ref": "#/$defs/nonEmptyString"
+              }
+            }
+          }
+        },
+        "blockers": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "next_action": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "synthetic",
+        "notice",
+        "source",
+        "generated_at"
+      ],
+      "properties": {
+        "synthetic": {
+          "const": true
+        },
+        "notice": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "source": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stringArray": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    }
+  }
+}
