@@ -7,6 +7,7 @@ NOTICE
 PUBLIC_FILES.txt
 README.md
 SECURITY.md
+assets/daemonstate-mark.svg
 compose.yaml
 daemonstate_public/__init__.py
 daemonstate_public/__main__.py
