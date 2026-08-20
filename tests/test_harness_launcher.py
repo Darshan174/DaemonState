@@ -52,10 +52,10 @@ def _successful_opencode_native_paste() -> dict[str, object]:
     return {
         **_successful_native_paste(),
         "paste_method": "accessibility_verified_input_sync",
-        "target_policy": "opencode-chat-composer-v1",
+        "target_policy": "opencode-focused-chat-composer-v1",
         "target_kind": "chat_composer",
         "target_identity_verified": True,
-        "marker_replaced": True,
+        "marker_replaced": False,
     }
 
 
@@ -94,6 +94,7 @@ def _install_fake_desktop_app(
     provider: str,
     *,
     schemes: tuple[str, ...] | None = None,
+    version: str = "1.18.18",
 ) -> Path:
     spec = MACOS_DESKTOP_APPS[provider]
     bundle = tmp_path / f"{spec.app_names[0]}.app"
@@ -109,6 +110,9 @@ def _install_fake_desktop_app(
             }
         ],
     }
+    if provider == "opencode":
+        info["CFBundleShortVersionString"] = version
+        info["CFBundleVersion"] = version
     with (contents / "Info.plist").open("wb") as plist_file:
         plistlib.dump(info, plist_file)
     monkeypatch.setattr(
@@ -580,6 +584,54 @@ def test_composer_readiness_reports_desktop_missing_separately(
     assert readiness.code == "desktop_app_missing"
 
 
+def test_opencode_readiness_rejects_an_unaudited_desktop_version(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.harness_launcher.platform.system",
+        lambda: "Darwin",
+    )
+    _install_fake_desktop_app(
+        tmp_path,
+        monkeypatch,
+        "opencode",
+        version="1.18.17",
+    )
+
+    readiness = probe_harness_composer_readiness("opencode")
+
+    assert readiness.ready is False
+    assert readiness.desktop_available is True
+    assert readiness.url_scheme_registered is True
+    assert readiness.code == "desktop_app_version_unsupported"
+    assert "safe focused-composer insertion" in readiness.message
+
+
+def test_opencode_focused_composer_readiness_does_not_require_a_url_scheme(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.harness_launcher.platform.system",
+        lambda: "Darwin",
+    )
+    _install_fake_desktop_app(
+        tmp_path,
+        monkeypatch,
+        "opencode",
+        schemes=(),
+    )
+
+    readiness = probe_harness_composer_readiness("opencode")
+
+    assert readiness.ready is True
+    assert readiness.desktop_available is True
+    assert readiness.url_scheme_registered is False
+    assert readiness.code == "desktop_dispatch_ready"
+    assert "ready to receive the draft" in readiness.message
+
+
 def test_composer_readiness_requires_a_prebuilt_native_paste_helper(
     tmp_path: Path,
     monkeypatch,
@@ -719,10 +771,12 @@ def test_requests_visible_desktop_composer_without_provider_cli(
     assert result["launched"] is True
     assert result["open_requested"] is True
     assert result["open_verified"] is True
-    assert result["navigation_requested"] is True
+    assert result["navigation_requested"] is (provider != "opencode")
     assert result["navigation_verified"] is False
     assert result["mode"] == "desktop_composer"
-    assert result["navigation"] == "new_session"
+    assert result["navigation"] == (
+        "app" if provider == "opencode" else "new_session"
+    )
     assert result["prefill_requested"] is False
     assert result["context_copied"] is True
     assert result["context_loaded"] is True
@@ -748,24 +802,31 @@ def test_requests_visible_desktop_composer_without_provider_cli(
         "/usr/bin/pbcopy",
         str(Path(__file__).resolve().parents[1] / "scripts" / "overlay.sh"),
     }
-    target = urlparse(calls[1][0][3])
-    assert target.scheme == scheme
-    assert target.hostname == host
-    query = parse_qs(target.query)
-    assert query[path_key] == [str(tmp_path.resolve())]
     if provider == "opencode":
-        marker = query[prompt_key][0]
-        assert marker.startswith("ds-")
-        assert len(marker) == 35
-        assert "Inspect the current task" not in calls[1][0][3]
+        assert calls[1][0] == [
+            "/usr/bin/open",
+            "-a",
+            str(
+                (
+                    tmp_path / f"{MACOS_DESKTOP_APPS[provider].app_names[0]}.app"
+                ).resolve()
+            ),
+        ]
         assert calls[2][0][calls[2][0].index("--target-policy") + 1] == (
-            "opencode-chat-composer-v1"
+            "opencode-focused-chat-composer-v1"
         )
-        assert calls[2][0][calls[2][0].index("--target-marker") + 1] == marker
+        assert "--target-marker" not in calls[2][0]
+        assert "--expected-project-directory" not in calls[2][0]
     else:
+        target = urlparse(calls[1][0][-1])
+        assert target.scheme == scheme
+        assert target.hostname == host
+        query = parse_qs(target.query)
+        assert query[path_key] == [str(tmp_path.resolve())]
         assert prompt_key not in query
         assert "--target-policy" not in calls[2][0]
         assert "--target-marker" not in calls[2][0]
+        assert "--expected-project-directory" not in calls[2][0]
     assert calls[2][1]["input"] == (
         "Inspect the current task; do not submit automatically."
     )
@@ -819,7 +880,7 @@ def test_oversized_desktop_prompt_is_copied_without_truncation(
     assert result["launched"] is True
     assert result["open_requested"] is True
     assert calls[0][1]["input"] == prompt
-    query = parse_qs(urlparse(calls[1][0][3]).query)
+    query = parse_qs(urlparse(calls[1][0][-1]).query)
     assert "q" not in query
     assert query["folder"] == [str(tmp_path.resolve())]
     assert calls[2][1]["input"] == prompt
@@ -1055,12 +1116,43 @@ def _launcher_with_native_response(
     return calls
 
 
-def test_opencode_accepts_exact_chat_composer_attestation(
+def test_one_shot_overlay_stale_exit_reports_missing_helper(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     monkeypatch.setattr("app.services.harness_launcher.platform.system", lambda: "Darwin")
-    _install_fake_desktop_app(tmp_path, monkeypatch, "opencode")
+    _install_fake_desktop_app(tmp_path, monkeypatch, "codex")
+    calls = _launcher_with_native_response(
+        monkeypatch,
+        stdout="",
+        returncode=70,
+    )
+
+    with pytest.raises(HarnessLaunchError) as raised:
+        launch_harness_composer(
+            "codex",
+            cwd=str(tmp_path),
+            prompt="Context that must remain fail-closed.",
+        )
+
+    assert raised.value.code == "desktop_paste_helper_missing"
+    assert raised.value.action == (
+        "Run bash scripts/ensure-native-context-helper.sh, then retry Continue."
+    )
+    assert calls[2][1]["input"] == "Context that must remain fail-closed."
+
+
+def test_opencode_accepts_focused_empty_chat_composer_attestation_without_url(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("app.services.harness_launcher.platform.system", lambda: "Darwin")
+    _install_fake_desktop_app(
+        tmp_path,
+        monkeypatch,
+        "opencode",
+        schemes=(),
+    )
     calls = _launcher_with_native_response(
         monkeypatch,
         stdout=json.dumps(_successful_opencode_native_paste()),
@@ -1075,14 +1167,19 @@ def test_opencode_accepts_exact_chat_composer_attestation(
 
     assert result["context_loaded"] is True
     assert result["paste_verified"] is True
-    target = urlparse(calls[1][0][3])
-    marker = parse_qs(target.query)["prompt"][0]
-    assert marker != "Real context that must never enter the URL."
-    assert "Real+context" not in calls[1][0][3]
+    assert result["navigation_requested"] is False
+    assert result["navigation"] == "app"
+    assert result["marker_replaced"] is False
+    assert calls[1][0] == [
+        "/usr/bin/open",
+        "-a",
+        str((tmp_path / "OpenCode.app").resolve()),
+    ]
     assert calls[2][0][calls[2][0].index("--target-policy") + 1] == (
-        "opencode-chat-composer-v1"
+        "opencode-focused-chat-composer-v1"
     )
-    assert calls[2][0][calls[2][0].index("--target-marker") + 1] == marker
+    assert "--target-marker" not in calls[2][0]
+    assert "--expected-project-directory" not in calls[2][0]
 
 
 def test_opencode_rejects_command_v_even_with_claimed_target_attestation(
@@ -1096,10 +1193,10 @@ def test_opencode_rejects_command_v_even_with_claimed_target_attestation(
         stdout=json.dumps(
             {
                 **_successful_native_paste(verified=False),
-                "target_policy": "opencode-chat-composer-v1",
+                "target_policy": "opencode-focused-chat-composer-v1",
                 "target_kind": "chat_composer",
                 "target_identity_verified": True,
-                "marker_replaced": True,
+                "marker_replaced": False,
             }
         ),
         returncode=0,
@@ -1124,34 +1221,34 @@ def test_opencode_rejects_command_v_even_with_claimed_target_attestation(
                 "target_policy": "opencode-chat-composer-v0",
                 "target_kind": "chat_composer",
                 "target_identity_verified": True,
-                "marker_replaced": True,
+                "marker_replaced": False,
             },
             "desktop_composer_focus_unverified",
         ),
         (
             {
-                "target_policy": "opencode-chat-composer-v1",
+                "target_policy": "opencode-focused-chat-composer-v1",
                 "target_kind": "terminal",
                 "target_identity_verified": True,
-                "marker_replaced": True,
+                "marker_replaced": False,
             },
             "desktop_composer_focus_unverified",
         ),
         (
             {
-                "target_policy": "opencode-chat-composer-v1",
+                "target_policy": "opencode-focused-chat-composer-v1",
                 "target_kind": "chat_composer",
                 "target_identity_verified": False,
-                "marker_replaced": True,
+                "marker_replaced": False,
             },
             "desktop_composer_focus_unverified",
         ),
         (
             {
-                "target_policy": "opencode-chat-composer-v1",
+                "target_policy": "opencode-focused-chat-composer-v1",
                 "target_kind": "chat_composer",
                 "target_identity_verified": True,
-                "marker_replaced": False,
+                "marker_replaced": True,
             },
             "desktop_context_insertion_unverified",
         ),
@@ -1211,7 +1308,7 @@ def test_native_accessibility_failure_propagates_dedicated_action(
     )
     assert calls[2][1]["input"] == "Full context"
     assert calls[2][1]["env"] == minimal_process_environment()
-    query = parse_qs(urlparse(calls[1][0][3]).query)
+    query = parse_qs(urlparse(calls[1][0][-1]).query)
     assert "prompt" not in query
 
 

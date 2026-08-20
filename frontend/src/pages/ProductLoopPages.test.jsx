@@ -2049,6 +2049,51 @@ Remove screenshot IDs and temporary paths from the Now page.
     );
   });
 
+  it("accepts OpenCode only after its focused-composer input sync", async () => {
+    const staged = await mocks.continuation.mutateAsync();
+    mocks.continuation.mutateAsync.mockReset().mockResolvedValue({
+      ...staged,
+      delivery: {
+        ...staged.delivery,
+        provider: "opencode",
+        context_delivery: "desktop_composer_verified_input_sync",
+        visibility: {
+          ...staged.delivery.visibility,
+          context_loaded: true,
+          paste_requested: true,
+          paste_verified: true,
+          paste_method: "accessibility_verified_input_sync",
+        },
+        harness_session: {
+          ...staged.delivery.harness_session,
+          provider: "opencode",
+          context_loaded: true,
+          paste_requested: true,
+          paste_verified: true,
+          paste_method: "accessibility_verified_input_sync",
+          target_policy: "opencode-focused-chat-composer-v1",
+          target_kind: "chat_composer",
+          target_identity_verified: true,
+          marker_replaced: false,
+        },
+      },
+      run: {
+        ...staged.run,
+        provider: "opencode",
+      },
+    });
+
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+    fireEvent.click(screen.getByRole("button", {
+      name: "Open desktop handoff in OpenCode",
+    }));
+
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent(
+      "Context was pasted into OpenCode. Review it, then send it.",
+    );
+  });
+
   it("does not claim a successful handoff for a clipboard-only response", async () => {
     const staged = await mocks.continuation.mutateAsync();
     mocks.continuation.mutateAsync.mockReset().mockResolvedValue({
@@ -2537,6 +2582,34 @@ Remove screenshot IDs and temporary paths from the Now page.
     expect(mocks.continuation.mutateAsync).toHaveBeenCalledTimes(continuationCalls);
   });
 
+  it("clears a recovered helper-readiness blocker without claiming a handoff", async () => {
+    mocks.continuation.mutateAsync.mockRejectedValue({
+      detail: {
+        code: "desktop_paste_helper_missing",
+        provider: "codex",
+        title: "Desktop composer unavailable",
+        message: "The native paste helper is unavailable.",
+        action: "Rebuild the native helper, then retry Continue.",
+      },
+    });
+    mocks.providers.refetch.mockResolvedValue({ data: mocks.providers.data });
+
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+    fireEvent.click(screen.getByRole("button", {
+      name: "Open desktop handoff in Codex",
+    }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Desktop composer unavailable",
+    );
+    fireEvent.click(screen.getByRole("button", {
+      name: "Retry desktop readiness",
+    }));
+
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(screen.queryByText(/Context was pasted into Codex/i)).not.toBeInTheDocument();
+  });
+
   it("opens OpenCode without a manual provider-access attestation", async () => {
     mocks.providers.data.providers = mocks.providers.data.providers.map((provider) => (
       provider.provider === "opencode"
@@ -2776,9 +2849,25 @@ Remove screenshot IDs and temporary paths from the Now page.
       delivery: {
         ...staged.delivery,
         provider: "opencode",
+        context_delivery: "desktop_composer_verified_input_sync",
+        visibility: {
+          ...staged.delivery.visibility,
+          context_loaded: true,
+          paste_requested: true,
+          paste_verified: true,
+          paste_method: "accessibility_verified_input_sync",
+        },
         harness_session: {
           ...staged.delivery.harness_session,
           provider: "opencode",
+          context_loaded: true,
+          paste_requested: true,
+          paste_verified: true,
+          paste_method: "accessibility_verified_input_sync",
+          target_policy: "opencode-focused-chat-composer-v1",
+          target_kind: "chat_composer",
+          target_identity_verified: true,
+          marker_replaced: false,
         },
       },
       run: {
@@ -2790,7 +2879,7 @@ Remove screenshot IDs and temporary paths from the Now page.
       "Continue in OpenCode",
     ));
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Context copied to your clipboard.",
+      "Context was pasted into OpenCode. Review it, then send it.",
     );
   });
 

@@ -1752,6 +1752,7 @@ export function useContinuationProviders(workspaceId, { enabled = true } = {}) {
     isError: query.isError || refreshMutation.isError,
     error: refreshMutation.error || query.error,
     refreshReadiness: refreshMutation.mutate,
+    refreshReadinessAsync: refreshMutation.mutateAsync,
   };
 }
 

@@ -2743,7 +2743,8 @@ def test_acceptance_compiler_preserves_requested_transparency_polarity() -> None
     conversational, _data = _contract("Don't let me know whether cards are transparent.")
     assert conversational["task_mode"] == "report"
     assert conversational["intent"]["acceptance_criteria"] == []
-    assert "without editing files" in conversational["readiness"]["next_action"]
+    assert conversational["readiness"]["status"] == "intent_resolution_required"
+    assert "explicit current objective" in conversational["readiness"]["next_action"]
     assert "before editing" not in conversational["readiness"]["next_action"]
 
 
@@ -3121,6 +3122,118 @@ def test_unknown_reconciliation_can_never_render_execution_ready() -> None:
 
     assert contract["reconciliation"]["counts"]["unknown"] == 1
     assert contract["readiness"]["status"] != "execution_ready"
+
+
+def test_unconfirmed_report_fallback_requires_intent_instead_of_inventing_work() -> None:
+    request = "This is terrible."
+    contract, data = _contract(request)
+
+    assert contract["intent"]["task_type_basis"] == "safety_default_unconfirmed"
+    assert contract["readiness"]["status"] == "intent_resolution_required"
+    assert "explicit current objective" in contract["readiness"]["next_action"]
+    assert contract["quality_report"]["automatic_execution_ready"] is False
+
+    content = render_compact_session_handoff(
+        SimpleNamespace(),
+        request_verbatim=request,
+        contract=contract,
+        checkpoint_data=data,
+    )
+    assert "Status: **Intent Resolution Required**" in content
+    assert "Task type: unconfirmed (read-only fallback only)." in content
+    assert "Task type: report." not in content
+    assert "Complete the requested report" not in content
+    assert "Status: **Execution Ready**" not in content
+
+
+def test_failure_feedback_state_is_copyable_context_but_never_action_authority() -> None:
+    request = "Make frontend/src/Card.jsx opaque."
+    reaction = "ARE U FUCKING SERIOUS MOTHERFUCKER"
+    path = "frontend/src/Card.jsx"
+    data, comparison = _checkpoint_data(
+        request,
+        changed_files=(path,),
+        relevant_files=(path,),
+        next_action="Continue the requested change.",
+    )
+    goal_payload = data["sections"]["goal"][0]["payload"]
+    goal_payload["conversation_state"] = {
+        "schema_version": "conversation_state.v1",
+        "active_goal": {
+            "root_event_id": "goal-event",
+            "root_request_verbatim": request,
+            "fragments": [],
+            "composite_request_verbatim": request,
+            "source_event_ids": ["goal-event"],
+        },
+        "lifecycle": "direction_required",
+        "transitions": [
+            {
+                "event_id": "feedback-event",
+                "sequence_number": 3,
+                "user_text": reaction,
+                "act": "failure_feedback",
+                "active_goal_event_id": "goal-event",
+                "assistant_event_id": "assistant-event",
+                "resolved_statement": "Prior result rejected; active goal preserved.",
+                "reason": "failure feedback preserves the active task",
+                "confidence": 1.0,
+                "blocks_copy": False,
+            }
+        ],
+        "decisions": [],
+        "pending_interaction": None,
+        "unresolved_references": [],
+        "state_sha256": "a" * 64,
+    }
+    contract = build_session_handoff_contract(
+        SimpleNamespace(),
+        request_verbatim=request,
+        checkpoint_data=data,
+        repository_comparison=comparison,
+    )
+
+    assert contract["current_goal"]["request_verbatim"] == request
+    assert contract["readiness"]["status"] == "direction_required"
+    assert contract["execution_policy"]["may_edit"] is False
+    assert contract["execution_policy"]["permission_mode"] == "read_only"
+    assert contract["quality_report"]["copy_ready"] is True
+    assert contract["quality_report"]["automatic_execution_ready"] is False
+
+    content = render_compact_session_handoff(
+        SimpleNamespace(),
+        request_verbatim=request,
+        contract=contract,
+        checkpoint_data=data,
+    )
+    assert "Status: **Direction Required**" in content
+    assert "supplies context, not permission to act" in content
+    assert "await explicit current direction" in content
+    assert reaction not in content
+    assert _compact_session_start_steps(contract) == [
+        "Restore the recovered task and failure feedback as context only. Do not "
+        "continue, inspect, or edit until the user gives an explicit current direction."
+    ]
+
+    goal_payload["conversation_state"]["unresolved_references"] = [
+        {
+            "event_id": "unresolved-event",
+            "user_text": "fix it",
+            "act": "unresolved_reference",
+            "blocks_copy": True,
+        }
+    ]
+    blocked_contract = build_session_handoff_contract(
+        SimpleNamespace(),
+        request_verbatim=request,
+        checkpoint_data=data,
+        repository_comparison=comparison,
+    )
+    assert blocked_contract["quality_report"]["status"] == "blocked"
+    assert blocked_contract["readiness"]["status"] == "direction_required"
+    assert "Do not continue, inspect, or edit" in blocked_contract["readiness"][
+        "next_action"
+    ]
 
 
 @pytest.mark.parametrize(

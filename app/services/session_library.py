@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable
 from uuid import UUID
@@ -20,6 +21,7 @@ from app.services.session_checkpoints import list_session_checkpoints
 from app.services.session_context_policy import session_context_compaction_counts
 from app.services.session_scope import (
     enrich_session_scope_metadata,
+    normalize_session_key,
     session_reference,
     scoped_session_documents,
     workspace_session_scope,
@@ -55,6 +57,14 @@ HARNESS_LABELS = {
     "claude": "Claude Code",
     "opencode": "OpenCode",
 }
+
+
+@dataclass(frozen=True)
+class LatestScopedRootSessionTip:
+    provider: str
+    session_id: str
+    provider_event_id: str
+    sequence_number: int
 
 
 async def sync_local_session_library(
@@ -453,6 +463,68 @@ async def sync_latest_local_session(
         },
         "session": entry,
     }
+
+
+async def latest_scoped_root_session_tip(
+    session: AsyncSession,
+    workspace_id: UUID,
+    *,
+    connector_types: Iterable[str] | None = None,
+) -> LatestScopedRootSessionTip | None:
+    """Resolve the newest scoped root session and its direct transcript tip.
+
+    This is the read-only identity half of the Continue fast path. Callers that
+    authorize a current-session action can compare against the same bounded,
+    project-scoped local discovery without ingesting or mutating the session.
+    Returning the direct resolver tip also prevents a stale persisted ledger
+    from being mistaken for current local history.
+    """
+
+    workspace = await session.get(Workspace, workspace_id)
+    if workspace is None:
+        raise ValueError("Workspace not found")
+    if workspace.kind == "demo":
+        return None
+
+    requested = tuple(dict.fromkeys(
+        value.strip().lower()
+        for value in (connector_types or SESSION_CONNECTOR_TYPES)
+        if value and value.strip().lower() in SESSION_CONNECTOR_TYPES
+    ))
+    project_scope = await workspace_session_scope(session, workspace_id)
+    discovery = await asyncio.to_thread(
+        _discover_latest_scoped_root_session,
+        requested,
+        project_scope,
+    )
+    resolved = discovery.session
+    if resolved is None or not resolved.events:
+        return None
+    session_key = normalize_session_key(
+        resolved.connector_type,
+        resolved.session_id,
+    )
+    if session_key is None:
+        return None
+    latest_sequence = max(item.sequence_number for item in resolved.events)
+    latest_events = [
+        item
+        for item in resolved.events
+        if item.sequence_number == latest_sequence
+    ]
+    if len(latest_events) != 1:
+        return None
+    latest_event = latest_events[0]
+    provider_event_id = str(latest_event.provider_event_id or "").strip()
+    if not provider_event_id:
+        return None
+    provider, session_id = session_key
+    return LatestScopedRootSessionTip(
+        provider=provider,
+        session_id=session_id,
+        provider_event_id=provider_event_id,
+        sequence_number=int(latest_event.sequence_number),
+    )
 
 
 def _discover_latest_scoped_root_session(

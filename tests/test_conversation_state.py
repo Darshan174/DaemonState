@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.conversation_state import resolve_conversation_state
 
 
@@ -37,6 +39,222 @@ def test_unbound_choice_preserves_goal_and_requires_clarification() -> None:
     assert state.active_goal.root_request_verbatim == "Fix the broken session cards."
     assert state.unresolved_references[0].user_text == "the first one"
     assert state.unresolved_references[0].blocks_copy is True
+
+
+def test_failure_feedback_preserves_goal_and_requires_user_direction() -> None:
+    request = "Implement reliable checkpoint selection."
+    reaction = "ARE U FUCKING SERIOUS MOTHERFUCKER"
+    state = resolve_conversation_state([
+        event(1, "user", request),
+        event(2, "assistant", "Implemented end to end; the handoff is ready."),
+        event(3, "user", reaction),
+    ])
+
+    assert state.active_goal is not None
+    assert state.active_goal.root_request_verbatim == request
+    assert state.active_goal.composite_request_verbatim == request
+    assert [item.request_verbatim for item in state.active_goal.fragments] == [request]
+    assert state.transitions[-1].act == "failure_feedback"
+    assert state.transitions[-1].blocks_copy is False
+    assert state.lifecycle == "direction_required"
+    assert state.unresolved_references == ()
+
+
+def test_factual_failure_report_is_feedback_only_with_an_active_task() -> None:
+    request = "Remove the obsolete banner."
+    state = resolve_conversation_state([
+        event(1, "user", request),
+        event(2, "assistant", "The banner is removed."),
+        event(3, "user", "The banner is still displayed in the app."),
+    ])
+
+    assert state.active_goal is not None
+    assert state.active_goal.root_request_verbatim == request
+    assert state.transitions[-1].act == "failure_feedback"
+    assert state.lifecycle == "direction_required"
+
+
+@pytest.mark.parametrize(
+    "reaction",
+    (
+        "Why did you not fix it?",
+        "How did you miss this?",
+        "Seriously?",
+        "WTF?",
+        "This is completely wrong.",
+        "Wrong.",
+        "Incorrect.",
+        "Not even close.",
+        "You broke it.",
+        "You made it worse.",
+        "No, that's wrong.",
+        "How could you get this so wrong?",
+        "Why did you break it?",
+        "It got worse.",
+        "This is worse.",
+        "That's wrong.",
+    ),
+)
+def test_common_failure_reactions_never_replace_the_active_goal(reaction: str) -> None:
+    request = "Repair Session Context goal selection."
+    state = resolve_conversation_state([
+        event(1, "user", request),
+        event(2, "assistant", "Done."),
+        event(3, "user", reaction),
+    ])
+
+    assert state.active_goal is not None
+    assert state.active_goal.root_request_verbatim == request
+    assert state.transitions[-1].act == "failure_feedback"
+    assert state.lifecycle == "direction_required"
+
+
+@pytest.mark.parametrize("response", ("okay", "thanks", "yes", "no", "the first one"))
+def test_context_free_response_does_not_clear_required_direction(response: str) -> None:
+    request = "Repair Session Context goal selection."
+    state = resolve_conversation_state([
+        event(1, "user", request),
+        event(2, "assistant", "Done."),
+        event(3, "user", "This is completely wrong."),
+        event(4, "user", response),
+    ])
+
+    assert state.active_goal is not None
+    assert state.active_goal.root_request_verbatim == request
+    assert state.lifecycle == "direction_required"
+
+
+@pytest.mark.parametrize(
+    "direction",
+    ("fix it", "redo it", "try again", "ENGINEER THIS AND FIX THIS"),
+)
+def test_explicit_contextual_direction_resumes_the_preserved_goal(direction: str) -> None:
+    request = "Repair Session Context goal selection."
+    state = resolve_conversation_state([
+        event(1, "user", request),
+        event(2, "assistant", "Done."),
+        event(3, "user", "This is completely wrong."),
+        event(4, "user", direction),
+    ])
+
+    assert state.active_goal is not None
+    assert state.active_goal.root_request_verbatim == request
+    assert state.active_goal.fragments[-1].request_verbatim == direction
+    assert state.transitions[-1].act == "amend"
+    assert state.lifecycle == "active"
+
+
+@pytest.mark.parametrize(
+    ("user_text", "directive"),
+    (
+        ("You didn't fix it, now fix the compiler.", "fix the compiler."),
+        ("Still broken — fix it.", "fix it."),
+        ("This is wrong. Redo it.", "Redo it."),
+        ("Why the hell did you do that? Revert it.", "Revert it."),
+    ),
+)
+def test_feedback_and_direction_in_one_turn_preserves_and_amends_goal(
+    user_text: str,
+    directive: str,
+) -> None:
+    request = "Repair Session Context goal selection."
+    state = resolve_conversation_state([
+        event(1, "user", request),
+        event(2, "assistant", "Done."),
+        event(3, "user", user_text),
+    ])
+
+    assert state.active_goal is not None
+    assert state.active_goal.root_request_verbatim == request
+    assert state.active_goal.fragments[-1].request_verbatim == directive
+    assert state.transitions[-1].act == "amend"
+    assert state.lifecycle == "active"
+
+
+@pytest.mark.parametrize("rejection", ("no", "nope", "reject"))
+@pytest.mark.parametrize(
+    "completion",
+    (
+        "Done.",
+        "I fixed it.",
+        "The implementation is complete.",
+        "I fixed it. Does that work?",
+    ),
+)
+def test_rejecting_an_assistant_result_requires_new_direction(
+    rejection: str,
+    completion: str,
+) -> None:
+    request = "Repair Session Context goal selection."
+    state = resolve_conversation_state([
+        event(1, "user", request),
+        event(2, "assistant", completion),
+        event(3, "user", rejection),
+    ])
+
+    assert state.active_goal is not None
+    assert state.active_goal.root_request_verbatim == request
+    assert state.lifecycle == "direction_required"
+
+
+def test_rejecting_a_proposal_does_not_masquerade_as_result_failure() -> None:
+    state = resolve_conversation_state([
+        event(1, "user", "Improve Session Context."),
+        event(2, "assistant", "I recommend adding an optional history panel."),
+        event(3, "user", "no"),
+    ])
+
+    assert state.active_goal is not None
+    assert state.transitions[-1].act == "reject"
+    assert state.lifecycle == "active"
+
+
+@pytest.mark.parametrize(
+    "user_text",
+    (
+        "This is wrong. Fix it.",
+        "Still broken — redo it.",
+        "You failed. Try again.",
+    ),
+)
+def test_contextual_feedback_direction_without_a_root_fails_closed(
+    user_text: str,
+) -> None:
+    state = resolve_conversation_state([
+        event(1, "user", user_text),
+    ])
+
+    assert state.active_goal is None
+    assert state.lifecycle == "unresolved"
+    assert state.transitions[-1].act == "unresolved_reference"
+    assert state.transitions[-1].blocks_copy is True
+
+
+def test_self_contained_feedback_direction_can_start_a_root() -> None:
+    state = resolve_conversation_state([
+        event(1, "user", "This is wrong. Fix the Session Context compiler."),
+    ])
+
+    assert state.active_goal is not None
+    assert state.active_goal.root_request_verbatim == "Fix the Session Context compiler."
+    assert state.lifecycle == "active"
+
+
+@pytest.mark.parametrize(
+    "command",
+    ("/status", "/compact", "/model gpt-5", "/help", "/resume", "/clear", "/reset"),
+)
+def test_provider_command_never_replaces_the_active_goal(command: str) -> None:
+    request = "Fix the session cards."
+    state = resolve_conversation_state([
+        event(1, "user", request),
+        event(2, "user", command),
+    ])
+
+    assert state.active_goal is not None
+    assert state.active_goal.root_request_verbatim == request
+    assert [item.request_verbatim for item in state.active_goal.fragments] == [request]
+    assert state.transitions[-1].act in {"ack", "continue"}
 
 
 def test_fix_it_binds_to_one_concrete_diagnosis() -> None:

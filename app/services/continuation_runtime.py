@@ -65,6 +65,7 @@ from app.services.harness_launcher import (
     HarnessLaunchError,
     HarnessVisibility,
     OPENCODE_CHAT_COMPOSER_TARGET_POLICY,
+    OPENCODE_FOCUSED_CHAT_COMPOSER_TARGET_POLICY,
     OPENCODE_VERIFIED_INPUT_METHOD,
     launch_harness_composer,
     probe_harness_composer_dispatch_readiness,
@@ -862,7 +863,7 @@ class ContinuationStageService:
             "navigation_requested": (launch.get("navigation_requested") is True),
             "navigation_verified": False,
             "mode": "desktop_composer",
-            "navigation": "new_session",
+            "navigation": str(launch.get("navigation") or "app"),
             "exact_session_supported": False,
             "awaiting_user": True,
             "execution_started": False,
@@ -2941,12 +2942,20 @@ def _uncertain_continuation_stage_error(
 def _opencode_chat_composer_attestation_is_valid(
     value: Mapping[str, Any],
 ) -> bool:
-    return (
-        value.get("target_policy") == OPENCODE_CHAT_COMPOSER_TARGET_POLICY
-        and value.get("target_kind") == "chat_composer"
+    common = (
+        value.get("target_kind") == "chat_composer"
         and value.get("target_identity_verified") is True
+    )
+    marker_attested = (
+        value.get("target_policy") == OPENCODE_CHAT_COMPOSER_TARGET_POLICY
         and value.get("marker_replaced") is True
     )
+    focused_empty_attested = (
+        value.get("target_policy")
+        == OPENCODE_FOCUSED_CHAT_COMPOSER_TARGET_POLICY
+        and value.get("marker_replaced") is False
+    )
+    return common and (marker_attested or focused_empty_attested)
 
 
 def _stage_payload_has_safe_native_paste_envelope(

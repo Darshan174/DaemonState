@@ -90,6 +90,12 @@ export function sessionContextReadinessLabel(handoff) {
       ? "Required evidence unavailable"
       : "Needs clarification";
   }
+  if (handoff?.readiness?.status === "direction_required") {
+    return "Context ready · Direction required";
+  }
+  if (handoff?.readiness?.status === "intent_resolution_required") {
+    return "Context ready · Intent required";
+  }
   if (budget?.destination_limit?.status === "too_large") {
     return "Copy-ready · Over destination limit";
   }
@@ -111,6 +117,15 @@ export function sessionContextAdvisories(handoff) {
     ? dimensions.evidence_access
     : {};
   const messages = [];
+  if (handoff?.readiness?.status === "direction_required") {
+    messages.push(
+      "The prior result was rejected or reported failing. This context is portable, but it does not authorize another action until the user gives current direction.",
+    );
+  } else if (handoff?.readiness?.status === "intent_resolution_required") {
+    messages.push(
+      "The recovered turn does not establish an actionable objective. Ask the user for current direction instead of treating the read-only fallback as a task.",
+    );
+  }
   if (budget?.efficiency_target?.within_target === false) {
     messages.push(
       `Generated context is ${Number(budget.efficiency_target.overflow_tokens || 0).toLocaleString()} tokens above its optimization target; copying remains available.`,

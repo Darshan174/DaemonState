@@ -23,6 +23,41 @@ enum ContextValidator {
         "historical",
     ])
 
+    static func latestLocalSession(
+        from discovery: LatestLocalSessionEnvelope,
+        workspaceID: String
+    ) throws -> ActiveSessionIdentity {
+        guard visible(discovery.sync?.workspaceID) == workspaceID else {
+            throw DaemonStateError.identityMismatch(
+                field: "latest-session workspace",
+                expected: workspaceID,
+                actual: discovery.sync?.workspaceID
+            )
+        }
+        guard normalizedKey(discovery.sync?.mode) == "latest" else {
+            throw DaemonStateError.invalidPayload(
+                "latest-session discovery did not report latest mode"
+            )
+        }
+        guard let discovered = discovery.session else {
+            throw DaemonStateError.activeSessionUnavailable(
+                "the selected project has no current in-project root session"
+            )
+        }
+        let provider = normalizeProvider(discovered.connectorType)
+        guard ["codex", "claude", "opencode"].contains(provider) else {
+            throw DaemonStateError.activeSessionUnavailable(
+                "the latest local session has no supported provider identity"
+            )
+        }
+        guard let sessionID = visible(discovered.sessionID) else {
+            throw DaemonStateError.activeSessionUnavailable(
+                "the latest local session has no session identity"
+            )
+        }
+        return ActiveSessionIdentity(provider: provider, sessionID: sessionID)
+    }
+
     static func activeSession(
         from digest: ContextDigestEnvelope,
         workspaceID: String

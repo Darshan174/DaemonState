@@ -7,15 +7,10 @@ import {
   CircleDot,
   Code2,
   Database,
-  FileCode2,
-  Fingerprint,
   History,
   Layers3,
   Menu,
-  RefreshCw,
-  ShieldCheck,
   Sparkles,
-  Waypoints,
   X,
 } from "lucide-react";
 
@@ -41,19 +36,19 @@ const ROTATING_AGENT_NAMES = [
   "Codex",
   "Claude Code",
   "OpenCode",
-  "Claude Code",
-  "Codex",
-  "OpenCode",
+  "Cursor",
+  "Gemini",
+  "Grok",
 ];
 const ROTATING_AGENT_INTERVAL_MS = 1000;
 
 const MEMORY_ITEMS = [
-  "What you are building",
-  "What has already been completed",
-  "Which decisions were made",
-  "What failed and why",
-  "Which files matter",
-  "What needs to happen next",
+  "The current goal",
+  "Completed and remaining work",
+  "Decisions and their evidence",
+  "Failed approaches and blockers",
+  "Relevant and changed files",
+  "Checks and the exact next action",
 ];
 
 const DECK_CARDS = [
@@ -89,52 +84,12 @@ const DECK_CARDS = [
   },
 ];
 
-const PROCESS_STEPS = [
-  {
-    number: "01",
-    title: "Import your sessions",
-    body: "Bring together work from Codex, Claude Code, OpenCode, and the coding agents you use next.",
-    icon: Layers3,
-    tone: "lime",
-    meta: "SESSIONS / CONNECTED",
-  },
-  {
-    number: "02",
-    title: "Recover what matters",
-    body: "DaemonState extracts decisions, progress, failures, files, blockers, and the work that remains.",
-    icon: Waypoints,
-    tone: "blue",
-    meta: "CONTEXT / RECONCILED",
-  },
-  {
-    number: "03",
-    title: "Continue anywhere",
-    body: "Generate a clean handoff and continue in another session, model, or coding harness without starting over.",
-    icon: RefreshCw,
-    tone: "coral",
-    meta: "HANDOFF / READY",
-  },
-];
-
-const FEATURE_CARDS = [
-  {
-    number: "01",
-    title: "Decisions, not transcripts",
-    body: "Recover the choices that shaped the project and the evidence behind them.",
-    icon: Fingerprint,
-  },
-  {
-    number: "02",
-    title: "Failures stay useful",
-    body: "Keep dead ends visible so the next session does not repeat expensive mistakes.",
-    icon: ShieldCheck,
-  },
-  {
-    number: "03",
-    title: "Files stay connected",
-    body: "Carry forward the repository paths, commands, and open loops that matter now.",
-    icon: FileCode2,
-  },
+const AGENT_WINDOWS = [
+  { type: "codex", name: "Codex" },
+  { type: "claude", name: "Claude Code" },
+  { type: "opencode", name: "OpenCode" },
+  { type: "cursor", name: "Cursor" },
+  { type: "gemini", name: "Gemini" },
 ];
 
 function splitWords(text) {
@@ -180,7 +135,7 @@ function RotatingAgentName() {
   return (
     <span
       className="dsr-provider-rotator"
-      aria-label="Codex, Claude Code, or OpenCode"
+      aria-label="Codex, Claude Code, OpenCode, Cursor, Gemini, or Grok"
     >
       <span key={activeIndex} aria-hidden="true">
         {ROTATING_AGENT_NAMES[activeIndex]}
@@ -484,7 +439,7 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
         });
 
         const lightSections = gsap.utils.toArray(
-          ".dsr-hero, .dsr-features, .dsr-final",
+          ".dsr-hero, .dsr-final",
           root,
         );
         const updateBrandContrast = () => {
@@ -505,54 +460,28 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
         });
         updateBrandContrast();
 
-        const stackCards = gsap.utils.toArray(".dsr-stack-card", root);
-        if (stackCards.length === 3) {
-          gsap.set(stackCards.slice(1), { yPercent: 112 });
-          gsap.set(stackCards[1], { rotateZ: 2.2 });
-          gsap.set(stackCards[2], { rotateZ: -1.8 });
-
-          gsap.timeline({
-            scrollTrigger: {
-              trigger: ".dsr-stack",
-              start: "top top",
-              end: "+=2300",
-              pin: ".dsr-stack-sticky",
-              scrub: 1,
-              anticipatePin: 1,
-            },
-          })
-            .to(
-              stackCards[0],
-              { yPercent: -8, scale: 0.93, opacity: 0.38, ease: "none" },
-              0,
-            )
-            .to(
-              stackCards[1],
-              { yPercent: 0, rotateZ: 0, ease: "none" },
-              0,
-            )
-            .to(
-              stackCards[1],
-              { yPercent: -6, scale: 0.95, opacity: 0.42, ease: "none" },
-              1,
-            )
-            .to(
-              stackCards[2],
-              { yPercent: 0, rotateZ: 0, ease: "none" },
-              1,
-            );
-        }
-
-        gsap.from(".dsr-feature-card", {
-          y: 130,
-          rotateZ: (index) => (index - 1) * 3,
+        gsap.from(".dsr-agent-window", {
+          y: 90,
+          rotateZ: (index) => (index % 2 === 0 ? -0.8 : 0.8),
           autoAlpha: 0,
-          stagger: 0.12,
-          duration: 1,
+          stagger: 0.1,
+          duration: 1.05,
           ease: "power4.out",
           scrollTrigger: {
-            trigger: ".dsr-features-grid",
-            start: "top 78%",
+            trigger: ".dsr-agent-grid",
+            start: "top 82%",
+            toggleActions: "play none none reverse",
+          },
+        });
+
+        gsap.from(".dsr-agent-dock", {
+          y: 80,
+          autoAlpha: 0,
+          duration: 1.05,
+          ease: "power4.out",
+          scrollTrigger: {
+            trigger: ".dsr-agent-dock",
+            start: "top 84%",
             toggleActions: "play none none reverse",
           },
         });
@@ -636,7 +565,7 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
       className="daemonstate-landing dsr-landing"
     >
       <div className="dsr-loader" aria-hidden="true">
-        <span>Persistent context for every session</span>
+        <span>Project state for the next session</span>
       </div>
 
       <LandingNav
@@ -651,29 +580,21 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           <h1
             id="hero-heading"
             className="dsr-hero-heading"
-            aria-label="Your AI coding work shouldn’t reset every session."
+            aria-label="The docking layer for AI agents."
           >
-            <span className="dsr-hero-heading-left">Your AI coding work</span>
-            <span className="dsr-hero-heading-right">
-              shouldn’t reset every session.
-            </span>
+            <span className="dsr-hero-heading-left">The docking layer</span>
+            <span className="dsr-hero-heading-right">for AI agents.</span>
           </h1>
 
           <HeroDeck />
 
           <div className="dsr-hero-support">
             <p>
-              DaemonState keeps your project context alive across{" "}
-              <RotatingAgentName /> and every session in between.
+              DaemonState keeps your project context alive across every session
+              with <RotatingAgentName />.
             </p>
             <p>Self-hosted. Source-backed. User-reviewed.</p>
             <div className="dsr-hero-links">
-              {!waitlistOnlyMode && (
-                <Link to="/app" className="dsr-hero-primary-link">
-                  Open product
-                  <ArrowRight aria-hidden="true" />
-                </Link>
-              )}
               <a href="#how-it-works" className="dsr-hero-text-link">
                 See how it works
                 <ArrowRight aria-hidden="true" />
@@ -688,80 +609,48 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
 
         <section id="problem" className="dsr-problem">
           <div className="dsr-section-shell dsr-problem-copy">
-            <SectionMarker label="The context gap" number="01" />
-            <h2>Stop rebuilding context.</h2>
+            <SectionMarker label="The blind start" number="01" />
+            <h2>Every new agent starts partially blind.</h2>
             <p className="dsr-problem-statement">
               {splitWords(
-                "Your decisions, failed attempts, relevant files, blockers, commands, and next steps should not disappear when a session ends.",
+                "A fresh session can see the repository. It cannot see why the work is in its current state, which paths already failed, or what was actually verified.",
               )}
             </p>
             <div className="dsr-problem-foot">
               <p>
-                DaemonState turns fragmented coding sessions into context your
-                next agent can immediately use.
+                DaemonState captures that missing working state and reconciles
+                it with current project evidence.
               </p>
-              <strong>
-                No re-explaining. No rediscovery. No starting over.
-              </strong>
+              <strong>Start from captured work, not a reconstructed prompt.</strong>
             </div>
           </div>
         </section>
 
         <ToolsBand />
 
-        <section id="how-it-works" className="dsr-stack">
-          <div className="dsr-stack-sticky">
-            <div className="dsr-section-shell dsr-stack-heading">
-              <SectionMarker label="How it works" number="02" />
-              <h2>One project. Every agent. Continuous context.</h2>
-              <p>Three steps. One uninterrupted line of work.</p>
-            </div>
-
-            <div className="dsr-stack-cards">
-              {PROCESS_STEPS.map((step) => (
-                <ProcessCard key={step.number} {...step} />
-              ))}
-            </div>
-          </div>
-        </section>
-
-        <section className="dsr-features" aria-labelledby="features-heading">
-          <div className="dsr-section-shell">
-            <div className="dsr-features-heading">
-              <SectionMarker label="What survives" number="03" dark />
-              <h2 id="features-heading">
-                Keep the useful parts. Leave the noise behind.
-              </h2>
-            </div>
-            <div className="dsr-features-grid">
-              {FEATURE_CARDS.map((feature) => (
-                <FeatureCard key={feature.number} {...feature} />
-              ))}
-            </div>
-          </div>
-        </section>
+        <AgentStateShowcase />
 
         <section id="project-memory" className="dsr-memory">
           <div className="dsr-section-shell">
-            <SectionMarker label="Persistent project memory" number="04" />
+            <SectionMarker label="What gets carried" number="03" />
             <h2
               className="dsr-memory-title"
-              aria-label="Your coding history becomes infrastructure."
+              aria-label="Not chat history. Working state."
             >
               <span className="dsr-memory-title-line">
-                <span>Your coding history</span>
+                <span>Not chat history.</span>
               </span>
               <span className="dsr-memory-title-line dsr-memory-title-right">
-                <span>becomes infrastructure.</span>
+                <span>Working state.</span>
               </span>
             </h2>
-            <p className="dsr-memory-not-archive">Not another chat archive.</p>
+            <p className="dsr-memory-not-archive">Bounded. Source-backed. Current.</p>
 
             <div className="dsr-memory-layout">
               <div className="dsr-memory-copy">
                 <p>
-                  DaemonState gives every new coding session a current, usable
-                  understanding of:
+                  DaemonState compiles what the receiving agent needs now,
+                  without using the entire conversation as the default brief.
                 </p>
                 <ul className="dsr-memory-list">
                   {MEMORY_ITEMS.map((item) => (
@@ -779,15 +668,15 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
 
         <section id="early-access" className="dsr-final">
           <div className="dsr-final-topline">
-            <span>Persistent context for AI coding agents</span>
+            <span>The docking layer for AI coding agents</span>
             <span>Early access / 2026</span>
           </div>
 
           <div className="dsr-final-copy">
-            <p>Use the right AI tool for the job without losing what came before.</p>
-            <h2 aria-label="Change the model. Not the momentum.">
-              <AnimatedPhrase text="Change the model." />
-              <AnimatedPhrase text="Not the momentum." offset />
+            <p>The state of your work should not belong to one session, model, or tool.</p>
+            <h2 aria-label="The agents change. The project remembers.">
+              <AnimatedPhrase text="The agents change." />
+              <AnimatedPhrase text="The project remembers." offset />
             </h2>
           </div>
 
@@ -855,10 +744,10 @@ function WaitlistForm() {
     <div className={`dsr-waitlist-card is-${submission}`}>
       <div className="dsr-waitlist-heading">
         <span>EARLY ACCESS / PRIVATE BETA</span>
-        <h3>Be first in line.</h3>
+        <h3>Join the private beta.</h3>
         <p>
-          Join builders who want every AI coding session to start with the
-          context it needs.
+          Get early access to DaemonState and help shape a practical continuity
+          layer for coding agents.
         </p>
       </div>
 
@@ -922,8 +811,8 @@ function WaitlistForm() {
 function LandingNav({ menuOpen, setMenuOpen, closeMenu, waitlistOnlyMode }) {
   const links = [
     { href: "#problem", label: "Why" },
+    { href: "#docking-layer", label: "Layer" },
     { href: "#how-it-works", label: "Method" },
-    { href: "#project-memory", label: "Memory" },
   ];
 
   return (
@@ -1116,9 +1005,9 @@ function DeckVisual({ type }) {
     return (
       <div className="dsr-deck-visual dsr-handoff-visual" aria-hidden="true">
         <div>
-          <span><CircleDot /> HANDOFF READY</span>
+          <span><CircleDot /> STATE COMPILED</span>
           <strong>Continue provider adapter work</strong>
-          <small>Decisions restored · Blocker surfaced · Next action clear</small>
+          <small>Decision sourced · Blocker surfaced · Next action clear</small>
         </div>
         <ArrowRight />
       </div>
@@ -1228,7 +1117,7 @@ function AgentLogo({ name }) {
   }
 
   return (
-    <span className="dsr-agent-logo dsr-agent-logo-any" title="Any agent">
+    <span className="dsr-agent-logo dsr-agent-logo-any" title={name}>
       <Sparkles aria-hidden="true" />
     </span>
   );
@@ -1238,13 +1127,16 @@ function ToolsBand() {
   const repeatedTools = [...TOOL_MARQUEE_NAMES, ...TOOL_MARQUEE_NAMES];
 
   return (
-    <section className="dsr-tools" aria-labelledby="tools-heading">
+    <section id="docking-layer" className="dsr-tools" aria-labelledby="tools-heading">
       <div className="dsr-tools-proof">
         <div className="dsr-tools-proof-copy">
           <h2 id="tools-heading">
-            Switch tools. <span>Keep the thread.</span>
+            One project. <span>Many sessions.</span>
           </h2>
-          <p>Decisions, files, failed paths, and next steps move with you.</p>
+          <p>
+            A source-backed continuity layer between the repository, the captured
+            session, and the coding agent you choose next.
+          </p>
         </div>
         <div
           className="dsr-tools-proof-diagram"
@@ -1271,13 +1163,13 @@ function ToolsBand() {
             <circle cx="3" cy="25" r="2.5" />
             <circle cx="93" cy="20" r="2.5" />
           </svg>
-          <aside className="dsr-tools-context-note" aria-label="Project context carried forward">
-            <span>THE WORK SO FAR</span>
-            <strong>comes with you.</strong>
+          <aside className="dsr-tools-context-note" aria-hidden="true">
+            <span>DAEMONSTATE / DOCKING LAYER</span>
+            <strong>Working state, compiled.</strong>
             <ul>
-              <li><i /> Decisions</li>
-              <li><i /> Key files</li>
-              <li><i /> Next step</li>
+              <li><i /> Workspace Context</li>
+              <li><i /> Session Context</li>
+              <li><i /> Next action</li>
             </ul>
           </aside>
         </div>
@@ -1296,46 +1188,293 @@ function ToolsBand() {
   );
 }
 
-function ProcessCard({ number, title, body, icon: Icon, tone, meta }) {
+function AgentStateShowcase() {
   return (
-    <article className={`dsr-stack-card dsr-stack-card-${tone}`}>
-      <header>
-        <span>STEP / {number}</span>
-        <Icon aria-hidden="true" />
-      </header>
-      <div className="dsr-stack-card-copy">
-        <h3>{title}</h3>
-        <p>{body}</p>
+    <section
+      id="how-it-works"
+      className="dsr-agent-showcase"
+      aria-labelledby="agent-showcase-heading"
+    >
+      <div className="dsr-section-shell">
+        <div className="dsr-agent-showcase-heading">
+          <SectionMarker label="The handoff gap" number="02" />
+          <div>
+            <h2 id="agent-showcase-heading">The work moved. The context stayed behind.</h2>
+            <p>
+              The tools are doing their jobs. The working state is still trapped
+              inside five different windows.
+            </p>
+          </div>
+        </div>
+
+        <div className="dsr-agent-grid">
+          {AGENT_WINDOWS.map(({ type, name }) => (
+            <AgentWindow key={type} type={type} name={name} />
+          ))}
+        </div>
+
+        <AgentDock />
       </div>
-      <div className="dsr-stack-card-visual" aria-hidden="true">
-        <span>{meta}</span>
-        <div>
-          <i />
-          <i />
-          <i />
-          <b><DaemonStateIcon size={46} /></b>
+    </section>
+  );
+}
+
+function MacWindowChrome({ name, title, status }) {
+  return (
+    <header className="dsr-agent-window-chrome">
+      <div className="dsr-mac-lights" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+      </div>
+      <div className="dsr-agent-window-title">
+        <span aria-hidden="true"><AgentLogo name={name} /></span>
+        <strong>{title}</strong>
+      </div>
+      <small>{status}</small>
+    </header>
+  );
+}
+
+function CheckRow({ children, pending = false }) {
+  return (
+    <li className={pending ? "is-pending" : undefined}>
+      <span aria-hidden="true">{pending ? "●" : "✓"}</span>
+      <span>{children}</span>
+    </li>
+  );
+}
+
+function AgentWindow({ type, name }) {
+  if (type === "codex") {
+    return (
+      <article className="dsr-agent-window is-codex" aria-label="Codex usage limit window">
+        <MacWindowChrome name={name} title="Codex — DaemonState" status="LOCAL" />
+        <div className="dsr-agent-window-body dsr-codex-ui">
+          <aside className="dsr-codex-rail" aria-hidden="true">
+            <span><AgentLogo name="Codex" /></span>
+            <i className="is-active" />
+            <i />
+            <i />
+            <i />
+          </aside>
+          <div className="dsr-codex-task">
+            <div className="dsr-agent-model-row">
+              <span>GPT-5.6 Sol</span>
+              <small>xhigh</small>
+            </div>
+            <p className="dsr-agent-prompt">Implement session restoration</p>
+            <ul className="dsr-agent-checklist">
+              <CheckRow>Parse previous sessions</CheckRow>
+              <CheckRow>Restore checkpoint state</CheckRow>
+              <CheckRow>Reconcile workspace changes</CheckRow>
+              <CheckRow>Update persistence layer</CheckRow>
+              <CheckRow pending>Integration tests <b>11 / 13</b></CheckRow>
+            </ul>
+            <code className="dsr-agent-terminal-line">
+              Running test_session_restore.py<span aria-hidden="true" />
+            </code>
+            <div className="dsr-codex-limit">
+              <span className="dsr-status-orb" aria-hidden="true" />
+              <div>
+                <strong>Usage limit reached</strong>
+                <small>Resets in 3h 42m</small>
+              </div>
+            </div>
+          </div>
+        </div>
+        <footer className="dsr-agent-window-foot">
+          <span>INTERRUPTED</span>
+          <small>2 checks remain</small>
+        </footer>
+      </article>
+    );
+  }
+
+  if (type === "claude") {
+    return (
+      <article className="dsr-agent-window is-claude" aria-label="Claude Code usage limit window">
+        <MacWindowChrome name={name} title="Claude Code — context-engine" status="zsh" />
+        <div className="dsr-agent-window-body dsr-claude-ui">
+          <div className="dsr-claude-command">
+            <span>❯</span>
+            <strong>Refactoring context compiler…</strong>
+          </div>
+          <span className="dsr-claude-model">Opus 5</span>
+          <ul className="dsr-agent-checklist">
+            <CheckRow>resolved stale-session merge</CheckRow>
+            <CheckRow>migrated continuation schema</CheckRow>
+            <CheckRow>updated 14 call sites</CheckRow>
+          </ul>
+          <div className="dsr-claude-next">
+            <span>Next</span>
+            <p>→ migrate workspace resolver</p>
+            <p>→ run regression suite</p>
+            <p>→ verify existing handoffs</p>
+          </div>
+          <blockquote>
+            “The remaining issue is likely in <b>workspaceResolver</b>…”
+          </blockquote>
+          <div className="dsr-claude-limit">
+            <strong>You&apos;ve hit your usage limit</strong>
+            <div><span>Weekly usage</span><b>100%</b></div>
+            <i aria-hidden="true"><span /></i>
+            <small>Resets Friday · 5:00 AM</small>
+          </div>
+        </div>
+        <footer className="dsr-agent-window-foot">
+          <span>THOUGHT STRANDED</span>
+          <small>deep refactor unfinished</small>
+        </footer>
+      </article>
+    );
+  }
+
+  if (type === "opencode") {
+    return (
+      <article className="dsr-agent-window is-opencode" aria-label="OpenCode review pending window">
+        <MacWindowChrome name={name} title="opencode — daemonstate" status="main" />
+        <div className="dsr-agent-window-body dsr-opencode-ui">
+          <div className="dsr-opencode-topline">
+            <span>deepseek-v4-flash</span>
+            <small>08:42</small>
+          </div>
+          <div className="dsr-opencode-done">
+            <span aria-hidden="true">✓</span>
+            <div><strong>DONE</strong><small>Implementation complete</small></div>
+          </div>
+          <div className="dsr-opencode-stats">
+            <span><small>FILES</small><b>24</b></span>
+            <span><small>TESTS</small><b>47 passed</b></span>
+            <span><small>COST</small><b>$0.11</b></span>
+          </div>
+          <div className="dsr-opencode-diff">
+            <span>git diff --stat</span>
+            <p><b>+1,284</b><i>−463</i></p>
+          </div>
+          <div className="dsr-opencode-review">
+            <span className="dsr-status-orb" aria-hidden="true" />
+            <strong>Review pending</strong>
+            <small>24 files changed</small>
+          </div>
+        </div>
+        <footer className="dsr-agent-window-foot">
+          <span>IMPLEMENTATION COMPLETE</span>
+          <small>review required</small>
+        </footer>
+      </article>
+    );
+  }
+
+  if (type === "cursor") {
+    return (
+      <article className="dsr-agent-window is-cursor" aria-label="Cursor large diff review window">
+        <MacWindowChrome name={name} title="context-engine — Cursor" status="Composer 2.5" />
+        <div className="dsr-agent-window-body dsr-cursor-ui">
+          <aside className="dsr-cursor-files" aria-hidden="true">
+            <strong>EXPLORER</strong>
+            <span>⌄ context-engine</span>
+            <span className="is-file">session-store.ts</span>
+            <span className="is-file">workspace.tsx</span>
+            <span className="is-file">context-router.ts</span>
+            <span className="is-file is-dim">api/client.ts</span>
+          </aside>
+          <div className="dsr-cursor-composer">
+            <div className="dsr-cursor-message">
+              <span>Composer 2.5</span>
+              <strong>Task completed</strong>
+              <ul>
+                <li>✓ Implemented new workspace flow</li>
+                <li>✓ Added loading states</li>
+                <li>✓ Updated API integration</li>
+                <li>✓ Refactored session cards</li>
+              </ul>
+            </div>
+            <div className="dsr-cursor-review">
+              <div>
+                <span>31 files changed</span>
+                <p><b>+2,418</b><i>−1,073</i></p>
+              </div>
+              <span className="dsr-cursor-review-button">Review changes</span>
+            </div>
+            <div className="dsr-cursor-problems">
+              <header><strong>PROBLEMS</strong><b>6</b></header>
+              <p><span>session-store.ts</span><b>2</b></p>
+              <p><span>workspace.tsx</span><b>3</b></p>
+              <p><span>context-router.ts</span><b>1</b></p>
+            </div>
+          </div>
+        </div>
+        <footer className="dsr-agent-window-foot">
+          <span>AGENT SAYS DONE</span>
+          <small>31 files need review</small>
+        </footer>
+      </article>
+    );
+  }
+
+  return (
+    <article className="dsr-agent-window is-gemini" aria-label="Gemini verification failed window">
+      <MacWindowChrome name={name} title="Antigravity — dashboard-redesign" status="Gemini" />
+      <div className="dsr-agent-window-body dsr-gemini-ui">
+        <div className="dsr-gemini-task">
+          <div className="dsr-gemini-spark"><AgentLogo name="Gemini" /></div>
+          <span>Build with Gemini</span>
+          <h3>Dashboard redesign</h3>
+          <ul className="dsr-agent-checklist">
+            <CheckRow>Dashboard redesign complete</CheckRow>
+            <CheckRow>Responsive styles added</CheckRow>
+            <CheckRow>Navigation updated</CheckRow>
+          </ul>
+          <div className="dsr-gemini-complete"><span>✓</span><strong>Task completed</strong></div>
+        </div>
+        <div className="dsr-gemini-verify">
+          <header><span>VERIFY</span><strong>Needs attention</strong></header>
+          <div><span>Build</span><b>FAILED</b></div>
+          <div><span>Console errors</span><b>3</b></div>
+          <div><span>Visual checks</span><b>2 / 4</b></div>
+          <div><span>Unexpected files</span><b>4</b></div>
         </div>
       </div>
-      <small>{number} / 03</small>
+      <footer className="dsr-agent-window-foot">
+        <span>DONE ≠ VERIFIED</span>
+        <small>reality needs a second pass</small>
+      </footer>
     </article>
   );
 }
 
-function FeatureCard({ number, title, body, icon: Icon }) {
+function AgentDock() {
   return (
-    <article className="dsr-feature-card">
-      <header>
-        <span>/{number}</span>
-        <Icon aria-hidden="true" />
-      </header>
-      <div>
-        <h3>{title}</h3>
-        <p>{body}</p>
+    <div className="dsr-agent-dock" aria-labelledby="agent-dock-heading">
+      <div className="dsr-agent-dock-copy">
+        <span>DAEMONSTATE / CONTINUITY LAYER</span>
+        <h3 id="agent-dock-heading">Your work doesn&apos;t belong to the session.</h3>
+        <p>
+          Carry the goal, decisions, changes, failed paths, files, checks, and
+          next action into whichever agent opens next.
+        </p>
       </div>
-      <span className="dsr-feature-arrow" aria-hidden="true">
-        <ArrowUpRight />
-      </span>
-    </article>
+      <div className="dsr-agent-dock-visual" aria-hidden="true">
+        <div className="dsr-agent-dock-sources">
+          {AGENT_WINDOWS.map(({ type, name }) => (
+            <span key={type}><AgentLogo name={name} /></span>
+          ))}
+        </div>
+        <div className="dsr-agent-dock-lines">
+          {AGENT_WINDOWS.map(({ type }) => <i key={type} />)}
+        </div>
+        <div className="dsr-agent-dock-core">
+          <DaemonStateIcon size={30} />
+          <div><strong>Context restored</strong><small>Start from the next action</small></div>
+          <ArrowRight />
+        </div>
+        <div className="dsr-agent-dock-packets">
+          {["GOAL", "DECISIONS", "CHANGES", "FAILED PATHS", "FILES", "CHECKS", "NEXT STEP"]
+            .map((item) => <span key={item}>{item}</span>)}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1360,16 +1499,16 @@ function AnimatedPhrase({ text, offset = false }) {
 
 function MemoryConsole() {
   return (
-    <div className="dsr-memory-console" aria-label="Persistent project memory architecture">
+    <div className="dsr-memory-console" aria-label="Working-state handoff architecture">
       <header>
-        <span><Code2 /> PROJECT MEMORY</span>
-        <span className="dsr-memory-live"><i /> LIVE</span>
+        <span><Code2 /> WORKING STATE</span>
+        <span className="dsr-memory-live"><i /> CURRENT</span>
       </header>
 
       <div className="dsr-memory-console-body">
         <div className="dsr-memory-inputs">
-          <span><History /> Session history</span>
-          <span><Code2 /> Repository state</span>
+          <span><History /> Session checkpoint</span>
+          <span><Code2 /> Repository snapshot</span>
           <span><Database /> Decisions + evidence</span>
         </div>
         <div className="dsr-memory-flow" aria-hidden="true">
@@ -1395,7 +1534,7 @@ function MemoryConsole() {
           <Sparkles aria-hidden="true" />
           <div>
             <span>NEXT AGENT</span>
-            <strong>Already up to speed.</strong>
+            <strong>Ready to copy.</strong>
           </div>
           <ArrowRight aria-hidden="true" />
         </div>
@@ -1418,15 +1557,16 @@ function LandingFooter({ waitlistOnlyMode }) {
           <DaemonStateIcon size={34} />
           <span>DaemonState</span>
         </Link>
-        <p>Persistent project context for every coding agent.</p>
+        <p>Source-backed continuity for coding agents.</p>
       </div>
 
       <nav aria-label="Footer navigation">
         <div>
           <span>Explore</span>
           <a href="#problem">Why</a>
+          <a href="#docking-layer">The layer</a>
           <a href="#how-it-works">How it works</a>
-          <a href="#project-memory">Project memory</a>
+          <a href="#project-memory">Working state</a>
         </div>
         <div>
           <span>Product</span>
@@ -1443,7 +1583,7 @@ function LandingFooter({ waitlistOnlyMode }) {
 
       <div className="dsr-footer-bottom">
         <span>© 2026 DaemonState</span>
-        <span>Built for uninterrupted work.</span>
+        <span>Built for source-backed continuity.</span>
       </div>
     </footer>
   );

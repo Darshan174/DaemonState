@@ -114,6 +114,24 @@ describe("session context quality messaging", () => {
     );
   });
 
+  it.each([
+    ["direction_required", "Context ready · Direction required", "does not authorize"],
+    ["intent_resolution_required", "Context ready · Intent required", "actionable objective"],
+  ])(
+    "keeps %s context copyable while exposing the stop state",
+    (status, label, advisoryText) => {
+      const handoff = readyHandoff({
+        efficiency_target: { within_target: true, overflow_tokens: 0 },
+        destination_limit: { status: "too_large", overflow_tokens: 91 },
+      });
+      handoff.readiness.status = status;
+
+      expect(sessionContextSemanticCopyReady(handoff)).toBe(true);
+      expect(sessionContextReadinessLabel(handoff)).toBe(label);
+      expect(sessionContextAdvisories(handoff)[0]).toContain(advisoryText);
+    },
+  );
+
   it("labels an unresolved multi-repository choice explicitly", () => {
     const handoff = readyHandoff({
       efficiency_target: { within_target: true },

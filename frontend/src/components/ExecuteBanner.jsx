@@ -26,7 +26,7 @@ export default function ExecuteBanner({
 }) {
   const Heading = headingLevel === 1 ? "h1" : "h2";
   const bannerClassName = [
-    "daemonstate-resume-header group relative min-h-56 overflow-hidden rounded-[2rem] border border-[#d8d8cf] bg-[#f7f7f1] px-5 py-7 text-[#171713] dark:border-[#292925] dark:bg-[#0c0c0a] dark:text-white sm:px-8 sm:py-9 lg:px-10",
+    "daemonstate-resume-header group relative min-h-56 overflow-visible rounded-[2rem] border border-[#d8d8cf] bg-[#f7f7f1] px-5 py-7 text-[#171713] dark:border-[#292925] dark:bg-[#0c0c0a] dark:text-white sm:px-8 sm:py-9 lg:px-10",
     to
       ? "block shadow-[0_18px_54px_rgba(23,23,19,0.08)] transition hover:-translate-y-0.5 hover:border-[#aebf69] hover:shadow-[0_22px_62px_rgba(23,23,19,0.12)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#849633]/70 motion-reduce:hover:translate-y-0 dark:shadow-[0_18px_54px_rgba(0,0,0,0.20)] dark:hover:border-[#d9ff68]/45 dark:hover:shadow-[0_22px_62px_rgba(0,0,0,0.30)] dark:focus-visible:ring-[#d9ff68]/70"
       : "",
@@ -36,9 +36,14 @@ export default function ExecuteBanner({
     <>
       <div
         aria-hidden="true"
-        className="absolute -right-20 -top-24 h-72 w-72 rounded-full bg-[#d9ff68]/25 blur-3xl dark:bg-[#d9ff68]/10"
-      />
-      <HarnessDeckBackdrop centered={Boolean(to)} />
+        data-execute-banner-decor
+        className="pointer-events-none absolute inset-0 overflow-hidden rounded-[inherit]"
+      >
+        <div
+          className="absolute -right-20 -top-24 h-72 w-72 rounded-full bg-[#d9ff68]/25 blur-3xl dark:bg-[#d9ff68]/10"
+        />
+        <HarnessDeckBackdrop centered={Boolean(to)} />
+      </div>
       <div className={`relative flex items-start justify-between gap-4 ${to ? "pr-14 sm:pr-20" : ""}`}>
         <div className="min-w-0">
           <Heading

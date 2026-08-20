@@ -111,10 +111,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   command -v swift >/dev/null 2>&1 \
     || error "Swift is required for browser-to-desktop Continue on macOS. Install Xcode Command Line Tools and retry."
   info "Building the native macOS context helper…"
-  swift build \
-    --disable-sandbox \
-    --package-path desktop/macos/DaemonStateOverlay \
-    -c release
+  bash scripts/ensure-native-context-helper.sh
   success "Native context helper built"
 fi
 

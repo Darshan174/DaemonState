@@ -357,39 +357,20 @@ struct DaemonStateAPITests {
         let content = "# Current Session Context\n\nContinue the exact active task."
         let contentSHA = sha256(content)
         var paths: [String] = []
+        var handoffBody: [String: Any]?
         let api = makeAPI { request in
             let path = request.url!.path
             paths.append(path)
             switch path {
-            case "/api/connectors/ai-session/refresh-linked":
-                return URLProtocolStub.response(
-                    for: request,
-                    json: """
-                    {
-                      "workspace_id": "workspace-1",
-                      "linked_sessions": 1,
-                      "refreshed": 1,
-                      "errors": []
-                    }
-                    """
-                )
-            case "/api/context/digest":
+            case "/api/session-library/latest":
+                #expect(request.httpMethod == "POST")
                 #expect(
-                    URLComponents(
-                        url: request.url!,
-                        resolvingAgainstBaseURL: false
-                    )?.queryItems?.first(where: {
-                        $0.name == "workspace_id"
-                    })?.value == "workspace-1"
+                    try self.jsonBody(request)["workspace_id"] as? String
+                        == "workspace-1"
                 )
                 return URLProtocolStub.response(
                     for: request,
-                    json: self.digestJSON()
-                )
-            case "/api/checkpoints/session-context-eligibility":
-                return URLProtocolStub.response(
-                    for: request,
-                    json: self.eligibilityJSON()
+                    json: self.latestLocalSessionJSON()
                 )
             case "/api/checkpoints/latest":
                 let query = Dictionary(
@@ -407,6 +388,7 @@ struct DaemonStateAPITests {
                 )
             case "/api/checkpoints/checkpoint-1/handoff":
                 #expect(request.httpMethod == "POST")
+                handoffBody = try self.jsonBody(request)
                 return URLProtocolStub.response(
                     for: request,
                     json: self.handoffJSON(content: content, sha256: contentSHA)
@@ -423,13 +405,13 @@ struct DaemonStateAPITests {
 
         #expect(
             paths == [
-                "/api/connectors/ai-session/refresh-linked",
-                "/api/context/digest",
-                "/api/checkpoints/session-context-eligibility",
+                "/api/session-library/latest",
                 "/api/checkpoints/latest",
                 "/api/checkpoints/checkpoint-1/handoff",
             ]
         )
+        #expect(handoffBody?["workspace_id"] as? String == "workspace-1")
+        #expect(handoffBody?["handoff_origin"] as? String == "current_active")
         #expect(result.content == content)
         #expect(result.scope == .session)
         #expect(result.provider == "codex")
@@ -443,6 +425,7 @@ struct DaemonStateAPITests {
         defer { URLProtocolStub.reset() }
         let content = "# Current Session Context\n\nContinue Claude session nine."
         var paths: [String] = []
+        var handoffBody: [String: Any]?
         let api = makeAPI { request in
             let path = request.url!.path
             paths.append(path)
@@ -477,6 +460,7 @@ struct DaemonStateAPITests {
                     )
                 )
             case "/api/checkpoints/claude-checkpoint-9/handoff":
+                handoffBody = try self.jsonBody(request)
                 return URLProtocolStub.response(
                     for: request,
                     json: self.handoffJSON(
@@ -509,6 +493,8 @@ struct DaemonStateAPITests {
         #expect(result.provider == "claude")
         #expect(result.sessionID == "claude-session-9")
         #expect(result.checkpointID == "claude-checkpoint-9")
+        #expect(handoffBody?["workspace_id"] as? String == "workspace-1")
+        #expect(handoffBody?["handoff_origin"] == nil)
     }
 
     @Test
@@ -640,15 +626,15 @@ struct DaemonStateAPITests {
     func sessionContextRetriesTheWholeFlowAfterATransientServerError() async throws {
         defer { URLProtocolStub.reset() }
         let content = "# Current Session Context\n\nRetry the transient failure."
-        var refreshAttempts = 0
+        var discoveryAttempts = 0
         var paths: [String] = []
         let api = makeAPI(sessionContextRetryDelays: [.zero]) { request in
             let path = request.url!.path
             paths.append(path)
             switch path {
-            case "/api/connectors/ai-session/refresh-linked":
-                refreshAttempts += 1
-                if refreshAttempts == 1 {
+            case "/api/session-library/latest":
+                discoveryAttempts += 1
+                if discoveryAttempts == 1 {
                     return URLProtocolStub.response(
                         for: request,
                         statusCode: 500,
@@ -665,24 +651,7 @@ struct DaemonStateAPITests {
                 }
                 return URLProtocolStub.response(
                     for: request,
-                    json: """
-                    {
-                      "workspace_id": "workspace-1",
-                      "linked_sessions": 1,
-                      "refreshed": 1,
-                      "errors": []
-                    }
-                    """
-                )
-            case "/api/context/digest":
-                return URLProtocolStub.response(
-                    for: request,
-                    json: self.digestJSON()
-                )
-            case "/api/checkpoints/session-context-eligibility":
-                return URLProtocolStub.response(
-                    for: request,
-                    json: self.eligibilityJSON()
+                    json: self.latestLocalSessionJSON()
                 )
             case "/api/checkpoints/latest":
                 return URLProtocolStub.response(
@@ -708,14 +677,154 @@ struct DaemonStateAPITests {
         )
 
         #expect(result.content == content)
-        #expect(refreshAttempts == 2)
+        #expect(discoveryAttempts == 2)
         #expect(
             paths.prefix(2)
                 == [
-                    "/api/connectors/ai-session/refresh-linked",
-                    "/api/connectors/ai-session/refresh-linked",
+                    "/api/session-library/latest",
+                    "/api/session-library/latest",
                 ]
         )
+    }
+
+    @Test
+    func currentActiveHandoffMismatchRetriesDiscoveryCheckpointAndHandoff() async throws {
+        defer { URLProtocolStub.reset() }
+        let content = "# Current Session Context\n\nContinue after tip drift."
+        var discoveryAttempts = 0
+        var checkpointAttempts = 0
+        var handoffAttempts = 0
+        var paths: [String] = []
+        let api = makeAPI(sessionContextRetryDelays: [.zero]) { request in
+            let path = request.url!.path
+            paths.append(path)
+            switch path {
+            case "/api/session-library/latest":
+                discoveryAttempts += 1
+                #expect(request.httpMethod == "POST")
+                #expect(
+                    try self.jsonBody(request)["workspace_id"] as? String
+                        == "workspace-1"
+                )
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.latestLocalSessionJSON()
+                )
+            case "/api/checkpoints/latest":
+                checkpointAttempts += 1
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.checkpointJSON()
+                )
+            case "/api/checkpoints/checkpoint-1/handoff":
+                handoffAttempts += 1
+                #expect(
+                    try self.jsonBody(request)["handoff_origin"] as? String
+                        == "current_active"
+                )
+                if handoffAttempts == 1 {
+                    return URLProtocolStub.response(
+                        for: request,
+                        statusCode: 409,
+                        json: """
+                        {
+                          "detail": {
+                            "code": "current_active_handoff_mismatch",
+                            "message": "The current session tip changed."
+                          }
+                        }
+                        """
+                    )
+                }
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.handoffJSON(
+                        content: content,
+                        sha256: self.sha256(content)
+                    )
+                )
+            default:
+                throw URLError(.badURL)
+            }
+        }
+
+        let result = try await api.fetchContext(
+            scope: .session,
+            workspaceID: "workspace-1"
+        )
+
+        #expect(result.content == content)
+        #expect(discoveryAttempts == 2)
+        #expect(checkpointAttempts == 2)
+        #expect(handoffAttempts == 2)
+        #expect(
+            paths == [
+                "/api/session-library/latest",
+                "/api/checkpoints/latest",
+                "/api/checkpoints/checkpoint-1/handoff",
+                "/api/session-library/latest",
+                "/api/checkpoints/latest",
+                "/api/checkpoints/checkpoint-1/handoff",
+            ]
+        )
+    }
+
+    @Test
+    func repeatedCurrentActiveHandoffMismatchBecomesActionable() async {
+        defer { URLProtocolStub.reset() }
+        var handoffAttempts = 0
+        let api = makeAPI(sessionContextRetryDelays: [.zero]) { request in
+            switch request.url!.path {
+            case "/api/session-library/latest":
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.latestLocalSessionJSON()
+                )
+            case "/api/checkpoints/latest":
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.checkpointJSON()
+                )
+            case "/api/checkpoints/checkpoint-1/handoff":
+                handoffAttempts += 1
+                return URLProtocolStub.response(
+                    for: request,
+                    statusCode: 409,
+                    json: """
+                    {
+                      "detail": {
+                        "code": "current_active_handoff_mismatch",
+                        "message": "The current session tip changed."
+                      }
+                    }
+                    """
+                )
+            default:
+                throw URLError(.badURL)
+            }
+        }
+
+        do {
+            _ = try await api.fetchContext(
+                scope: .session,
+                workspaceID: "workspace-1"
+            )
+            Issue.record("Expected repeated current-session drift to fail")
+        } catch let error as DaemonStateError {
+            #expect(
+                error == .activeSessionUnavailable(
+                    "the session changed while its context was being prepared. "
+                        + "Wait for the current provider response to finish, then try again."
+                )
+            )
+            #expect(
+                error.localizedDescription
+                    == "Current Session Context is unavailable: the session changed while its context was being prepared. Wait for the current provider response to finish, then try again."
+            )
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        #expect(handoffAttempts == 2)
     }
 
     @Test
@@ -834,27 +943,10 @@ struct DaemonStateAPITests {
         var captureBody: [String: Any]?
         let api = makeAPI { request in
             switch request.url!.path {
-            case "/api/connectors/ai-session/refresh-linked":
+            case "/api/session-library/latest":
                 return URLProtocolStub.response(
                     for: request,
-                    json: """
-                    {
-                      "workspace_id": "workspace-1",
-                      "linked_sessions": 1,
-                      "refreshed": 1,
-                      "errors": []
-                    }
-                    """
-                )
-            case "/api/context/digest":
-                return URLProtocolStub.response(
-                    for: request,
-                    json: self.digestJSON()
-                )
-            case "/api/checkpoints/session-context-eligibility":
-                return URLProtocolStub.response(
-                    for: request,
-                    json: self.eligibilityJSON()
+                    json: self.latestLocalSessionJSON()
                 )
             case "/api/checkpoints/latest":
                 return URLProtocolStub.response(
@@ -893,34 +985,77 @@ struct DaemonStateAPITests {
     }
 
     @Test
-    func sessionContextStopsBeforeCheckpointCaptureWhenCompactionsAreMissing() async {
+    func currentSessionSkipsHistoricalCompactionPrecheckAndMarksHandoffOrigin() async throws {
+        defer { URLProtocolStub.reset() }
+        let content = "# Current Session Context\n\nContinue the active session."
+        var paths: [String] = []
+        var handoffBody: [String: Any]?
+        let api = makeAPI { request in
+            let path = request.url!.path
+            paths.append(path)
+            switch path {
+            case "/api/session-library/latest":
+                #expect(request.httpMethod == "POST")
+                #expect(
+                    try self.jsonBody(request)["workspace_id"] as? String
+                        == "workspace-1"
+                )
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.latestLocalSessionJSON()
+                )
+            case "/api/checkpoints/latest":
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.checkpointJSON()
+                )
+            case "/api/checkpoints/checkpoint-1/handoff":
+                handoffBody = try self.jsonBody(request)
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.handoffJSON(
+                        content: content,
+                        sha256: self.sha256(content)
+                    )
+                )
+            default:
+                throw URLError(.badURL)
+            }
+        }
+
+        let result = try await api.fetchContext(
+            scope: .session,
+            workspaceID: "workspace-1"
+        )
+
+        #expect(
+            paths == [
+                "/api/session-library/latest",
+                "/api/checkpoints/latest",
+                "/api/checkpoints/checkpoint-1/handoff",
+            ]
+        )
+        #expect(result.content == content)
+        #expect(handoffBody?["workspace_id"] as? String == "workspace-1")
+        #expect(handoffBody?["handoff_origin"] as? String == "current_active")
+    }
+
+    @Test
+    func explicitHistoricalSessionKeepsActionableCompactionGate() async {
         defer { URLProtocolStub.reset() }
         var paths: [String] = []
         let api = makeAPI { request in
             let path = request.url!.path
             paths.append(path)
             switch path {
-            case "/api/connectors/ai-session/refresh-linked":
-                return URLProtocolStub.response(
-                    for: request,
-                    json: """
-                    {
-                      "workspace_id": "workspace-1",
-                      "linked_sessions": 1,
-                      "refreshed": 1,
-                      "errors": []
-                    }
-                    """
-                )
-            case "/api/context/digest":
-                return URLProtocolStub.response(
-                    for: request,
-                    json: self.digestJSON()
-                )
             case "/api/checkpoints/session-context-eligibility":
                 return URLProtocolStub.response(
                     for: request,
-                    json: self.eligibilityJSON(compactionCount: 0)
+                    json: self.eligibilityJSON(
+                        provider: "claude",
+                        sessionID: "claude-session-9",
+                        compactionCount: 1
+                    )
                 )
             default:
                 throw URLError(.badURL)
@@ -928,66 +1063,44 @@ struct DaemonStateAPITests {
         }
 
         do {
-            _ = try await api.fetchContext(
-                scope: .session,
-                workspaceID: "workspace-1"
+            _ = try await api.fetchSessionContext(
+                workspaceID: "workspace-1",
+                provider: "claude",
+                sessionID: "claude-session-9"
             )
-            Issue.record("Expected the compaction gate to reject Session Context")
+            Issue.record("Expected the historical compaction gate to reject Session Context")
         } catch let error as DaemonStateError {
             #expect(
-                error == .activeSessionUnavailable(
-                    "2 compactions required (0/2)."
+                error == .sessionContextCompactionsRequired(
+                    compactionCount: 1,
+                    minimumCompactions: 2
                 )
+            )
+            #expect(
+                error.localizedDescription
+                    == "Session Context is not ready yet: 1 of 2 provider compactions detected. Continue the source session, then try again."
             )
         } catch {
             Issue.record("Unexpected error: \(error)")
         }
-        #expect(
-            paths == [
-                "/api/connectors/ai-session/refresh-linked",
-                "/api/context/digest",
-                "/api/checkpoints/session-context-eligibility",
-            ]
-        )
+        #expect(paths == ["/api/checkpoints/session-context-eligibility"])
     }
 
     @Test
-    func sessionContextFailsClosedForUnassignedPrimarySession() async {
+    func sessionContextFailsClosedWhenLatestLocalSessionIsUnavailable() async {
         defer { URLProtocolStub.reset() }
         let api = makeAPI { request in
             switch request.url!.path {
-            case "/api/connectors/ai-session/refresh-linked":
+            case "/api/session-library/latest":
                 return URLProtocolStub.response(
                     for: request,
                     json: """
                     {
-                      "workspace_id": "workspace-1",
-                      "linked_sessions": 1,
-                      "refreshed": 1,
-                      "errors": []
-                    }
-                    """
-                )
-            case "/api/context/digest":
-                return URLProtocolStub.response(
-                    for: request,
-                    json: """
-                    {
-                      "workspace_id": "workspace-1",
-                      "activity": {
-                        "schema_version": "now_activity.v1",
-                        "primary": {
-                          "kind": "agent_session",
-                          "state": "unassigned",
-                          "evidence_level": "session_unassigned",
-                          "provider": "codex",
-                          "session_id": "other-session",
-                          "refreshable": true,
-                          "project_match": {"status": "unknown"}
-                        },
-                        "recent_sessions": []
+                      "sync": {
+                        "workspace_id": "workspace-1",
+                        "mode": "latest"
                       },
-                      "current_goal": null
+                      "session": null
                     }
                     """
                 )
@@ -1001,7 +1114,7 @@ struct DaemonStateAPITests {
                 scope: .session,
                 workspaceID: "workspace-1"
             )
-            Issue.record("Expected unassigned activity to be rejected")
+            Issue.record("Expected missing latest local session to be rejected")
         } catch let error as DaemonStateError {
             guard case .activeSessionUnavailable = error else {
                 Issue.record("Unexpected error: \(error)")
@@ -1250,6 +1363,24 @@ struct DaemonStateAPITests {
           },
           "current_goal": {
             "title": "Build the floating context overlay."
+          }
+        }
+        """
+    }
+
+    private func latestLocalSessionJSON(
+        provider: String = "codex",
+        sessionID: String = "session-1"
+    ) -> String {
+        """
+        {
+          "sync": {
+            "workspace_id": "workspace-1",
+            "mode": "latest"
+          },
+          "session": {
+            "connector_type": "\(provider)",
+            "session_id": "\(sessionID)"
           }
         }
         """

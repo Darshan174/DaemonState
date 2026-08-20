@@ -4,6 +4,9 @@
 # Opt in to backend reloads with DAEMONSTATE_BACKEND_RELOAD=1.
 set -euo pipefail
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${repo_root}"
+
 echo "Starting DaemonState in development mode…"
 echo "  Backend:  http://localhost:8000"
 echo "  Frontend: http://localhost:5000"
@@ -14,6 +17,8 @@ if [[ -z "${PYTHON_BIN}" && -x ".venv/bin/python" ]]; then
   PYTHON_BIN=".venv/bin/python"
 fi
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+
+bash scripts/ensure-native-context-helper.sh
 
 # Trap to kill both processes on exit
 cleanup() { kill 0 2>/dev/null; }

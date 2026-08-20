@@ -32,6 +32,8 @@ if [[ -z "${PYTHON_BIN}" && -x ".venv/bin/python" ]]; then
 fi
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
+bash scripts/ensure-native-context-helper.sh
+
 if [[ ! "${PORT}" =~ ^[0-9]{1,5}$ ]] || (( PORT < 1 || PORT > 65535 )); then
   echo "PORT must be between 1 and 65535." >&2
   exit 1

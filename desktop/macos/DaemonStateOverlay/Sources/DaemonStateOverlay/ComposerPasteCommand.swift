@@ -6,6 +6,8 @@ private let maximumComposerContextBytes = 1_048_576
 
 enum ComposerTargetPolicy: String {
     case openCodeChatComposerV1 = "opencode-chat-composer-v1"
+    case openCodeFocusedChatComposerV1 =
+        "opencode-focused-chat-composer-v1"
 }
 
 struct ComposerPasteConfiguration {
@@ -16,6 +18,7 @@ struct ComposerPasteConfiguration {
     let routeGraceMilliseconds: Int
     let targetPolicy: ComposerTargetPolicy?
     let targetMarker: String?
+    let expectedProjectDirectory: String?
 
     static func parse(arguments: [String]) -> ComposerPasteConfiguration? {
         guard arguments.contains("--paste-stdin") else { return nil }
@@ -29,6 +32,8 @@ struct ComposerPasteConfiguration {
         var targetPolicyWasSupplied = false
         var targetMarker: String?
         var targetMarkerWasSupplied = false
+        var expectedProjectDirectory: String?
+        var expectedProjectDirectoryWasSupplied = false
         var index = 1
         while index < arguments.count {
             switch arguments[index] {
@@ -77,6 +82,20 @@ struct ComposerPasteConfiguration {
                     targetMarker = value
                 }
                 index += 2
+            case "--expected-project-directory" where index + 1 < arguments.count:
+                expectedProjectDirectoryWasSupplied = true
+                let value = URL(fileURLWithPath: arguments[index + 1])
+                    .standardizedFileURL.resolvingSymlinksInPath().path
+                var isDirectory: ObjCBool = false
+                if value.hasPrefix("/"),
+                   FileManager.default.fileExists(
+                       atPath: value,
+                       isDirectory: &isDirectory
+                   ), isDirectory.boolValue
+                {
+                    expectedProjectDirectory = value
+                }
+                index += 2
             default:
                 // overlay.sh may append its normal control token. Ignore
                 // unrelated pairs; the one-shot mode never opens overlay IPC.
@@ -93,12 +112,25 @@ struct ComposerPasteConfiguration {
         switch targetPolicy {
         case .openCodeChatComposerV1:
             guard targetMarker != nil,
+                  expectedProjectDirectoryWasSupplied,
+                  expectedProjectDirectory != nil,
+                  expectedBundleIdentifiers == ["ai.opencode.desktop"]
+            else {
+                return nil
+            }
+        case .openCodeFocusedChatComposerV1:
+            guard !targetMarkerWasSupplied,
+                  targetMarker == nil,
+                  !expectedProjectDirectoryWasSupplied,
+                  expectedProjectDirectory == nil,
                   expectedBundleIdentifiers == ["ai.opencode.desktop"]
             else {
                 return nil
             }
         case nil:
             guard targetMarker == nil,
+                  !expectedProjectDirectoryWasSupplied,
+                  expectedProjectDirectory == nil,
                   !expectedBundleIdentifiers.contains("ai.opencode.desktop")
             else {
                 return nil
@@ -111,7 +143,8 @@ struct ComposerPasteConfiguration {
             focusSettleMilliseconds: focusSettleMilliseconds,
             routeGraceMilliseconds: routeGraceMilliseconds,
             targetPolicy: targetPolicy,
-            targetMarker: targetMarker
+            targetMarker: targetMarker,
+            expectedProjectDirectory: expectedProjectDirectory
         )
     }
 
@@ -230,6 +263,26 @@ enum ComposerPasteCommand {
         }
 
         let service = FocusedTextPasteService()
+        if configuration.targetPolicy != nil,
+           !service.openCodeApplicationSupportsVerifiedComposer(
+               at: configuration.expectedBundlePath
+           )
+        {
+            emit(
+                result(
+                    code: "desktop_app_version_unsupported",
+                    message: (
+                        "The installed OpenCode Desktop build has not been "
+                            + "audited for safe focused-composer insertion."
+                    ),
+                    action: (
+                        "Install OpenCode Desktop 1.18.18, then retry Continue."
+                    ),
+                    configuration: configuration
+                )
+            )
+            return 69
+        }
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(
             by: .milliseconds(configuration.focusTimeoutMilliseconds)
@@ -294,7 +347,14 @@ enum ComposerPasteCommand {
                 allowNonEditableApplicationFallback: false,
                 allowMissingFocusedElementFallback: false,
                 requireExactInsertionReadback: true,
+                requireFocusedEmptyOpenCodeComposer: (
+                    configuration.targetPolicy
+                        == .openCodeFocusedChatComposerV1
+                ),
                 discoverEditableWithExactValue: configuration.targetMarker,
+                attestingOpenCodeProjectDirectory: (
+                    configuration.expectedProjectDirectory
+                ),
                 discoveryDeadline: deadline
             )
             switch capture {
@@ -319,11 +379,9 @@ enum ComposerPasteCommand {
                 )
                 return 77
             case .editable:
-                // A deep link can focus the app while its old editor is still
-                // visible. Generic providers require a stable empty editor.
-                // OpenCode requires the unique editor containing the random
-                // marker placed by its new-session route; this positively
-                // distinguishes the chat composer from its integrated terminal.
+                // Generic providers require a stable empty editor. OpenCode's
+                // focused-composer policy additionally requires one unique,
+                // visible normal chat composer and exact input-state readback.
                 if let expectedAppStableSince,
                    Date().timeIntervalSince(expectedAppStableSince)
                     >= Double(configuration.routeGraceMilliseconds) / 1_000
@@ -356,8 +414,15 @@ enum ComposerPasteCommand {
                         allowNonEditableApplicationFallback: false,
                         allowMissingFocusedElementFallback: false,
                         requireExactInsertionReadback: true,
+                        requireFocusedEmptyOpenCodeComposer: (
+                            configuration.targetPolicy
+                                == .openCodeFocusedChatComposerV1
+                        ),
                         discoverEditableWithExactValue: (
                             configuration.targetMarker
+                        ),
+                        attestingOpenCodeProjectDirectory: (
+                            configuration.expectedProjectDirectory
                         ),
                         discoveryDeadline: deadline
                     )
@@ -392,7 +457,7 @@ enum ComposerPasteCommand {
                 try? await Task.sleep(nanoseconds: 100_000_000)
             case .application:
                 try? await Task.sleep(nanoseconds: 100_000_000)
-            case .unavailable:
+            case .openCodeNewComposer, .copyOnly, .unavailable:
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
         }
@@ -477,6 +542,53 @@ enum ComposerPasteCommand {
         do {
             let outcome = try await service.deliver(content, to: capture)
             switch outcome {
+            case .alreadyPresentInVerifiedOpenCodeComposer:
+                // This outcome belongs only to the interactive floating
+                // workflow. One-shot Continue must still prove that its exact
+                // provider marker was replaced during this invocation.
+                emit(
+                    result(
+                        code: "desktop_context_insertion_unverified",
+                        message: "The native helper reported content already present in an OpenCode draft. No marker replacement was proven.",
+                        action: "Inspect the OpenCode draft before retrying Continue.",
+                        configuration: configuration,
+                        observedBundleIdentifier: observedBundleIdentifier,
+                        openVerified: true
+                    )
+                )
+                return 79
+            case .insertedIntoVerifiedEmptyComposerWithInputSync:
+                guard configuration.targetPolicy
+                        == .openCodeFocusedChatComposerV1
+                else {
+                    emit(
+                        result(
+                            code: "desktop_context_insertion_unverified",
+                            message: "The native helper reported an unexpected empty-composer insertion.",
+                            action: "Inspect the OpenCode draft before retrying Continue.",
+                            configuration: configuration,
+                            observedBundleIdentifier: observedBundleIdentifier,
+                            openVerified: true
+                        )
+                    )
+                    return 79
+                }
+                emit(
+                    result(
+                        code: "desktop_context_inserted",
+                        message: "The complete context was inserted into the verified focused OpenCode chat composer and its input state was synchronized. Exact readback succeeded and nothing was submitted.",
+                        action: "Review the draft, then submit it when ready.",
+                        configuration: configuration,
+                        observedBundleIdentifier: observedBundleIdentifier,
+                        openVerified: true,
+                        pasteRequested: true,
+                        pasteVerified: true,
+                        pasteMethod: "accessibility_verified_input_sync",
+                        targetIdentityVerified: true,
+                        markerReplaced: false
+                    )
+                )
+                return 0
             case .markerReplacedWithVerifiedInputSync:
                 guard configuration.targetPolicy == .openCodeChatComposerV1 else {
                     emit(
@@ -616,8 +728,14 @@ enum ComposerPasteCommand {
         targetIdentityVerified: Bool = false,
         markerReplaced: Bool = false
     ) -> ComposerPasteResult {
-        let strictTargetVerified = configuration?.targetPolicy == nil
-            || (targetIdentityVerified && markerReplaced)
+        let strictTargetVerified = switch configuration?.targetPolicy {
+        case nil:
+            true
+        case .openCodeChatComposerV1:
+            targetIdentityVerified && markerReplaced
+        case .openCodeFocusedChatComposerV1:
+            targetIdentityVerified && !markerReplaced
+        }
         return ComposerPasteResult(
             schemaVersion: composerPasteSchema,
             code: code,

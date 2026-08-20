@@ -126,6 +126,28 @@ _EXPLICIT_TASK_ACTION_RE = re.compile(
     r"make|remove|repair|replace|run|ship|test|update|verify|write)\b",
     re.IGNORECASE,
 )
+_TASK_DIRECTIVE_VERBS = (
+    r"add|audit|build|change|check|correct|create|debug|diagnose|document|engineer|"
+    r"explain|fix|implement|improve|investigate|make|remove|rename|repair|replace|"
+    r"report|restore|revert|review|redo|rework|run|ship|summari[sz]e|tell|test|"
+    r"try\s+again|update|verify|write"
+)
+_AFFIRMATIVE_TASK_DIRECTIVE_RE = re.compile(
+    r"^\s*(?:please\s+)?continue\s+(?:with\s+)?(?:the\s+)?"
+    r"(?:existing|current|same|previous)\b|"
+    rf"(?:^|[.!?;,:—–-]\s*)(?:(?:and|but|now|then)\s+)?(?:please\s+)?"
+    rf"(?:{_TASK_DIRECTIVE_VERBS})\b|"
+    rf"\b(?:can|could|would|will)\s+you\s+(?:please\s+)?"
+    rf"(?:{_TASK_DIRECTIVE_VERBS})\b|"
+    r"\b(?:i\s+(?:need|want)\s+you\s+to|you\s+(?:need|must|should)\s+to)\s+"
+    rf"(?:{_TASK_DIRECTIVE_VERBS})\b",
+    re.IGNORECASE,
+)
+_ACTIONABLE_FEEDBACK_TAIL_RE = re.compile(
+    rf"[.!?;,:—–-]\s*(?:(?:and|but|now|then)\s+)?"
+    rf"(?P<directive>(?:please\s+)?(?:{_TASK_DIRECTIVE_VERBS})\b[\s\S]*)$",
+    re.IGNORECASE,
+)
 _NON_TASK_REACTION_RE = re.compile(
     r"\b(?:"
     r"(?:i\s+(?:think\s+)?)?give\s+up|"
@@ -133,6 +155,70 @@ _NON_TASK_REACTION_RE = re.compile(
     r"(?:you(?:'re|\s+are)|u\s+r|ur)\s+(?:fucking\s+)?useless|"
     r"(?:piece|picec)\s+of\s+(?:shit|shite)"
     r")\b",
+    re.IGNORECASE,
+)
+_FAILURE_FEEDBACK_RHETORICAL_RE = re.compile(
+    r"\b(?:"
+    r"(?:are|r)\s+(?:you|u)\s+(?:(?:fucking|actually|even)\s+)*"
+    r"(?:serious|joking|kidding)(?:\s+me)?"
+    r"(?:\s+(?:idiot|motherfucker|moron))?(?=\s*[.!?]*\s*$)|"
+    r"(?:you|u)\s+(?:didn['’]?t|did\s+not|failed\s+to|forgot\s+to|"
+    r"ignored|missed)\b|"
+    r"(?:why|how)\s+(?:(?:did|do|does|have|has|can|could)\s+(?:you|u)\s+"
+    r"not\s+(?:fix(?:ed)?|repair)|"
+    r"(?:didn['’]?t|don['’]?t|doesn['’]?t|haven['’]?t|hasn['’]?t|"
+    r"can['’]?t|couldn['’]?t)\s+(?:you|u)\s+"
+    r"(?:fix(?:ed)?|forget|forgot|ignore|miss|repair)|"
+    r"(?:did|do|does|have|has|can|could)\s+(?:you|u)\s+"
+    r"(?:forget|forgot|ignore|miss))\b|"
+    r"(?:why|what)\s+(?:(?:in)\s+)?(?:the\s+)?(?:actual\s+)?"
+    r"(?:fuck|hell)\s+did\s+(?:you|u)\s+do"
+    r"(?:\s+(?:it|this|that))?\b|"
+    r"(?:not|isn['’]?t|wasn['’]?t)\s+what\s+(?:i|we)\s+"
+    r"(?:asked|requested|said|wanted)"
+    r")\b",
+    re.IGNORECASE,
+)
+_FAILURE_FEEDBACK_STATE_RE = re.compile(
+    r"\b(?:"
+    r"(?:still|again)\b.{0,100}\b(?:broken|displayed|failing|incorrect|"
+    r"missing|not\s+working|showing|unchanged|visible|wrong)|"
+    r"(?:doesn['’]?t|does\s+not|didn['’]?t|did\s+not|won['’]?t|will\s+not)\s+"
+    r"(?:actually\s+)?(?:fix|match|open|render|run|show|work)\b|"
+    r"(?:is|are|was|were)\s+(?:still\s+)?(?:broken|incorrect|not\s+fixed|"
+    r"not\s+working|wrong)\b|"
+    r"(?:this|that|it)\s+(?:is|was)\s+"
+    r"(?:(?:absolutely|fucking)\s+)*(?:bullshit|fucked|ridiculous|stupid|useless)\b"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+_FAILURE_FEEDBACK_ABUSE_RE = re.compile(
+    r"\b(?:bullshit|fuck(?:ed|ing)?|motherfuck(?:er|ing)|moron|shit(?:e)?|"
+    r"stupid|useless)\b",
+    re.IGNORECASE,
+)
+_FAILURE_FEEDBACK_DIRECTED_ABUSE_RE = re.compile(
+    r"(?:\b(?:you|u|you['’]?re|ur)\b.{0,30}\b(?:idiot|moron|stupid|useless)\b|"
+    r"^\s*(?:idiot|moron|motherfucker|stupid)\s*[.!?]*\s*$)",
+    re.IGNORECASE,
+)
+_FAILURE_FEEDBACK_STANDALONE_RE = re.compile(
+    r"^\s*(?:seriously|wtf|wrong|incorrect|not\s+even\s+close|"
+    r"what\s+the\s+(?:actual\s+)?fuck|"
+    r"what\s+(?:are|were)\s+we\s+(?:even\s+)?doing|"
+    r"what\s+is\s+(?:even\s+)?going\s+on|"
+    r"(?:no[,;:]?\s*)?(?:(?:this|that|it)\s+(?:is|was)|"
+    r"(?:this|that|it)['’]?s)\s+"
+    r"(?:(?:absolutely|completely|fucking|totally)\s+)*"
+    r"(?:bullshit|incorrect|ridiculous|unacceptable|wrong|worse)|"
+    r"(?:this|that|it)\s+got\s+(?:even\s+)?worse|"
+    r"(?:you|u|this|that|it)\s+failed|"
+    r"(?:you|u)\s+(?:broke|ruined)\s+(?:it|this|that)|"
+    r"(?:you|u)\s+made\s+(?:it|this|that)\s+(?:even\s+)?worse|"
+    r"(?:why|how)\s+(?:did|can|could)\s+(?:you|u)\s+(?:"
+    r"break\s+(?:it|this|that)|"
+    r"get\s+(?:it|this|that)\s+(?:so\s+)?wrong|"
+    r"make\s+(?:it|this|that)\s+(?:even\s+)?worse))\s*[.!?]*\s*$",
     re.IGNORECASE,
 )
 _NON_TASK_ACKNOWLEDGEMENT_RE = re.compile(
@@ -895,6 +981,7 @@ def normalize_substantive_user_request(value: str | None) -> str | None:
         len(text) < 4
         or _TOOL_TRANSCRIPT_REQUEST_RE.match(text)
         or _CONTEXT_PACK_FILE_PAYLOAD_RE.match(text)
+        or _COMMAND_ONLY_RE.fullmatch(text)
         or _HARNESS_CONTINUATION_MESSAGE_RE.fullmatch(text)
         or is_session_instruction_noise(text)
         or is_continuation_control(text)
@@ -904,15 +991,75 @@ def normalize_substantive_user_request(value: str | None) -> str | None:
         return None
     reaction_candidate = _CONTINUATION_THREAD_LINE_RE.sub(" ", text)
     reaction_candidate = re.sub(r"\s+", " ", reaction_candidate).strip()
-    if (
-        reaction_candidate
-        and _NON_TASK_REACTION_RE.search(reaction_candidate)
-        and not _EXPLICIT_TASK_ACTION_RE.search(reaction_candidate)
-    ):
+    if is_user_failure_feedback(reaction_candidate):
         # A correction or emotional reaction remains useful session evidence,
         # but it must not replace the earlier executable request.
         return None
     return text
+
+
+def is_user_failure_feedback(
+    value: str | None,
+    *,
+    active_task: bool = False,
+) -> bool:
+    """Identify rejection/failure feedback without promoting it to a new task.
+
+    Strong rhetorical or abusive reactions are non-task dialogue even when the
+    prior goal is unavailable. Factual failure reports are contextual: they
+    count as feedback only when replay has an active task to preserve. An
+    explicit action verb always wins so requests such as ``fix this fucking
+    bug`` remain executable user work.
+    """
+
+    text = clean_session_message_text(value)
+    text = _CONTINUATION_THREAD_LINE_RE.sub(" ", text)
+    candidate = re.sub(r"\s+", " ", text).strip()
+    if not candidate or _AFFIRMATIVE_TASK_DIRECTIVE_RE.search(candidate):
+        return False
+    return _matches_user_failure_feedback(candidate, active_task=active_task)
+
+
+def extract_user_failure_feedback_directive(
+    value: str | None,
+    *,
+    active_task: bool = False,
+) -> str | None:
+    """Return an actionable tail that follows rejection of the prior result."""
+
+    text = clean_session_message_text(value)
+    text = _CONTINUATION_THREAD_LINE_RE.sub(" ", text)
+    candidate = re.sub(r"\s+", " ", text).strip()
+    match = _ACTIONABLE_FEEDBACK_TAIL_RE.search(candidate)
+    if match is None:
+        return None
+    prefix = candidate[: match.start()].strip(" \t\r\n.!?;,:—–-")
+    directive = match.group("directive").strip()
+    if not prefix or not directive:
+        return None
+    return (
+        directive
+        if _matches_user_failure_feedback(prefix, active_task=active_task)
+        else None
+    )
+
+
+def _matches_user_failure_feedback(candidate: str, *, active_task: bool) -> bool:
+    """Classify feedback after any actionable tail has been separated."""
+
+    if _NON_TASK_REACTION_RE.search(candidate) or _FAILURE_FEEDBACK_RHETORICAL_RE.search(
+        candidate
+    ) or _FAILURE_FEEDBACK_STANDALONE_RE.fullmatch(candidate):
+        return True
+    if active_task and _FAILURE_FEEDBACK_STATE_RE.search(candidate):
+        return True
+    return bool(
+        _FAILURE_FEEDBACK_ABUSE_RE.search(candidate)
+        and (
+            _FAILURE_FEEDBACK_DIRECTED_ABUSE_RE.search(candidate)
+            or candidate.count("!") + candidate.count("?") >= 2
+        )
+    )
 
 
 def is_substantive_user_request(value: str | None) -> bool:

@@ -8,11 +8,13 @@ from app.services.session_summary import (
     derive_session_topic,
     derive_session_topics,
     extract_delegated_user_request,
+    extract_user_failure_feedback_directive,
     extract_user_authored_request,
     is_continuation_control,
     is_internal_session_content,
     is_session_instruction_noise,
     is_substantive_user_request,
+    is_user_failure_feedback,
     normalize_substantive_user_request,
     sanitize_session_topics,
 )
@@ -416,6 +418,91 @@ ARE U FUCKING KIDDING ME U FUCKING PICEC OF SHITE
     )
 
 
+@pytest.mark.parametrize(
+    "reaction",
+    (
+        "ARE U FUCKING SERIOUS MOTHERFUCKER",
+        "You didn't fix it.",
+        "This is not what I asked for.",
+        "Why did you not fix it?",
+        "Why didn’t you fix it?",
+        "WHY DID U NOT FIX THIS",
+        "Why have you not fixed it?",
+        "How did you miss this?",
+        "Seriously?",
+        "WTF?",
+        "What the fuck?",
+        "This is completely wrong.",
+        "This is unacceptable.",
+        "What are we even doing?",
+        "Wrong.",
+        "Incorrect.",
+        "Not even close.",
+        "You broke it.",
+        "You made it worse.",
+        "No, that's wrong.",
+        "How could you get this so wrong?",
+        "Why did you break it?",
+        "It got worse.",
+        "This is worse.",
+        "That's wrong.",
+        "You failed.",
+    ),
+)
+def test_failure_feedback_is_not_a_standalone_task(reaction: str) -> None:
+    assert is_user_failure_feedback(reaction, active_task=True) is True
+    assert normalize_substantive_user_request(reaction) is None
+
+
+def test_contextual_failure_report_remains_a_valid_standalone_diagnosis_request() -> None:
+    reaction = "Why the fuck is this still broken?"
+
+    assert is_user_failure_feedback(reaction, active_task=True) is True
+    assert is_user_failure_feedback(reaction) is False
+    assert normalize_substantive_user_request(reaction) == reaction
+
+
+@pytest.mark.parametrize(
+    "user_text",
+    (
+        "This is fucking wrong; fix the compiler.",
+        "Still broken; explain why.",
+        "Can you explain fucking monads?",
+        "What the fuck is a B-tree?",
+        "WHAT THE FUCK IS A B-TREE?",
+        "Why the hell is this API returning 500?",
+        "Are you serious about adopting Rust?",
+        "Why did you fix this bug?",
+        "Why did you break this monolith into services?",
+    ),
+)
+def test_explicit_or_self_contained_requests_are_not_swallowed_as_feedback(
+    user_text: str,
+) -> None:
+    assert is_user_failure_feedback(user_text, active_task=True) is False
+    assert normalize_substantive_user_request(user_text) == user_text
+
+
+@pytest.mark.parametrize(
+    ("user_text", "directive"),
+    (
+        ("You didn't fix it, now fix the compiler.", "fix the compiler."),
+        ("Still broken — fix it.", "fix it."),
+        ("This is wrong. Redo it.", "Redo it."),
+        ("Why the hell did you do that? Revert it.", "Revert it."),
+    ),
+)
+def test_actionable_tail_is_separated_from_failure_feedback(
+    user_text: str,
+    directive: str,
+) -> None:
+    assert extract_user_failure_feedback_directive(
+        user_text,
+        active_task=True,
+    ) == directive
+    assert is_user_failure_feedback(user_text, active_task=True) is False
+
+
 def test_continuation_reference_plus_reaction_is_not_a_new_task() -> None:
     reaction = (
         "continue: 019f99ac-387e-7cb2-b41b-a8b1f6ca92ec\n"
@@ -569,6 +656,15 @@ def test_continuation_controls_are_not_substantive_goals() -> None:
 
     assert is_continuation_control("Continue implementing checkpoint selection") is False
     assert is_substantive_user_request("Continue implementing checkpoint selection") is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    ("/status", "/compact", "/model gpt-5", "/help", "/resume", "/clear", "/reset"),
+)
+def test_provider_commands_are_not_substantive_goals(command: str) -> None:
+    assert normalize_substantive_user_request(command) is None
+    assert is_substantive_user_request(command) is False
 
 
 @pytest.mark.parametrize(
