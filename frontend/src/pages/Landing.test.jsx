@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -60,7 +60,7 @@ describe("Landing", () => {
   });
 
   it("explains the blind start and source-backed handoff loop", () => {
-    renderLanding();
+    const { container } = renderLanding();
 
     expect(
       screen.getByRole("heading", { name: "Every new agent starts partially blind." }),
@@ -70,12 +70,52 @@ describe("Landing", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByRole("heading", {
-        name: "Capture. Compile. Dock.",
+        name: "Turn scattered sessions into trusted context.",
       }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Capture the session" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Compile the state" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Dock the next agent" })).toBeInTheDocument();
+    expect(screen.getByText("The handoff loop")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Capture what each agent learned, check it against the code, and continue in any tool.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Capture the working trail." }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Verify it against the code." }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Compose the next handoff." }),
+    ).toBeInTheDocument();
+
+    const [captureCard, verifyCard, composeCard] = container.querySelectorAll(
+      ".dsr-stack-card",
+    );
+
+    ["Codex", "Claude Code", "Cursor", "OpenCode"].forEach((tool) => {
+      expect(within(captureCard).getByText(tool)).toBeInTheDocument();
+    });
+    ["Goal", "Decision", "Failed path", "Next"].forEach((field) => {
+      expect(within(captureCard).getByText(field)).toBeInTheDocument();
+    });
+
+    expect(within(verifyCard).getByRole("heading", { name: "Session account" }))
+      .toBeInTheDocument();
+    expect(within(verifyCard).getByRole("heading", { name: "Repository now" }))
+      .toBeInTheDocument();
+    ["Verified", "Unverified", "Task-local"].forEach((status) => {
+      expect(within(verifyCard).getByText(status)).toBeInTheDocument();
+    });
+
+    expect(within(composeCard).getByText("Workspace Context")).toBeInTheDocument();
+    expect(
+      within(composeCard).getByRole("heading", {
+        name: "Resume the authentication migration",
+      }),
+    ).toBeInTheDocument();
+    expect(within(composeCard).getByRole("button", { name: "Claude Code" }))
+      .toHaveAttribute("aria-pressed", "true");
 
     expect(screen.getAllByText("Codex").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Claude Code").length).toBeGreaterThan(0);
@@ -110,26 +150,13 @@ describe("Landing", () => {
     vi.useRealTimers();
   });
 
-  it("distinguishes working state from chat history without invented proof", () => {
-    renderLanding();
+  it("moves directly from the product story into the final call to action", () => {
+    const { container } = renderLanding();
 
+    expect(container.querySelector("#project-memory")).not.toBeInTheDocument();
     expect(
-      screen.getByRole("heading", {
-        name: "Not chat history. Working state.",
-      }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Bounded. Source-backed. Current."))
-      .toBeInTheDocument();
-
-    [
-      "The current goal",
-      "Completed and remaining work",
-      "Decisions and their evidence",
-      "Failed approaches and blockers",
-      "Relevant and changed files",
-      "Checks and the exact next action",
-    ].forEach((item) => expect(screen.getByText(item)).toBeInTheDocument());
-
+      screen.queryByRole("heading", { name: "Not chat history. Working state." }),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: "The agents change. The project remembers." }),
     ).toBeInTheDocument();
@@ -168,7 +195,6 @@ describe("Landing", () => {
       screen.getByRole("heading", { name: "One project. Many sessions." }),
     ).toBeInTheDocument();
     expect(screen.getByText("Working state, compiled.")).toBeInTheDocument();
-    expect(screen.getByText("Provider-neutral handoff")).toBeInTheDocument();
     expect(screen.queryByText("COMPATIBILITY / ONE MEMORY")).not.toBeInTheDocument();
     expect(screen.queryByText(/SHARED MEMORY/i)).not.toBeInTheDocument();
     expect(screen.queryByText("CONTEXT CORE")).not.toBeInTheDocument();
@@ -179,7 +205,7 @@ describe("Landing", () => {
     expect(container.querySelector("#problem")).toBeInTheDocument();
     expect(container.querySelector("#docking-layer")).toBeInTheDocument();
     expect(container.querySelector("#how-it-works")).toBeInTheDocument();
-    expect(container.querySelector("#project-memory")).toBeInTheDocument();
+    expect(container.querySelector("#project-memory")).not.toBeInTheDocument();
     expect(container.querySelector("#early-access")).toBeInTheDocument();
 
     const productLinks = screen.getAllByRole("link", { name: "Open product" });

@@ -9,13 +9,10 @@ import {
   Database,
   FileCode2,
   Fingerprint,
-  History,
   Layers3,
   Menu,
-  RefreshCw,
   ShieldCheck,
   Sparkles,
-  Waypoints,
   X,
 } from "lucide-react";
 
@@ -46,15 +43,6 @@ const ROTATING_AGENT_NAMES = [
   "Grok",
 ];
 const ROTATING_AGENT_INTERVAL_MS = 1000;
-
-const MEMORY_ITEMS = [
-  "The current goal",
-  "Completed and remaining work",
-  "Decisions and their evidence",
-  "Failed approaches and blockers",
-  "Relevant and changed files",
-  "Checks and the exact next action",
-];
 
 const DECK_CARDS = [
   {
@@ -92,29 +80,82 @@ const DECK_CARDS = [
 const PROCESS_STEPS = [
   {
     number: "01",
-    title: "Capture the session",
-    body: "Create an immutable checkpoint from an in-project Codex, Claude Code, or OpenCode session.",
-    icon: Layers3,
-    tone: "lime",
-    meta: "SESSION / CAPTURED",
+    title: "Capture the working trail.",
+    type: "capture",
   },
   {
     number: "02",
-    title: "Compile the state",
-    body: "Reconcile it with the current repository and separate source-backed facts from session claims.",
-    icon: Waypoints,
-    tone: "blue",
-    meta: "STATE / RECONCILED",
+    title: "Verify it against the code.",
+    type: "verify",
   },
   {
     number: "03",
-    title: "Dock the next agent",
-    body: "Inspect the bounded brief, then carry it into a fresh supported agent session.",
-    icon: RefreshCw,
-    tone: "coral",
-    meta: "DESTINATION / SELECTED",
+    title: "Compose the next handoff.",
+    type: "compose",
   },
 ];
+
+const CAPTURE_SOURCES = [
+  {
+    name: "Codex",
+    claim: "AuthMiddleware is mounted. The tests pass.",
+  },
+  {
+    name: "Claude Code",
+    claim: "The polling approach produced a race condition.",
+  },
+  {
+    name: "Cursor",
+    claim: "Migration 004 exists, but still needs verification.",
+  },
+  {
+    name: "OpenCode",
+    claim: "Next action: exercise the rollback path.",
+  },
+];
+
+const CAPTURED_STATE = [
+  ["Goal", "Finish the auth migration"],
+  ["Decision", "Use AuthMiddleware"],
+  ["Failed path", "Polling race condition"],
+  ["Next", "Verify the rollback"],
+];
+
+const SESSION_CLAIMS = [
+  "API now uses AuthMiddleware",
+  "All tests pass",
+  "Polling caused a race",
+  "Migration 004 needs verification",
+];
+
+const REPOSITORY_EVIDENCE = [
+  ["+", "app/api.py:48", "AuthMiddleware mounted"],
+  ["○", "tests/", "No run at this snapshot"],
+  ["!", "session cc_118", "Failure evidence preserved"],
+  ["+", "migrations/004.py", "File exists; run absent"],
+];
+
+const RESOLVED_STATE = [
+  ["API uses AuthMiddleware", "Supported by current source", "Verified", "verified"],
+  ["All tests pass", "No run for this commit", "Unverified", "unverified"],
+  ["Polling caused a race", "Preserved with its session", "Task-local", "task"],
+];
+
+const HANDOFF_CONTEXTS = [
+  ["Foundation / required", "Workspace Context", "DaemonState"],
+  ["Session 01", "Auth middleware", "Codex"],
+  ["Session 02", "Polling failure", "Claude Code"],
+  ["Session 03", "Rollback next step", "OpenCode"],
+];
+
+const HANDOFF_BRIEF = [
+  ["Current state", "AuthMiddleware is mounted at the API boundary."],
+  ["Known failure", "Do not retry polling; it produced a race condition."],
+  ["Unverified", "Migration 004 has not run at the current snapshot."],
+  ["First action", "Exercise the rollback path, then verify the migration."],
+];
+
+const HANDOFF_DESTINATIONS = ["Codex", "Claude Code", "Cursor", "OpenCode"];
 
 const FEATURE_CARDS = [
   {
@@ -557,39 +598,6 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           },
         });
 
-        gsap.timeline({
-          scrollTrigger: {
-            trigger: ".dsr-memory-title",
-            start: "top 88%",
-            end: "top 28%",
-            scrub: 1,
-          },
-        })
-          .from(".dsr-memory-title-line span", {
-            yPercent: 110,
-            stagger: 0.1,
-            ease: "none",
-          });
-
-        gsap.timeline({
-          scrollTrigger: {
-            trigger: ".dsr-memory-layout",
-            start: "top 88%",
-            end: "top 30%",
-            scrub: 1,
-          },
-        })
-          .from(
-            ".dsr-memory-console",
-            { y: 130, rotateX: 12, autoAlpha: 0, ease: "none" },
-            0,
-          )
-          .from(
-            ".dsr-memory-list li",
-            { x: -32, autoAlpha: 0, stagger: 0.05, ease: "none" },
-            0,
-          );
-
         gsap.from(".dsr-final-letter", {
           yPercent: 110,
           rotateZ: 4,
@@ -702,9 +710,9 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
         <section id="how-it-works" className="dsr-stack">
           <div className="dsr-stack-sticky">
             <div className="dsr-section-shell dsr-stack-heading">
-              <SectionMarker label="How it works" number="02" />
-              <h2>Capture. Compile. Dock.</h2>
-              <p>A deliberate path from one session to the next.</p>
+              <SectionMarker label="The handoff loop" number="02" />
+              <h2>Turn scattered sessions into trusted context.</h2>
+              <p>Capture what each agent learned, check it against the code, and continue in any tool.</p>
             </div>
 
             <div className="dsr-stack-cards">
@@ -725,42 +733,6 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
               {FEATURE_CARDS.map((feature) => (
                 <FeatureCard key={feature.number} {...feature} />
               ))}
-            </div>
-          </div>
-        </section>
-
-        <section id="project-memory" className="dsr-memory">
-          <div className="dsr-section-shell">
-            <SectionMarker label="What gets carried" number="04" />
-            <h2
-              className="dsr-memory-title"
-              aria-label="Not chat history. Working state."
-            >
-              <span className="dsr-memory-title-line">
-                <span>Not chat history.</span>
-              </span>
-              <span className="dsr-memory-title-line dsr-memory-title-right">
-                <span>Working state.</span>
-              </span>
-            </h2>
-            <p className="dsr-memory-not-archive">Bounded. Source-backed. Current.</p>
-
-            <div className="dsr-memory-layout">
-              <div className="dsr-memory-copy">
-                <p>
-                  DaemonState compiles what the receiving agent needs now,
-                  without using the entire conversation as the default brief.
-                </p>
-                <ul className="dsr-memory-list">
-                  {MEMORY_ITEMS.map((item) => (
-                    <li key={item}>
-                      <Check aria-hidden="true" />
-                      <span>{item}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <MemoryConsole />
             </div>
           </div>
         </section>
@@ -1287,27 +1259,235 @@ function ToolsBand() {
   );
 }
 
-function ProcessCard({ number, title, body, icon: Icon, tone, meta }) {
+function ProcessAgentLogo({ name }) {
+  if (name === "Codex") {
+    return (
+      <span className="dsr-process-agent-logo" aria-hidden="true">
+        <img src={openaiIcon} alt="" />
+      </span>
+    );
+  }
+
+  if (name === "Claude Code") {
+    return (
+      <span className="dsr-process-agent-logo is-claude" aria-hidden="true">
+        <svg viewBox="0 0 24 24">
+          <path d="M13.827 3.52h3.603L24 20h-3.603l-6.57-16.48zm-7.258 0h3.767L16.906 20h-3.674l-1.343-3.461H5.017L3.674 20H0L6.57 3.52zm2.285 5.357-2.07 5.675h4.14l-2.07-5.675z" />
+        </svg>
+      </span>
+    );
+  }
+
+  if (name === "Cursor") {
+    return (
+      <span className="dsr-process-agent-logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24">
+          <path d="M11.503.131 1.891 5.678a.84.84 0 0 0-.42.726v11.188c0 .3.162.575.42.724l9.609 5.55a1 1 0 0 0 .998 0l9.61-5.55a.84.84 0 0 0 .42-.724V6.404a.84.84 0 0 0-.42-.726L12.497.131a1.01 1.01 0 0 0-.996 0M2.657 6.338h18.55c.263 0 .43.287.297.515L12.23 22.918c-.062.107-.229.064-.229-.06V12.335a.59.59 0 0 0-.295-.51l-9.11-5.257c-.109-.063-.064-.23.061-.23" />
+        </svg>
+      </span>
+    );
+  }
+
+  if (name === "OpenCode") {
+    return (
+      <span className="dsr-process-agent-logo" aria-hidden="true">
+        <svg viewBox="0 0 24 30">
+          <path d="M18 24H6V12H18V24Z" opacity=".55" />
+          <path fillRule="evenodd" d="M18 6H6V24H18V6ZM24 30H0V0H24V30Z" />
+        </svg>
+      </span>
+    );
+  }
+
   return (
-    <article className={`dsr-stack-card dsr-stack-card-${tone}`}>
-      <header>
-        <span>STEP / {number}</span>
-        <Icon aria-hidden="true" />
-      </header>
-      <div className="dsr-stack-card-copy">
-        <h3>{title}</h3>
-        <p>{body}</p>
+    <span className="dsr-process-agent-logo" aria-hidden="true">
+      <Sparkles />
+    </span>
+  );
+}
+
+function ProcessDaemonMark({ className = "" }) {
+  return (
+    <span className={`dsr-process-daemon-mark ${className}`.trim()} aria-hidden="true">
+      <DaemonStateIcon size={46} />
+    </span>
+  );
+}
+
+function CaptureProcessStory() {
+  return (
+    <div className="dsr-process-capture">
+      <ul
+        className="dsr-process-source-spread"
+        aria-label="Four attributed AI-tool session accounts"
+      >
+        {CAPTURE_SOURCES.map((source) => (
+          <li className="dsr-process-source-sheet" key={source.name}>
+            <div className="dsr-process-provider-head">
+              <ProcessAgentLogo name={source.name} />
+              <strong>{source.name}</strong>
+            </div>
+            <blockquote>“{source.claim}”</blockquote>
+          </li>
+        ))}
+      </ul>
+
+      <div className="dsr-process-convergence" aria-hidden="true">
+        <svg viewBox="0 0 640 104" preserveAspectRatio="none" fill="none">
+          <path d="M76 0V26L320 74" />
+          <path d="M240 0V32L320 74" />
+          <path d="M400 0V32L320 74" />
+          <path d="M564 0V26L320 74" />
+        </svg>
+        <ProcessDaemonMark className="dsr-process-central-mark" />
       </div>
-      <div className="dsr-stack-card-visual" aria-hidden="true">
-        <span>{meta}</span>
-        <div>
-          <i />
-          <i />
-          <i />
-          <b><DaemonStateIcon size={46} /></b>
+
+      <dl className="dsr-process-state-ribbon" aria-label="Captured working state">
+        {CAPTURED_STATE.map(([label, value]) => (
+          <div className="dsr-process-state-piece" key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
+function VerifyProcessStory() {
+  return (
+    <div className="dsr-process-verify">
+      <div className="dsr-process-verify-inputs">
+        <article className="dsr-process-evidence-sheet dsr-process-account-sheet">
+          <header className="dsr-process-sheet-title">
+            <h4>Session account</h4>
+            <span
+              className="dsr-process-mini-logos"
+              role="img"
+              aria-label="Codex, Claude Code, Cursor, and OpenCode sessions"
+            >
+              {HANDOFF_DESTINATIONS.map((name) => (
+                <ProcessAgentLogo name={name} key={name} />
+              ))}
+            </span>
+          </header>
+          <ol className="dsr-process-claim-list">
+            {SESSION_CLAIMS.map((claim, index) => (
+              <li key={claim}>
+                <span>{String(index + 1).padStart(2, "0")}</span>
+                <p>{claim}</p>
+              </li>
+            ))}
+          </ol>
+        </article>
+
+        <div className="dsr-process-verify-bridge" aria-hidden="true">
+          <ProcessDaemonMark />
         </div>
+
+        <article className="dsr-process-evidence-sheet dsr-process-repo-sheet">
+          <header className="dsr-process-sheet-title">
+            <h4>Repository now</h4>
+            <code>2f91ac7</code>
+          </header>
+          <ul className="dsr-process-file-list">
+            {REPOSITORY_EVIDENCE.map(([marker, source, evidence]) => (
+              <li key={source}>
+                <span>{marker}</span>
+                <p><code>{source}</code><small>{evidence}</small></p>
+              </li>
+            ))}
+          </ul>
+        </article>
       </div>
-      <small>{number} / 03</small>
+
+      <ul className="dsr-process-proof" aria-label="Resolved state for the handoff">
+        {RESOLVED_STATE.map(([claim, evidence, status, tone]) => (
+          <li key={claim}>
+            <strong>{claim}</strong>
+            <span>{evidence}</span>
+            <em className={`is-${tone}`}>{status}</em>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ComposeProcessStory() {
+  const [destination, setDestination] = useState("Claude Code");
+
+  return (
+    <div className="dsr-process-compose">
+      <ul
+        className="dsr-process-context-stack"
+        aria-label="Workspace Context plus three selected Session Contexts"
+      >
+        {HANDOFF_CONTEXTS.map(([kind, name, provider]) => (
+          <li key={kind}>
+            <span className="dsr-process-context-kind">{kind}</span>
+            <strong>
+              {provider === "DaemonState"
+                ? <ProcessDaemonMark />
+                : <ProcessAgentLogo name={provider} />}
+              {name}
+            </strong>
+          </li>
+        ))}
+      </ul>
+
+      <div className="dsr-process-compose-join" aria-hidden="true">
+        <ProcessDaemonMark />
+      </div>
+
+      <article className="dsr-process-handoff-sheet">
+        <h4>Resume the authentication migration</h4>
+        <dl>
+          {HANDOFF_BRIEF.map(([label, value]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{value}</dd>
+            </div>
+          ))}
+        </dl>
+      </article>
+
+      <div className="dsr-process-destinations" aria-label="Choose a destination tool">
+        <span className="dsr-process-destination-title">Continue in</span>
+        {HANDOFF_DESTINATIONS.map((name) => (
+          <button
+            type="button"
+            aria-pressed={destination === name}
+            onClick={() => setDestination(name)}
+            key={name}
+          >
+            <ProcessAgentLogo name={name} />
+            <span>{name}</span>
+          </button>
+        ))}
+        <p>
+          Copy the reviewed brief
+          <span>Use it in any other composer.</span>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ProcessCard({ number, title, type }) {
+  const headingId = `process-step-${number}`;
+
+  return (
+    <article
+      className={`dsr-stack-card dsr-stack-card-${type}`}
+      aria-labelledby={headingId}
+    >
+      <h3 className="dsr-process-heading" id={headingId}>{title}</h3>
+      <div className="dsr-process-canvas">
+        {type === "capture" && <CaptureProcessStory />}
+        {type === "verify" && <VerifyProcessStory />}
+        {type === "compose" && <ComposeProcessStory />}
+      </div>
     </article>
   );
 }
@@ -1349,58 +1529,6 @@ function AnimatedPhrase({ text, offset = false }) {
   );
 }
 
-function MemoryConsole() {
-  return (
-    <div className="dsr-memory-console" aria-label="Working-state handoff architecture">
-      <header>
-        <span><Code2 /> WORKING STATE</span>
-        <span className="dsr-memory-live"><i /> CURRENT</span>
-      </header>
-
-      <div className="dsr-memory-console-body">
-        <div className="dsr-memory-inputs">
-          <span><History /> Session checkpoint</span>
-          <span><Code2 /> Repository snapshot</span>
-          <span><Database /> Decisions + evidence</span>
-        </div>
-        <div className="dsr-memory-flow" aria-hidden="true">
-          <i /><i /><i />
-        </div>
-        <div className="dsr-memory-core">
-          <article className="dsr-memory-thread-card">
-            <header>
-              <span>CURRENT THREAD</span>
-              <i aria-hidden="true" />
-            </header>
-            <strong>Provider-neutral handoff</strong>
-            <ul>
-              <li>Decision kept</li>
-              <li>Blocker visible</li>
-              <li>Next move clear</li>
-            </ul>
-          </article>
-          <p>Kept current as the project changes.</p>
-        </div>
-        <div className="dsr-memory-output-line" aria-hidden="true" />
-        <div className="dsr-memory-output">
-          <Sparkles aria-hidden="true" />
-          <div>
-            <span>NEXT AGENT</span>
-            <strong>Ready to copy.</strong>
-          </div>
-          <ArrowRight aria-hidden="true" />
-        </div>
-      </div>
-
-      <footer>
-        <span>State integrity</span>
-        <div><i /></div>
-        <strong>VERIFIED / DEMO</strong>
-      </footer>
-    </div>
-  );
-}
-
 function LandingFooter({ waitlistOnlyMode }) {
   return (
     <footer className="dsr-footer">
@@ -1418,7 +1546,6 @@ function LandingFooter({ waitlistOnlyMode }) {
           <a href="#problem">Why</a>
           <a href="#docking-layer">The layer</a>
           <a href="#how-it-works">How it works</a>
-          <a href="#project-memory">Working state</a>
         </div>
         <div>
           <span>Product</span>
