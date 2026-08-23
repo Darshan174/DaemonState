@@ -1,24 +1,25 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { useWaitlist } from "@clerk/react";
 import { Link } from "react-router-dom";
 import {
+  ArrowLeft,
   ArrowRight,
+  ArrowUp,
   ArrowUpRight,
   Check,
-  CircleDot,
-  Code2,
-  Database,
-  FileCode2,
-  Fingerprint,
-  Layers3,
+  FileQuestion,
+  LockKeyhole,
   Menu,
   ShieldCheck,
   Sparkles,
+  Zap,
   X,
 } from "lucide-react";
 
 import DaemonStateIcon from "../components/DaemonStateIcon";
 import openaiIcon from "../assets/openai-icon.png";
 import { ApiError, api } from "../api/client";
+import { clerkWaitlistEnabled } from "../auth/clerk";
 import { WAITLIST_ONLY } from "../config/deployment";
 import {
   WAITLIST_CONSENT_VERSION,
@@ -43,37 +44,29 @@ const ROTATING_AGENT_NAMES = [
   "Grok",
 ];
 const ROTATING_AGENT_INTERVAL_MS = 1000;
+const DECK_AUTOPLAY_DELAY_SECONDS = 2.5;
+const DECK_TRANSITION_SECONDS = 0.45;
 
 const DECK_CARDS = [
   {
-    number: "01",
-    eyebrow: "Session library",
     title: "Five sessions in. Still re-explaining the project.",
     type: "sessions",
   },
   {
-    number: "02",
-    eyebrow: "Decisions + evidence",
     title: "Context compaction kept the summary. It lost the nuance.",
-    type: "graph",
+    type: "compaction",
   },
   {
-    number: "03",
-    eyebrow: "Workspace Context",
     title: "The session is still open. The model is already forgetting.",
-    type: "memory",
+    type: "forgetting",
   },
   {
-    number: "04",
-    eyebrow: "Session Context",
     title: "Claude looks better today. Too bad your context lives in Codex.",
-    type: "handoff",
+    type: "lockin",
   },
   {
-    number: "05",
-    eyebrow: "Agent destination",
     title: "Every fresh chat starts with an expensive history lesson.",
-    type: "continuity",
+    type: "restart",
   },
 ];
 
@@ -156,27 +149,6 @@ const HANDOFF_BRIEF = [
 ];
 
 const HANDOFF_DESTINATIONS = ["Codex", "Claude Code", "Cursor", "OpenCode"];
-
-const FEATURE_CARDS = [
-  {
-    number: "01",
-    title: "Session Context",
-    body: "The goal, progress, decisions, failed attempts, blockers, checks, and next action from one captured session.",
-    icon: Fingerprint,
-  },
-  {
-    number: "02",
-    title: "Workspace Context",
-    body: "Project-wide identity, architecture, capabilities, commands, repository state, and durable evidence.",
-    icon: ShieldCheck,
-  },
-  {
-    number: "03",
-    title: "A clear boundary",
-    body: "Task-local narration stays separate from project truth until current evidence supports it.",
-    icon: FileCode2,
-  },
-];
 
 function splitWords(text) {
   const words = text.split(" ");
@@ -287,6 +259,68 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
       if (reducedMotion) {
         const loader = root.querySelector(".dsr-loader");
         if (loader) loader.setAttribute("hidden", "");
+        const deckTrack = root.querySelector(".dsr-deck-track");
+        const deckWindow = root.querySelector(".dsr-deck-window");
+        const deckCards = Array.from(root.querySelectorAll(".dsr-deck-card"));
+        const deckControls = Array.from(root.querySelectorAll("[data-deck-index]"));
+        const deckStatus = root.querySelector("[data-deck-status]");
+        const deckPrevious = root.querySelector('[data-deck-action="previous"]');
+        const deckNext = root.querySelector('[data-deck-action="next"]');
+        let deckActiveIndex = 0;
+        let deckStep = 0;
+
+        const renderReducedDeck = () => {
+          if (!deckTrack || !deckCards.length) return;
+          const styles = window.getComputedStyle(deckTrack);
+          deckStep = deckCards[0].offsetHeight
+            + Number.parseFloat(styles.rowGap || styles.gap || "0");
+          deckTrack.style.transform = `translate3d(0, ${-deckStep * deckActiveIndex}px, 0)`;
+          deckControls.forEach((control, index) => {
+            const isActive = index === deckActiveIndex;
+            control.classList.toggle("is-active", isActive);
+            control.setAttribute("aria-pressed", String(isActive));
+          });
+          if (deckStatus) {
+            deckStatus.textContent = `Showing card ${deckActiveIndex + 1} of ${deckCards.length}.`;
+          }
+        };
+        const showReducedDeckCard = (requestedIndex) => {
+          deckActiveIndex = (
+            (requestedIndex % deckCards.length) + deckCards.length
+          ) % deckCards.length;
+          renderReducedDeck();
+        };
+        const reducedControlHandlers = deckControls.map((control) => {
+          const handler = () => showReducedDeckCard(Number(control.dataset.deckIndex));
+          control.addEventListener("click", handler);
+          return [control, handler];
+        });
+        const handleReducedPrevious = () => showReducedDeckCard(deckActiveIndex - 1);
+        const handleReducedNext = () => showReducedDeckCard(deckActiveIndex + 1);
+        const handleReducedKeyDown = (event) => {
+          if (event.key === "ArrowLeft") showReducedDeckCard(deckActiveIndex - 1);
+          else if (event.key === "ArrowRight") showReducedDeckCard(deckActiveIndex + 1);
+          else if (event.key === "Home") showReducedDeckCard(0);
+          else if (event.key === "End") showReducedDeckCard(deckCards.length - 1);
+          else return;
+          event.preventDefault();
+        };
+
+        deckWindow?.setAttribute("data-autoplay", "paused");
+        deckPrevious?.addEventListener("click", handleReducedPrevious);
+        deckNext?.addEventListener("click", handleReducedNext);
+        deckWindow?.addEventListener("keydown", handleReducedKeyDown);
+        window.addEventListener("resize", renderReducedDeck, { passive: true });
+        renderReducedDeck();
+        cleanups.push(() => {
+          reducedControlHandlers.forEach(([control, handler]) => {
+            control.removeEventListener("click", handler);
+          });
+          deckPrevious?.removeEventListener("click", handleReducedPrevious);
+          deckNext?.removeEventListener("click", handleReducedNext);
+          deckWindow?.removeEventListener("keydown", handleReducedKeyDown);
+          window.removeEventListener("resize", renderReducedDeck);
+        });
         return;
       }
 
@@ -299,7 +333,7 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
         const navPill = root.querySelector(".dsr-nav-pill");
         const loader = root.querySelector(".dsr-loader");
 
-        gsap.timeline({ defaults: { ease: "power3.inOut" } })
+        const introTimeline = gsap.timeline({ defaults: { ease: "power3.inOut" } })
           .set([heroLeft, heroRight], { willChange: "transform" })
           .fromTo(
             loader,
@@ -328,6 +362,7 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
             { x: 0, duration: 1.05, ease: "expo.inOut" },
             "<",
           )
+          .addLabel("deckReveal", "-=0.72")
           .from(
             heroDeck,
             {
@@ -336,7 +371,7 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
               duration: 0.92,
               ease: "expo.out",
             },
-            "-=0.72",
+            "deckReveal",
           )
           .from(
             ".dsr-hero-support",
@@ -353,11 +388,15 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
         const deckTrack = root.querySelector(".dsr-deck-track");
         const deckWindow = root.querySelector(".dsr-deck-window");
         const deckCards = gsap.utils.toArray(".dsr-deck-card", root);
-        const deckCounter = root.querySelector(".dsr-deck-count");
+        const deckControls = gsap.utils.toArray("[data-deck-index]", root);
+        const deckStatus = root.querySelector("[data-deck-status]");
+        const deckPrevious = root.querySelector('[data-deck-action="previous"]');
+        const deckNext = root.querySelector('[data-deck-action="next"]');
         let deckStep = 0;
         let deckActiveIndex = 0;
         let deckDirection = 1;
         let deckPaused = false;
+        let deckStarted = false;
         const deckPauseReasons = new Set();
 
         const updateDeckCards = () => {
@@ -370,8 +409,14 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
             ),
           );
 
-          if (deckCounter) {
-            deckCounter.textContent = String(activeIndex + 1).padStart(2, "0");
+          deckControls.forEach((control, index) => {
+            const isActive = index === activeIndex;
+            control.classList.toggle("is-active", isActive);
+            control.setAttribute("aria-pressed", String(isActive));
+          });
+
+          if (deckStatus) {
+            deckStatus.textContent = `Showing card ${activeIndex + 1} of ${deckCards.length}.`;
           }
 
           deckCards.forEach((card, index) => {
@@ -403,27 +448,39 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           updateDeckCards();
         };
 
-        const scheduleDeckAdvance = (delay = 2.35) => {
+        const goToDeckIndex = (requestedIndex, restartAutoplay = true) => {
+          if (!deckStep || deckCards.length < 2) return;
+          deckActiveIndex = (
+            (requestedIndex % deckCards.length) + deckCards.length
+          ) % deckCards.length;
+          deckTween?.kill();
+          deckTween = gsap.to(deckTrack, {
+            y: -deckStep * deckActiveIndex,
+            duration: DECK_TRANSITION_SECONDS,
+            ease: "power3.inOut",
+            onUpdate: updateDeckCards,
+            onComplete: updateDeckCards,
+          });
+
+          if (restartAutoplay && deckStarted && !deckPaused) {
+            scheduleDeckAdvance(DECK_AUTOPLAY_DELAY_SECONDS);
+          }
+        };
+
+        const scheduleDeckAdvance = (delay = DECK_AUTOPLAY_DELAY_SECONDS) => {
           deckAdvanceCall?.kill();
-          if (deckPaused || !deckStep || deckCards.length < 2) return;
+          if (!deckStarted || deckPaused || !deckStep || deckCards.length < 2) return;
           deckAdvanceCall = gsap.delayedCall(delay, () => {
             if (deckActiveIndex >= deckCards.length - 1) deckDirection = -1;
             else if (deckActiveIndex <= 0) deckDirection = 1;
-
-            const nextIndex = deckActiveIndex + deckDirection;
-            deckActiveIndex = nextIndex;
-            deckTween?.kill();
-            deckTween = gsap.to(deckTrack, {
-              y: -deckStep * deckActiveIndex,
-              duration: 1.15,
-              ease: "power3.inOut",
-              onUpdate: updateDeckCards,
-              onComplete: () => {
-                updateDeckCards();
-                scheduleDeckAdvance();
-              },
-            });
+            goToDeckIndex(deckActiveIndex + deckDirection, false);
+            scheduleDeckAdvance(DECK_AUTOPLAY_DELAY_SECONDS);
           });
+        };
+
+        const startDeckAutoplay = () => {
+          deckStarted = true;
+          scheduleDeckAdvance(DECK_AUTOPLAY_DELAY_SECONDS);
         };
 
         const pauseDeck = (reason) => {
@@ -439,17 +496,19 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           if (deckPauseReasons.size) return;
           deckPaused = false;
           deckWindow?.setAttribute("data-autoplay", "playing");
-          if (!deckTween?.isActive()) scheduleDeckAdvance(1.1);
+          if (deckStarted) scheduleDeckAdvance(DECK_AUTOPLAY_DELAY_SECONDS);
         };
 
         sizeDeck(0);
-        scheduleDeckAdvance(1.8);
+        introTimeline.call(startDeckAutoplay, [], "deckReveal");
 
         const handleDeckResize = () => {
           deckTween?.kill();
           deckAdvanceCall?.kill();
           sizeDeck(deckActiveIndex);
-          if (!deckPaused) scheduleDeckAdvance(1.1);
+          if (deckStarted && !deckPaused) {
+            scheduleDeckAdvance(DECK_AUTOPLAY_DELAY_SECONDS);
+          }
         };
 
         const handleDeckVisibility = () => {
@@ -458,21 +517,40 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
         };
         const handleDeckMouseEnter = () => pauseDeck("pointer");
         const handleDeckMouseLeave = () => resumeDeck("pointer");
-        const handleDeckFocusIn = () => pauseDeck("focus");
-        const handleDeckFocusOut = () => resumeDeck("focus");
+        const handleDeckKeyDown = (event) => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+          event.preventDefault();
+          if (event.key === "ArrowLeft") goToDeckIndex(deckActiveIndex - 1);
+          if (event.key === "ArrowRight") goToDeckIndex(deckActiveIndex + 1);
+          if (event.key === "Home") goToDeckIndex(0);
+          if (event.key === "End") goToDeckIndex(deckCards.length - 1);
+        };
+        const handleDeckControl = (event) => {
+          goToDeckIndex(Number(event.currentTarget.dataset.deckIndex));
+        };
+        const handleDeckPrevious = () => goToDeckIndex(deckActiveIndex - 1);
+        const handleDeckNext = () => goToDeckIndex(deckActiveIndex + 1);
 
         window.addEventListener("resize", handleDeckResize, { passive: true });
         deckWindow?.addEventListener("mouseenter", handleDeckMouseEnter);
         deckWindow?.addEventListener("mouseleave", handleDeckMouseLeave);
-        deckWindow?.addEventListener("focusin", handleDeckFocusIn);
-        deckWindow?.addEventListener("focusout", handleDeckFocusOut);
+        deckWindow?.addEventListener("keydown", handleDeckKeyDown);
+        deckControls.forEach((control) => {
+          control.addEventListener("click", handleDeckControl);
+        });
+        deckPrevious?.addEventListener("click", handleDeckPrevious);
+        deckNext?.addEventListener("click", handleDeckNext);
         document.addEventListener("visibilitychange", handleDeckVisibility);
         cleanups.push(() => {
           window.removeEventListener("resize", handleDeckResize);
           deckWindow?.removeEventListener("mouseenter", handleDeckMouseEnter);
           deckWindow?.removeEventListener("mouseleave", handleDeckMouseLeave);
-          deckWindow?.removeEventListener("focusin", handleDeckFocusIn);
-          deckWindow?.removeEventListener("focusout", handleDeckFocusOut);
+          deckWindow?.removeEventListener("keydown", handleDeckKeyDown);
+          deckControls.forEach((control) => {
+            control.removeEventListener("click", handleDeckControl);
+          });
+          deckPrevious?.removeEventListener("click", handleDeckPrevious);
+          deckNext?.removeEventListener("click", handleDeckNext);
           document.removeEventListener("visibilitychange", handleDeckVisibility);
         });
 
@@ -583,20 +661,6 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
               1,
             );
         }
-
-        gsap.from(".dsr-feature-card", {
-          y: 130,
-          rotateZ: (index) => (index - 1) * 3,
-          autoAlpha: 0,
-          stagger: 0.12,
-          duration: 1,
-          ease: "power4.out",
-          scrollTrigger: {
-            trigger: ".dsr-features-grid",
-            start: "top 78%",
-            toggleActions: "play none none reverse",
-          },
-        });
 
         gsap.from(".dsr-final-letter", {
           yPercent: 110,
@@ -723,20 +787,6 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           </div>
         </section>
 
-        <section className="dsr-features" aria-labelledby="features-heading">
-          <div className="dsr-section-shell">
-            <div className="dsr-features-heading">
-              <SectionMarker label="The state model" number="03" dark />
-              <h2 id="features-heading">Two contexts. One project.</h2>
-            </div>
-            <div className="dsr-features-grid">
-              {FEATURE_CARDS.map((feature) => (
-                <FeatureCard key={feature.number} {...feature} />
-              ))}
-            </div>
-          </div>
-        </section>
-
         <section id="early-access" className="dsr-final">
           <div className="dsr-final-topline">
             <span>The docking layer for AI coding agents</span>
@@ -772,6 +822,13 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
 }
 
 function WaitlistForm() {
+  if (clerkWaitlistEnabled(import.meta.env)) {
+    return <ClerkWaitlistForm />;
+  }
+  return <DatabaseWaitlistForm />;
+}
+
+function DatabaseWaitlistForm() {
   const [email, setEmail] = useState("");
   const [website, setWebsite] = useState("");
   const [submission, setSubmission] = useState("idle");
@@ -812,7 +869,114 @@ function WaitlistForm() {
   const isSuccess = submission === "success";
 
   return (
-    <div className={`dsr-waitlist-card is-${submission}`}>
+    <WaitlistCard
+      email={email}
+      isSubmitting={isSubmitting}
+      isSuccess={isSuccess}
+      message={message}
+      onEmailChange={setEmail}
+      onSubmit={handleSubmit}
+      onWebsiteChange={setWebsite}
+      provider="cloudflare-d1"
+      submission={submission}
+      website={website}
+    />
+  );
+}
+
+function ClerkWaitlistForm() {
+  const { waitlist, errors, fetchStatus } = useWaitlist();
+  const [email, setEmail] = useState("");
+  const [website, setWebsite] = useState("");
+  const [submission, setSubmission] = useState("idle");
+  const [message, setMessage] = useState(
+    "Join now and we'll email you when your private-beta account is ready.",
+  );
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setSubmission("submitting");
+    setMessage("Securing your place…");
+    const attribution = waitlistAttribution();
+    const analyticsProperties = analyticsAttribution(attribution);
+    captureWaitlistEvent("waitlist_cta_clicked", analyticsProperties);
+
+    if (website.trim()) {
+      setSubmission("success");
+      setEmail("");
+      setMessage("You're on the DaemonState waitlist.");
+      return;
+    }
+
+    try {
+      const result = await waitlist.join({ emailAddress: email.trim() });
+      if (result?.error) throw result.error;
+      setSubmission("success");
+      setEmail("");
+      setMessage("You're on the list. Check your inbox for confirmation.");
+      captureWaitlistEvent("waitlist_joined", analyticsProperties);
+    } catch (error) {
+      setSubmission("error");
+      setMessage(clerkWaitlistErrorMessage(error, errors));
+    }
+  };
+
+  const isSuccess = submission === "success" || Boolean(waitlist?.id);
+  const isSubmitting = submission === "submitting" || fetchStatus === "fetching";
+  const visibleSubmission = isSuccess ? "success" : submission;
+
+  return (
+    <WaitlistCard
+      email={email}
+      isSubmitting={isSubmitting}
+      isSuccess={isSuccess}
+      managedByClerk
+      message={isSuccess && submission !== "success"
+        ? "You're already on the list. We'll email you when access is ready."
+        : message}
+      onEmailChange={setEmail}
+      onSubmit={handleSubmit}
+      onWebsiteChange={setWebsite}
+      provider="clerk"
+      submission={visibleSubmission}
+      website={website}
+    />
+  );
+}
+
+function clerkWaitlistErrorMessage(error, errors) {
+  const fieldMessage = errors?.fields?.emailAddress?.longMessage;
+  if (typeof fieldMessage === "string" && fieldMessage.trim()) {
+    return fieldMessage;
+  }
+  const providerError = Array.isArray(error?.errors)
+    ? error.errors.find((item) => typeof item?.longMessage === "string")
+    : null;
+  if (providerError?.longMessage) return providerError.longMessage;
+  if (error?.status === 429) {
+    return "Too many attempts. Please wait a minute and try again.";
+  }
+  return "We couldn't add you right now. Please check your email and try again.";
+}
+
+function WaitlistCard({
+  email,
+  isSubmitting,
+  isSuccess,
+  managedByClerk = false,
+  message,
+  onEmailChange,
+  onSubmit,
+  onWebsiteChange,
+  provider,
+  submission,
+  website,
+}) {
+  return (
+    <div
+      className={`dsr-waitlist-card is-${submission}`}
+      data-waitlist-provider={provider}
+    >
       <div className="dsr-waitlist-heading">
         <span>EARLY ACCESS / PRIVATE BETA</span>
         <h3>Join the private beta.</h3>
@@ -822,7 +986,7 @@ function WaitlistForm() {
         </p>
       </div>
 
-      <form onSubmit={handleSubmit} aria-label="Join the early-access waitlist">
+      <form onSubmit={onSubmit} aria-label="Join the early-access waitlist">
         <label htmlFor="waitlist-email">Email address</label>
         <div className="dsr-waitlist-field">
           <input
@@ -830,14 +994,16 @@ function WaitlistForm() {
             name="email"
             type="email"
             value={email}
-            onChange={(event) => setEmail(event.target.value)}
+            onChange={(event) => onEmailChange(event.target.value)}
             placeholder="you@company.com"
             autoComplete="email"
             inputMode="email"
             maxLength={320}
             required
             disabled={isSubmitting || isSuccess}
-            aria-describedby="waitlist-message waitlist-consent"
+            aria-describedby={managedByClerk
+              ? "waitlist-message waitlist-consent waitlist-provider"
+              : "waitlist-message waitlist-consent"}
           />
           <button type="submit" disabled={isSubmitting || isSuccess}>
             <span>
@@ -854,7 +1020,7 @@ function WaitlistForm() {
             name="website"
             type="text"
             value={website}
-            onChange={(event) => setWebsite(event.target.value)}
+            onChange={(event) => onWebsiteChange(event.target.value)}
             autoComplete="off"
             tabIndex={-1}
           />
@@ -875,6 +1041,13 @@ function WaitlistForm() {
       >
         {message}
       </p>
+
+      {managedByClerk && (
+        <p id="waitlist-provider" className="dsr-waitlist-provider">
+          <LockKeyhole aria-hidden="true" />
+          <span>Secure waitlist and account invitations managed by Clerk.</span>
+        </p>
+      )}
     </div>
   );
 }
@@ -992,29 +1165,56 @@ function HeroDeck() {
       aria-label="Project memory examples carousel."
       className="dsr-deck-window"
       data-autoplay="playing"
+      data-autoplay-delay={DECK_AUTOPLAY_DELAY_SECONDS * 1000}
       tabIndex={0}
     >
       <div className="dsr-deck-track-shell">
         <div className="dsr-deck-track">
           {DECK_CARDS.map((card) => (
-            <DeckCard key={card.number} {...card} />
+            <DeckCard key={card.type} {...card} />
           ))}
         </div>
       </div>
-      <span className="dsr-deck-index">
-        / <b className="dsr-deck-count">01</b>
-      </span>
+      <div className="dsr-deck-controls" aria-label="Choose a card">
+        <button
+          type="button"
+          className="dsr-deck-arrow"
+          data-deck-action="previous"
+          aria-label="Show previous card"
+        >
+          <ArrowLeft aria-hidden="true" />
+        </button>
+        <div className="dsr-deck-dots" role="group" aria-label="Choose a specific card">
+          {DECK_CARDS.map((card, index) => (
+            <button
+              type="button"
+              className={`dsr-deck-dot${index === 0 ? " is-active" : ""}`}
+              data-deck-index={index}
+              aria-label={`Show card ${index + 1}: ${card.title}`}
+              aria-pressed={index === 0}
+              key={card.type}
+            />
+          ))}
+        </div>
+        <button
+          type="button"
+          className="dsr-deck-arrow"
+          data-deck-action="next"
+          aria-label="Show next card"
+        >
+          <ArrowRight aria-hidden="true" />
+        </button>
+      </div>
+      <p className="dsr-sr-only" aria-live="polite" data-deck-status>
+        Showing card 1 of 5.
+      </p>
     </div>
   );
 }
 
-function DeckCard({ number, eyebrow, title, type }) {
+function DeckCard({ title, type }) {
   return (
     <article className={`dsr-deck-card dsr-deck-card-${type}`}>
-      <header>
-        <span>{eyebrow}</span>
-        <small>/{number}</small>
-      </header>
       <h3>{title}</h3>
       <DeckVisual type={type} />
     </article>
@@ -1024,77 +1224,152 @@ function DeckCard({ number, eyebrow, title, type }) {
 function DeckVisual({ type }) {
   if (type === "sessions") {
     return (
-      <div className="dsr-deck-visual dsr-session-orbit" aria-hidden="true">
-        {TOOL_NAMES.map((name, index) => (
-          <span
-            className="dsr-session-agent"
-            key={name}
-            style={{ "--index": index }}
-          >
-            <AgentLogo name={name} />
-          </span>
-        ))}
-        <i><Layers3 /></i>
-      </div>
-    );
-  }
-
-  if (type === "graph") {
-    return (
-      <div className="dsr-deck-visual dsr-graph-visual" aria-hidden="true">
-        <span className="dsr-graph-node is-main">Decision</span>
-        <span className="dsr-graph-node is-one">Evidence</span>
-        <span className="dsr-graph-node is-two">Files</span>
-        <span className="dsr-graph-node is-three">Failed path</span>
-        <svg
-          className="dsr-graph-connectors"
-          viewBox="0 0 100 100"
-          preserveAspectRatio="none"
-        >
-          <path d="M50 38 C42 49 25 52 19 70" />
-          <path d="M50 38 C50 49 48 60 48 76" />
-          <path d="M50 38 C59 48 76 51 82 67" />
-        </svg>
-      </div>
-    );
-  }
-
-  if (type === "memory") {
-    return (
-      <div className="dsr-deck-visual dsr-memory-mosaic" aria-hidden="true">
-        <span className="dsr-mosaic-tile tile-a"><Code2 /></span>
-        <span className="dsr-mosaic-tile tile-b">14<br /><small>DECISIONS</small></span>
-        <span className="dsr-mosaic-tile tile-c"><DaemonStateIcon size={42} /></span>
-        <span className="dsr-mosaic-tile tile-d">08<br /><small>KEY FILES</small></span>
-        <span className="dsr-mosaic-tile tile-e"><Database /></span>
-        <i className="dsr-mosaic-ring" />
-      </div>
-    );
-  }
-
-  if (type === "handoff") {
-    return (
-      <div className="dsr-deck-visual dsr-handoff-visual" aria-hidden="true">
-        <div>
-          <span><CircleDot /> STATE COMPILED</span>
-          <strong>Continue provider adapter work</strong>
-          <small>Decision sourced · Blocker surfaced · Next action clear</small>
+      <div className="dsr-deck-visual dsr-session-table" aria-hidden="true">
+        <div className="dsr-session-key">
+          <span>Session</span>
+          <span>Repeated briefing</span>
+          <span>Useful work</span>
         </div>
-        <ArrowRight />
+        {[1, 2, 3, 4, 5].map((session) => (
+          <div className="dsr-session-row" key={session}>
+            <span className="dsr-session-id">
+              <small>Session</small>
+              <strong>{String(session).padStart(2, "0")}</strong>
+            </span>
+            <span className="dsr-session-journey">
+              <span className="dsr-session-repeat">
+                <strong>Project briefing</strong>
+                <small>Repo · decisions · constraints</small>
+              </span>
+              <ArrowRight className="dsr-session-arrow" />
+              <strong className="dsr-session-work">Build</strong>
+            </span>
+          </div>
+        ))}
+        <div className="dsr-repeat-total">
+          <strong>Same briefing ×5</strong>
+          <span>paid before every session</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (type === "compaction") {
+    return (
+      <div className="dsr-deck-visual dsr-compaction-visual" aria-hidden="true">
+        <div className="dsr-context-trigger">
+          <div>
+            <span>Context window</span>
+            <strong>Full</strong>
+          </div>
+          <div className="dsr-window-track">
+            {Array.from({ length: 10 }, (_, index) => <span key={index} />)}
+          </div>
+          <div className="dsr-trigger-result"><Zap /><strong>Compaction triggered</strong></div>
+        </div>
+        <div className="dsr-compaction-flow">
+          <section className="dsr-source-sheet">
+            <header><strong>Working state</strong><span>Before</span></header>
+            <div className="dsr-detail-list">
+              <div><span>Decision</span><strong>Use AuthMiddleware</strong></div>
+              <div><span>Why</span><strong>Keep auth at the API boundary</strong></div>
+              <div><span>Evidence</span><strong>Reproduced in app/api.py</strong></div>
+              <div><span>Failed path</span><strong>Polling caused a race</strong></div>
+            </div>
+          </section>
+          <div className="dsr-compressor">
+            <span />
+            <strong>Auto-summary</strong>
+            <span />
+          </div>
+          <section className="dsr-summary-sheet">
+            <header><strong>Summary</strong><span>After</span></header>
+            <div className="dsr-summary-main"><small>Kept</small><strong>Auth migration is in progress.</strong></div>
+            <div className="dsr-missing-list">
+              {["Why", "Evidence", "Failed path"].map((label) => (
+                <div key={label}><span>{label}</span><strong>Missing</strong></div>
+              ))}
+            </div>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+  if (type === "forgetting") {
+    return (
+      <div className="dsr-deck-visual dsr-chat-window" aria-hidden="true">
+        <header className="dsr-chat-chrome">
+          <span className="dsr-window-dots"><i /><i /><i /></span>
+          <strong>coding-session</strong>
+          <span>Live</span>
+        </header>
+        <div className="dsr-thread">
+          <section className="dsr-thread-lost">
+            <header><span>Earlier messages remain above</span><strong>Not visible</strong></header>
+            <div className="dsr-lost-messages">
+              {["Architecture", "Auth decision", "Failed approach", "Plan reasoning"].map((label) => (
+                <span key={label}>{label}<strong>Outside context</strong></span>
+              ))}
+            </div>
+          </section>
+          <div className="dsr-context-cut"><span>Active context starts here</span><strong>Everything above fell out</strong></div>
+          <section className="dsr-thread-active">
+            <header><span>What the model can see</span><strong>Active context</strong></header>
+            <div>
+              {["Current task", "Latest patch", "Test result"].map((label) => (
+                <span key={label}>{label}<strong>Now</strong></span>
+              ))}
+            </div>
+          </section>
+        </div>
+        <div className="dsr-chat-composer"><span>Continue working in this conversation…</span><i><ArrowUp /></i></div>
+      </div>
+    );
+  }
+
+  if (type === "lockin") {
+    return (
+      <div className="dsr-deck-visual dsr-provider-flow" aria-hidden="true">
+        <section className="dsr-provider-card">
+          <header><strong>Codex</strong><span>Current session</span></header>
+          <div className="dsr-context-pack">
+            <small>Your project context</small>
+            <strong>Decisions, evidence, constraints, next action</strong>
+            <i /><i />
+          </div>
+        </section>
+        <div className="dsr-provider-boundary">
+          <span /><i><LockKeyhole /></i><span />
+        </div>
+        <section className="dsr-provider-card">
+          <header><strong>Claude</strong><span>New session</span></header>
+          <div className="dsr-price-change">
+            <div><span>Pricing changed</span><strong>New</strong></div>
+            <div><s>Old price</s><ArrowRight /><strong>Lower price</strong></div>
+          </div>
+          <div className="dsr-empty-context"><FileQuestion /><strong>No project context</strong><span>Start the briefing again.</span></div>
+        </section>
       </div>
     );
   }
 
   return (
-    <div className="dsr-deck-visual dsr-continuity-visual" aria-hidden="true">
-      {["Codex", "Claude Code", "OpenCode"].map((name, index) => (
-        <span className="dsr-continuity-step" key={name}>
-          <span className="dsr-continuity-agent">
-            <AgentLogo name={name} />
-          </span>
-          {index < 2 && <i />}
-        </span>
-      ))}
+    <div className="dsr-deck-visual dsr-history-layout" aria-hidden="true">
+      <section className="dsr-new-chat">
+        <span>New chat</span>
+        <strong>How can I help?</strong>
+        <div>First, let me explain the project…</div>
+      </section>
+      <section className="dsr-history-gate">
+        <header><strong>History lesson</strong><span>Before work</span></header>
+        <div className="dsr-history-steps">
+          {["Recap the repository", "Rebuild the architecture", "Replay the decisions", "Rediscover failed paths"].map((label, index) => (
+            <div key={label}><span>{index + 1}</span><strong>{label}</strong><em>Again</em></div>
+          ))}
+        </div>
+        <div className="dsr-work-start"><strong>Useful work can finally start</strong><ArrowRight /></div>
+      </section>
     </div>
   );
 }
@@ -1492,24 +1767,6 @@ function ProcessCard({ number, title, type }) {
   );
 }
 
-function FeatureCard({ number, title, body, icon: Icon }) {
-  return (
-    <article className="dsr-feature-card">
-      <header>
-        <span>/{number}</span>
-        <Icon aria-hidden="true" />
-      </header>
-      <div>
-        <h3>{title}</h3>
-        <p>{body}</p>
-      </div>
-      <span className="dsr-feature-arrow" aria-hidden="true">
-        <ArrowUpRight />
-      </span>
-    </article>
-  );
-}
-
 function AnimatedPhrase({ text, offset = false }) {
   return (
     <span className={`dsr-final-word${offset ? " dsr-final-word-offset" : ""}`}>
@@ -1534,7 +1791,7 @@ function LandingFooter({ waitlistOnlyMode }) {
     <footer className="dsr-footer">
       <div className="dsr-footer-brand">
         <Link to="/" aria-label="DaemonState home">
-          <DaemonStateIcon size={34} />
+          <DaemonStateIcon size={68} />
           <span>DaemonState</span>
         </Link>
         <p>Source-backed continuity for coding agents.</p>

@@ -22,7 +22,7 @@ export default function Privacy() {
         <article>
           <p className="dsr-privacy-kicker">PUBLIC WAITLIST / PRIVACY</p>
           <h1>Privacy notice</h1>
-          <p className="dsr-privacy-effective">Effective August 3, 2026</p>
+          <p className="dsr-privacy-effective">Effective August 23, 2026</p>
 
           <p className="dsr-privacy-lead">
             This notice covers the DaemonState public website and early-access
@@ -34,16 +34,18 @@ export default function Privacy() {
           <section>
             <h2>Information collected</h2>
             <p>
-              When you join, we store your email address, the campaign parameters
-              attached to the page URL, the referring site and path, and the time
-              and version of the consent notice you accepted. Query strings and
-              fragments are removed from referrer URLs before storage.
+              When you join, Clerk stores your email address and waitlist status
+              so an approved signup can become an account. The site may separately
+              record campaign parameters attached to the page URL and the referring
+              site and path; query strings and fragments are removed from referrer
+              URLs before they are recorded.
             </p>
             <p>
-              We may later add information you voluntarily provide, such as your
-              role, team size, coding tools, and the context problem you want to
-              solve. The waitlist record can also contain operational fields such
-              as invitation status, contact history, and internal notes.
+              Deployments without Clerk use the same-origin waitlist fallback,
+              which also stores the time and version of the consent notice. The
+              hosted fallback uses Cloudflare D1; self-hosted operators use their
+              configured database. A waitlist record can contain operational fields
+              such as invitation status, contact history, and internal notes.
             </p>
           </section>
 
@@ -60,11 +62,12 @@ export default function Privacy() {
           <section>
             <h2>Service providers</h2>
             <p>
-              Cloudflare hosts the public site and D1 waitlist database. When
-              configured, Loops delivers waitlist email and PostHog receives a
-              small set of manually defined website events. The analytics setup
-              does not send your email address, disables session replay and
-              autocapture, and keeps its browser identifier in memory only.
+              Cloudflare hosts the public site. Clerk manages the hosted waitlist,
+              confirmation emails, approvals, and approved-user account signup.
+              The hosted fallback stores entries in Cloudflare D1 and may use Loops
+              for waitlist email. PostHog receives a small set of manually defined
+              website events; it does not receive your email address, and session
+              replay and autocapture are disabled.
             </p>
           </section>
 
