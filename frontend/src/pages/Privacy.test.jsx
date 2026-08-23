@@ -14,9 +14,11 @@ describe("Privacy", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Privacy notice" })).toBeInTheDocument();
-    expect(screen.getByText(/Cloudflare hosts the public site and D1 waitlist database/i))
+    expect(screen.getByText(/Clerk manages the hosted waitlist/i))
       .toBeInTheDocument();
-    expect(screen.getByText(/does not send your email address/i)).toBeInTheDocument();
+    expect(screen.getByText(/hosted fallback stores entries in Cloudflare D1/i))
+      .toBeInTheDocument();
+    expect(screen.getByText(/does not receive your email address/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Contact the repository owner" }))
       .toHaveAttribute("href", "https://github.com/Darshan174");
     expect(screen.getByRole("link", { name: "Return to early access" }))

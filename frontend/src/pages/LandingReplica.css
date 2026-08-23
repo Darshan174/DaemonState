@@ -2453,58 +2453,107 @@
 
 .dsr-final-actions {
   display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 25px;
+  width: 100%;
+  align-items: stretch;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.dsr-final-actions > .dsr-text-link {
+  align-self: flex-end;
 }
 
 .dsr-waitlist-card {
-  width: min(760px, 72vw);
-  padding: clamp(24px, 3vw, 42px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 32px;
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  width: min(1180px, 100%);
+  min-height: 380px;
+  align-self: center;
+  flex-direction: column;
+  justify-content: center;
+  padding: clamp(48px, 5.6vw, 74px) clamp(24px, 7vw, 96px);
+  overflow: hidden;
+  border: 1px solid rgba(17, 17, 18, 0.12);
+  border-radius: 20px;
   background:
-    radial-gradient(circle at 92% 4%, rgba(199, 255, 101, 0.17), transparent 28%),
-    var(--dsr-black);
-  color: var(--dsr-white);
-  box-shadow: 0 30px 80px rgba(10, 10, 11, 0.18);
+    radial-gradient(ellipse 72% 110% at 0 0, rgba(196, 231, 210, 0.24), transparent 100%),
+    radial-gradient(ellipse 72% 110% at 100% 100%, rgba(227, 199, 139, 0.27), transparent 100%),
+    var(--dsr-white);
+  color: var(--dsr-ink);
+  box-shadow:
+    0 18px 38px rgba(17, 17, 18, 0.1),
+    0 3px 8px rgba(17, 17, 18, 0.05);
+}
+
+.dsr-waitlist-card::before {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(17, 17, 18, 0.09) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(17, 17, 18, 0.09) 1px, transparent 1px);
+  background-size: 40px 40px;
+  content: "";
+  opacity: 0.72;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(45deg, #000 0%, transparent 50%, #000 100%);
+  mask-image: linear-gradient(45deg, #000 0%, transparent 50%, #000 100%);
+}
+
+.dsr-waitlist-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+.dsr-waitlist-heading {
+  text-align: center;
 }
 
 .dsr-waitlist-heading > span {
-  display: block;
-  color: var(--dsr-lime);
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  padding: 0 12px;
+  border: 1px solid rgba(17, 17, 18, 0.12);
+  border-radius: 999px;
+  background: rgba(199, 255, 101, 0.74);
+  color: var(--dsr-ink);
   font-family: var(--dsr-mono);
   font-size: 0.61rem;
   font-weight: 700;
   letter-spacing: 0.04em;
+  box-shadow: 0 4px 12px rgba(17, 17, 18, 0.06);
 }
 
 .dsr-waitlist-heading h3 {
-  margin: 18px 0 0;
-  font-size: clamp(2.2rem, 4vw, 4rem);
+  margin: 19px 0 0;
+  color: var(--dsr-ink);
+  font-size: clamp(2.45rem, 4.25vw, 4.3rem);
   font-weight: 500;
-  letter-spacing: -0.07em;
-  line-height: 0.95;
+  letter-spacing: -0.065em;
+  line-height: 0.94;
 }
 
 .dsr-waitlist-heading p {
-  max-width: 470px;
-  margin: 17px 0 0;
-  color: rgba(255, 255, 255, 0.58);
-  font-size: 0.84rem;
+  max-width: 610px;
+  margin: 17px auto 0;
+  color: rgba(17, 17, 18, 0.62);
+  font-size: 0.92rem;
   letter-spacing: -0.02em;
-  line-height: 1.45;
+  line-height: 1.5;
 }
 
 .dsr-waitlist-card form {
   position: relative;
-  margin-top: 28px;
+  width: min(820px, 100%);
+  margin: 30px auto 0;
 }
 
 .dsr-waitlist-card form > label {
   display: block;
   margin-bottom: 9px;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(17, 17, 18, 0.68);
   font-family: var(--dsr-mono);
   font-size: 0.58rem;
   font-weight: 700;
@@ -2520,36 +2569,42 @@
 
 .dsr-waitlist-field input {
   min-width: 0;
-  height: 58px;
-  padding: 0 18px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  height: 64px;
+  padding: 0 20px;
+  border: 1px solid rgba(17, 17, 18, 0.18);
   border-radius: 15px;
   outline: 0;
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--dsr-white);
-  font-size: 0.94rem;
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--dsr-ink);
+  font-size: 0.98rem;
   letter-spacing: -0.025em;
-  transition: border-color 0.2s ease, background 0.2s ease;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.86),
+    0 5px 18px rgba(17, 17, 18, 0.05);
+  transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
 }
 
 .dsr-waitlist-field input::placeholder {
-  color: rgba(255, 255, 255, 0.36);
+  color: rgba(17, 17, 18, 0.42);
 }
 
 .dsr-waitlist-field input:focus-visible {
-  border-color: var(--dsr-lime);
-  background: rgba(255, 255, 255, 0.11);
+  border-color: #87a83d;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow:
+    0 0 0 4px rgba(199, 255, 101, 0.34),
+    0 7px 22px rgba(17, 17, 18, 0.07);
 }
 
 .dsr-waitlist-field button {
   display: inline-flex;
-  min-width: 174px;
-  height: 58px;
+  min-width: 188px;
+  height: 64px;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
   padding: 0 19px 0 22px;
-  border: 0;
+  border: 1px solid rgba(17, 17, 18, 0.18);
   border-radius: 15px;
   background: var(--dsr-lime);
   color: var(--dsr-ink);
@@ -2558,12 +2613,18 @@
   font-size: 0.65rem;
   font-weight: 700;
   text-transform: uppercase;
-  transition: background 0.2s ease, transform 0.2s ease;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    0 8px 20px rgba(77, 101, 28, 0.14);
+  transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 
 .dsr-waitlist-field button:hover:not(:disabled),
 .dsr-waitlist-field button:focus-visible:not(:disabled) {
   background: #d8ff91;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 11px 26px rgba(77, 101, 28, 0.2);
   transform: translateY(-2px);
 }
 
@@ -2576,7 +2637,9 @@
 }
 
 .dsr-waitlist-card.is-success .dsr-waitlist-field button {
-  background: var(--dsr-white);
+  border-color: var(--dsr-ink);
+  background: var(--dsr-ink);
+  color: var(--dsr-white);
 }
 
 .dsr-waitlist-card.is-error .dsr-waitlist-field input {
@@ -2584,39 +2647,58 @@
 }
 
 .dsr-waitlist-consent {
-  max-width: 610px;
-  margin: 11px 0 0;
-  color: rgba(255, 255, 255, 0.46);
+  max-width: 720px;
+  margin: 12px auto 0;
+  color: rgba(17, 17, 18, 0.55);
   font-size: 0.64rem;
   line-height: 1.5;
+  text-align: center;
 }
 
 .dsr-waitlist-consent a {
-  color: rgba(255, 255, 255, 0.74);
+  color: rgba(17, 17, 18, 0.82);
   text-decoration: underline;
-  text-decoration-color: rgba(199, 255, 101, 0.6);
+  text-decoration-color: #89a83e;
   text-underline-offset: 3px;
 }
 
 .dsr-waitlist-consent a:hover,
 .dsr-waitlist-consent a:focus-visible {
-  color: var(--dsr-lime);
+  color: #526d1e;
 }
 
 .dsr-waitlist-message {
   min-height: 18px;
-  margin: 12px 0 0;
-  color: rgba(255, 255, 255, 0.48);
+  margin: 13px auto 0;
+  color: rgba(17, 17, 18, 0.55);
   font-size: 0.68rem;
   line-height: 1.4;
+  text-align: center;
 }
 
 .dsr-waitlist-card.is-success .dsr-waitlist-message {
-  color: var(--dsr-lime);
+  color: #3f6b12;
 }
 
 .dsr-waitlist-card.is-error .dsr-waitlist-message {
-  color: #ff9c88;
+  color: #a83522;
+}
+
+.dsr-waitlist-provider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 8px 0 0;
+  color: rgba(17, 17, 18, 0.52);
+  font-family: var(--dsr-mono);
+  font-size: 0.58rem;
+  letter-spacing: 0.01em;
+}
+
+.dsr-waitlist-provider svg {
+  width: 13px;
+  height: 13px;
 }
 
 .dsr-waitlist-honeypot {
@@ -3328,7 +3410,9 @@
 
   .dsr-waitlist-card {
     width: 100%;
-    border-radius: 24px;
+    min-height: 0;
+    padding: 44px 24px;
+    border-radius: 20px;
   }
 
   .dsr-final-actions > .dsr-text-link {
@@ -3376,7 +3460,15 @@
   }
 
   .dsr-waitlist-card {
-    padding: 22px 18px;
+    padding: 34px 18px;
+  }
+
+  .dsr-waitlist-card::before {
+    background-size: 32px 32px;
+  }
+
+  .dsr-waitlist-heading h3 {
+    font-size: 2.45rem;
   }
 
   .dsr-waitlist-field {

@@ -4,7 +4,7 @@ const MAX_ATTRIBUTION_LENGTH = 255;
 const MAX_REFERRER_LENGTH = 1024;
 const LOOPS_EVENTS_URL = "https://app.loops.so/api/v1/events/send";
 
-export const WAITLIST_CONSENT_VERSION = "2026-08-03";
+export const WAITLIST_CONSENT_VERSION = "2026-08-23";
 
 const ATTRIBUTION_FIELDS = [
   "utm_source",

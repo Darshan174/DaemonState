@@ -1,10 +1,25 @@
 # Public waitlist operations
 
+## Clerk-managed signup
+
+The hosted landing page uses Clerk's managed waitlist whenever
+`VITE_CLERK_PUBLISHABLE_KEY` is present at build time. Create a Clerk
+application, enable **Waitlist** under Access mode, keep email enabled, and add
+the publishable key to the frontend build environment. The custom landing form
+then calls Clerk directly, so approvals and the eventual account invitation
+stay in the same authentication provider.
+
+No Clerk secret belongs in the frontend environment. Without a publishable key,
+the form falls back to the same-origin D1 flow below for local and self-hosted
+deployments.
+
+## D1 fallback
+
 The public Cloudflare Worker routes `POST /api/waitlist` through
 `worker/index.js` to `functions/api/waitlist.js`. Its bound D1 database is the
-canonical store for signups submitted on `daemonstate.com`. The FastAPI endpoint
-uses the same request fields for local and self-hosted development, but it is not
-a replica of the hosted D1 list.
+fallback store for deployments that do not configure Clerk. The FastAPI
+endpoint uses the same request fields for local and self-hosted development,
+but it is not a replica of the hosted D1 list.
 
 ## D1 setup and migrations
 

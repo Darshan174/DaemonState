@@ -16,7 +16,7 @@ from app.time import utc_now
 
 router = APIRouter()
 _EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-WAITLIST_CONSENT_VERSION = "2026-08-03"
+WAITLIST_CONSENT_VERSION = "2026-08-23"
 _ATTRIBUTION_FIELDS = (
     "utm_source",
     "utm_medium",

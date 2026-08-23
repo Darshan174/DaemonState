@@ -1,4 +1,4 @@
-export const WAITLIST_CONSENT_VERSION = "2026-08-03";
+export const WAITLIST_CONSENT_VERSION = "2026-08-23";
 
 const WAITLIST_EVENTS = new Set([
   "landing_viewed",

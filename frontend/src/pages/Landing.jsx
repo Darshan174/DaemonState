@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { useWaitlist } from "@clerk/react";
 import { Link } from "react-router-dom";
 import {
   ArrowRight,
@@ -11,6 +12,7 @@ import {
   Fingerprint,
   History,
   Layers3,
+  LockKeyhole,
   Menu,
   RefreshCw,
   ShieldCheck,
@@ -22,6 +24,7 @@ import {
 import DaemonStateIcon from "../components/DaemonStateIcon";
 import openaiIcon from "../assets/openai-icon.png";
 import { ApiError, api } from "../api/client";
+import { clerkWaitlistEnabled } from "../auth/clerk";
 import { WAITLIST_ONLY } from "../config/deployment";
 import {
   WAITLIST_CONSENT_VERSION,
@@ -800,6 +803,13 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
 }
 
 function WaitlistForm() {
+  if (clerkWaitlistEnabled(import.meta.env)) {
+    return <ClerkWaitlistForm />;
+  }
+  return <DatabaseWaitlistForm />;
+}
+
+function DatabaseWaitlistForm() {
   const [email, setEmail] = useState("");
   const [website, setWebsite] = useState("");
   const [submission, setSubmission] = useState("idle");
@@ -840,7 +850,114 @@ function WaitlistForm() {
   const isSuccess = submission === "success";
 
   return (
-    <div className={`dsr-waitlist-card is-${submission}`}>
+    <WaitlistCard
+      email={email}
+      isSubmitting={isSubmitting}
+      isSuccess={isSuccess}
+      message={message}
+      onEmailChange={setEmail}
+      onSubmit={handleSubmit}
+      onWebsiteChange={setWebsite}
+      provider="cloudflare-d1"
+      submission={submission}
+      website={website}
+    />
+  );
+}
+
+function ClerkWaitlistForm() {
+  const { waitlist, errors, fetchStatus } = useWaitlist();
+  const [email, setEmail] = useState("");
+  const [website, setWebsite] = useState("");
+  const [submission, setSubmission] = useState("idle");
+  const [message, setMessage] = useState(
+    "Join now and we'll email you when your private-beta account is ready.",
+  );
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setSubmission("submitting");
+    setMessage("Securing your place…");
+    const attribution = waitlistAttribution();
+    const analyticsProperties = analyticsAttribution(attribution);
+    captureWaitlistEvent("waitlist_cta_clicked", analyticsProperties);
+
+    if (website.trim()) {
+      setSubmission("success");
+      setEmail("");
+      setMessage("You're on the DaemonState waitlist.");
+      return;
+    }
+
+    try {
+      const result = await waitlist.join({ emailAddress: email.trim() });
+      if (result?.error) throw result.error;
+      setSubmission("success");
+      setEmail("");
+      setMessage("You're on the list. Check your inbox for confirmation.");
+      captureWaitlistEvent("waitlist_joined", analyticsProperties);
+    } catch (error) {
+      setSubmission("error");
+      setMessage(clerkWaitlistErrorMessage(error, errors));
+    }
+  };
+
+  const isSuccess = submission === "success" || Boolean(waitlist?.id);
+  const isSubmitting = submission === "submitting" || fetchStatus === "fetching";
+  const visibleSubmission = isSuccess ? "success" : submission;
+
+  return (
+    <WaitlistCard
+      email={email}
+      isSubmitting={isSubmitting}
+      isSuccess={isSuccess}
+      managedByClerk
+      message={isSuccess && submission !== "success"
+        ? "You're already on the list. We'll email you when access is ready."
+        : message}
+      onEmailChange={setEmail}
+      onSubmit={handleSubmit}
+      onWebsiteChange={setWebsite}
+      provider="clerk"
+      submission={visibleSubmission}
+      website={website}
+    />
+  );
+}
+
+function clerkWaitlistErrorMessage(error, errors) {
+  const fieldMessage = errors?.fields?.emailAddress?.longMessage;
+  if (typeof fieldMessage === "string" && fieldMessage.trim()) {
+    return fieldMessage;
+  }
+  const providerError = Array.isArray(error?.errors)
+    ? error.errors.find((item) => typeof item?.longMessage === "string")
+    : null;
+  if (providerError?.longMessage) return providerError.longMessage;
+  if (error?.status === 429) {
+    return "Too many attempts. Please wait a minute and try again.";
+  }
+  return "We couldn't add you right now. Please check your email and try again.";
+}
+
+function WaitlistCard({
+  email,
+  isSubmitting,
+  isSuccess,
+  managedByClerk = false,
+  message,
+  onEmailChange,
+  onSubmit,
+  onWebsiteChange,
+  provider,
+  submission,
+  website,
+}) {
+  return (
+    <div
+      className={`dsr-waitlist-card is-${submission}`}
+      data-waitlist-provider={provider}
+    >
       <div className="dsr-waitlist-heading">
         <span>EARLY ACCESS / PRIVATE BETA</span>
         <h3>Join the private beta.</h3>
@@ -850,7 +967,7 @@ function WaitlistForm() {
         </p>
       </div>
 
-      <form onSubmit={handleSubmit} aria-label="Join the early-access waitlist">
+      <form onSubmit={onSubmit} aria-label="Join the early-access waitlist">
         <label htmlFor="waitlist-email">Email address</label>
         <div className="dsr-waitlist-field">
           <input
@@ -858,14 +975,16 @@ function WaitlistForm() {
             name="email"
             type="email"
             value={email}
-            onChange={(event) => setEmail(event.target.value)}
+            onChange={(event) => onEmailChange(event.target.value)}
             placeholder="you@company.com"
             autoComplete="email"
             inputMode="email"
             maxLength={320}
             required
             disabled={isSubmitting || isSuccess}
-            aria-describedby="waitlist-message waitlist-consent"
+            aria-describedby={managedByClerk
+              ? "waitlist-message waitlist-consent waitlist-provider"
+              : "waitlist-message waitlist-consent"}
           />
           <button type="submit" disabled={isSubmitting || isSuccess}>
             <span>
@@ -882,7 +1001,7 @@ function WaitlistForm() {
             name="website"
             type="text"
             value={website}
-            onChange={(event) => setWebsite(event.target.value)}
+            onChange={(event) => onWebsiteChange(event.target.value)}
             autoComplete="off"
             tabIndex={-1}
           />
@@ -903,6 +1022,13 @@ function WaitlistForm() {
       >
         {message}
       </p>
+
+      {managedByClerk && (
+        <p id="waitlist-provider" className="dsr-waitlist-provider">
+          <LockKeyhole aria-hidden="true" />
+          <span>Secure waitlist and account invitations managed by Clerk.</span>
+        </p>
+      )}
     </div>
   );
 }
