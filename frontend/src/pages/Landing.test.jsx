@@ -210,6 +210,9 @@ describe("Landing", () => {
     expect(
       screen.getByRole("heading", { name: "The agents change. The project remembers." }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("contentinfo").querySelector(".dsr-footer-brand svg"),
+    ).toHaveAttribute("width", "68");
     expect(screen.getByRole("link", { name: "Follow the build" })).toHaveAttribute(
       "href",
       "https://github.com/Darshan174/DaemonState",

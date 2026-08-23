@@ -2,22 +2,16 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useWaitlist } from "@clerk/react";
 import { Link } from "react-router-dom";
 import {
+  ArrowLeft,
   ArrowRight,
+  ArrowUp,
   ArrowUpRight,
   Check,
-  CircleDot,
-  Code2,
-  Database,
-  FileCode2,
-  Fingerprint,
-  History,
-  Layers3,
+  FileQuestion,
   LockKeyhole,
   Menu,
-  RefreshCw,
-  ShieldCheck,
   Sparkles,
-  Waypoints,
+  Zap,
   X,
 } from "lucide-react";
 
@@ -49,96 +43,111 @@ const ROTATING_AGENT_NAMES = [
   "Grok",
 ];
 const ROTATING_AGENT_INTERVAL_MS = 1000;
-
-const MEMORY_ITEMS = [
-  "The current goal",
-  "Completed and remaining work",
-  "Decisions and their evidence",
-  "Failed approaches and blockers",
-  "Relevant and changed files",
-  "Checks and the exact next action",
-];
+const DECK_AUTOPLAY_DELAY_SECONDS = 2.5;
+const DECK_TRANSITION_SECONDS = 0.45;
 
 const DECK_CARDS = [
   {
-    number: "01",
-    eyebrow: "Session library",
     title: "Five sessions in. Still re-explaining the project.",
     type: "sessions",
   },
   {
-    number: "02",
-    eyebrow: "Decisions + evidence",
     title: "Context compaction kept the summary. It lost the nuance.",
-    type: "graph",
+    type: "compaction",
   },
   {
-    number: "03",
-    eyebrow: "Workspace Context",
     title: "The session is still open. The model is already forgetting.",
-    type: "memory",
+    type: "forgetting",
   },
   {
-    number: "04",
-    eyebrow: "Session Context",
     title: "Claude looks better today. Too bad your context lives in Codex.",
-    type: "handoff",
+    type: "lockin",
   },
   {
-    number: "05",
-    eyebrow: "Agent destination",
     title: "Every fresh chat starts with an expensive history lesson.",
-    type: "continuity",
+    type: "restart",
   },
 ];
 
 const PROCESS_STEPS = [
   {
     number: "01",
-    title: "Capture the session",
-    body: "Create an immutable checkpoint from an in-project Codex, Claude Code, or OpenCode session.",
-    icon: Layers3,
-    tone: "lime",
-    meta: "SESSION / CAPTURED",
+    title: "Capture the working trail.",
+    type: "capture",
   },
   {
     number: "02",
-    title: "Compile the state",
-    body: "Reconcile it with the current repository and separate source-backed facts from session claims.",
-    icon: Waypoints,
-    tone: "blue",
-    meta: "STATE / RECONCILED",
+    title: "Verify it against the code.",
+    type: "verify",
   },
   {
     number: "03",
-    title: "Dock the next agent",
-    body: "Inspect the bounded brief, then carry it into a fresh supported agent session.",
-    icon: RefreshCw,
-    tone: "coral",
-    meta: "DESTINATION / SELECTED",
+    title: "Compose the next handoff.",
+    type: "compose",
   },
 ];
 
-const FEATURE_CARDS = [
+const CAPTURE_SOURCES = [
   {
-    number: "01",
-    title: "Session Context",
-    body: "The goal, progress, decisions, failed attempts, blockers, checks, and next action from one captured session.",
-    icon: Fingerprint,
+    name: "Codex",
+    claim: "AuthMiddleware is mounted. The tests pass.",
   },
   {
-    number: "02",
-    title: "Workspace Context",
-    body: "Project-wide identity, architecture, capabilities, commands, repository state, and durable evidence.",
-    icon: ShieldCheck,
+    name: "Claude Code",
+    claim: "The polling approach produced a race condition.",
   },
   {
-    number: "03",
-    title: "A clear boundary",
-    body: "Task-local narration stays separate from project truth until current evidence supports it.",
-    icon: FileCode2,
+    name: "Cursor",
+    claim: "Migration 004 exists, but still needs verification.",
+  },
+  {
+    name: "OpenCode",
+    claim: "Next action: exercise the rollback path.",
   },
 ];
+
+const CAPTURED_STATE = [
+  ["Goal", "Finish the auth migration"],
+  ["Decision", "Use AuthMiddleware"],
+  ["Failed path", "Polling race condition"],
+  ["Next", "Verify the rollback"],
+];
+
+const SESSION_CLAIMS = [
+  "API now uses AuthMiddleware",
+  "All tests pass",
+  "Polling caused a race",
+  "Migration 004 needs verification",
+];
+
+const REPOSITORY_EVIDENCE = [
+  ["+", "app/api.py:48", "AuthMiddleware mounted"],
+  ["○", "tests/", "No run at this snapshot"],
+  ["!", "session cc_118", "Failure evidence preserved"],
+  ["+", "migrations/004.py", "File exists; run absent"],
+];
+
+const RESOLVED_STATE = [
+  ["API uses AuthMiddleware", "Supported by current source", "Verified", "verified"],
+  ["All tests pass", "No run for this commit", "Unverified", "unverified"],
+  ["Polling caused a race", "Preserved with its session", "Task-local", "task"],
+];
+
+const HANDOFF_CONTEXTS = [
+  ["Foundation / required", "Workspace Context", "DaemonState"],
+  ["Session 01", "Auth middleware", "Codex"],
+  ["Session 02", "Polling failure", "Claude Code"],
+  ["Session 03", "Rollback next step", "OpenCode"],
+];
+
+const HANDOFF_BRIEF = [
+  ["Current state", "AuthMiddleware is mounted at the API boundary."],
+  ["Known failure", "Do not retry polling; it produced a race condition."],
+  ["Unverified", "Migration 004 has not run at the current snapshot."],
+  ["First action", "Exercise the rollback path, then verify the migration."],
+];
+
+const HANDOFF_DESTINATIONS = ["Codex", "Claude Code", "Cursor", "OpenCode"];
 
 function splitWords(text) {
   const words = text.split(" ");
@@ -249,6 +258,68 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
       if (reducedMotion) {
         const loader = root.querySelector(".dsr-loader");
         if (loader) loader.setAttribute("hidden", "");
+        const deckTrack = root.querySelector(".dsr-deck-track");
+        const deckWindow = root.querySelector(".dsr-deck-window");
+        const deckCards = Array.from(root.querySelectorAll(".dsr-deck-card"));
+        const deckControls = Array.from(root.querySelectorAll("[data-deck-index]"));
+        const deckStatus = root.querySelector("[data-deck-status]");
+        const deckPrevious = root.querySelector('[data-deck-action="previous"]');
+        const deckNext = root.querySelector('[data-deck-action="next"]');
+        let deckActiveIndex = 0;
+        let deckStep = 0;
+
+        const renderReducedDeck = () => {
+          if (!deckTrack || !deckCards.length) return;
+          const styles = window.getComputedStyle(deckTrack);
+          deckStep = deckCards[0].offsetHeight
+            + Number.parseFloat(styles.rowGap || styles.gap || "0");
+          deckTrack.style.transform = `translate3d(0, ${-deckStep * deckActiveIndex}px, 0)`;
+          deckControls.forEach((control, index) => {
+            const isActive = index === deckActiveIndex;
+            control.classList.toggle("is-active", isActive);
+            control.setAttribute("aria-pressed", String(isActive));
+          });
+          if (deckStatus) {
+            deckStatus.textContent = `Showing card ${deckActiveIndex + 1} of ${deckCards.length}.`;
+          }
+        };
+        const showReducedDeckCard = (requestedIndex) => {
+          deckActiveIndex = (
+            (requestedIndex % deckCards.length) + deckCards.length
+          ) % deckCards.length;
+          renderReducedDeck();
+        };
+        const reducedControlHandlers = deckControls.map((control) => {
+          const handler = () => showReducedDeckCard(Number(control.dataset.deckIndex));
+          control.addEventListener("click", handler);
+          return [control, handler];
+        });
+        const handleReducedPrevious = () => showReducedDeckCard(deckActiveIndex - 1);
+        const handleReducedNext = () => showReducedDeckCard(deckActiveIndex + 1);
+        const handleReducedKeyDown = (event) => {
+          if (event.key === "ArrowLeft") showReducedDeckCard(deckActiveIndex - 1);
+          else if (event.key === "ArrowRight") showReducedDeckCard(deckActiveIndex + 1);
+          else if (event.key === "Home") showReducedDeckCard(0);
+          else if (event.key === "End") showReducedDeckCard(deckCards.length - 1);
+          else return;
+          event.preventDefault();
+        };
+
+        deckWindow?.setAttribute("data-autoplay", "paused");
+        deckPrevious?.addEventListener("click", handleReducedPrevious);
+        deckNext?.addEventListener("click", handleReducedNext);
+        deckWindow?.addEventListener("keydown", handleReducedKeyDown);
+        window.addEventListener("resize", renderReducedDeck, { passive: true });
+        renderReducedDeck();
+        cleanups.push(() => {
+          reducedControlHandlers.forEach(([control, handler]) => {
+            control.removeEventListener("click", handler);
+          });
+          deckPrevious?.removeEventListener("click", handleReducedPrevious);
+          deckNext?.removeEventListener("click", handleReducedNext);
+          deckWindow?.removeEventListener("keydown", handleReducedKeyDown);
+          window.removeEventListener("resize", renderReducedDeck);
+        });
         return;
       }
 
@@ -261,7 +332,7 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
         const navPill = root.querySelector(".dsr-nav-pill");
         const loader = root.querySelector(".dsr-loader");
 
-        gsap.timeline({ defaults: { ease: "power3.inOut" } })
+        const introTimeline = gsap.timeline({ defaults: { ease: "power3.inOut" } })
           .set([heroLeft, heroRight], { willChange: "transform" })
           .fromTo(
             loader,
@@ -290,6 +361,7 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
             { x: 0, duration: 1.05, ease: "expo.inOut" },
             "<",
           )
+          .addLabel("deckReveal", "-=0.72")
           .from(
             heroDeck,
             {
@@ -298,7 +370,7 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
               duration: 0.92,
               ease: "expo.out",
             },
-            "-=0.72",
+            "deckReveal",
           )
           .from(
             ".dsr-hero-support",
@@ -315,11 +387,15 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
         const deckTrack = root.querySelector(".dsr-deck-track");
         const deckWindow = root.querySelector(".dsr-deck-window");
         const deckCards = gsap.utils.toArray(".dsr-deck-card", root);
-        const deckCounter = root.querySelector(".dsr-deck-count");
+        const deckControls = gsap.utils.toArray("[data-deck-index]", root);
+        const deckStatus = root.querySelector("[data-deck-status]");
+        const deckPrevious = root.querySelector('[data-deck-action="previous"]');
+        const deckNext = root.querySelector('[data-deck-action="next"]');
         let deckStep = 0;
         let deckActiveIndex = 0;
         let deckDirection = 1;
         let deckPaused = false;
+        let deckStarted = false;
         const deckPauseReasons = new Set();
 
         const updateDeckCards = () => {
@@ -332,8 +408,14 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
             ),
           );
 
-          if (deckCounter) {
-            deckCounter.textContent = String(activeIndex + 1).padStart(2, "0");
+          deckControls.forEach((control, index) => {
+            const isActive = index === activeIndex;
+            control.classList.toggle("is-active", isActive);
+            control.setAttribute("aria-pressed", String(isActive));
+          });
+
+          if (deckStatus) {
+            deckStatus.textContent = `Showing card ${activeIndex + 1} of ${deckCards.length}.`;
           }
 
           deckCards.forEach((card, index) => {
@@ -365,27 +447,39 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           updateDeckCards();
         };
 
-        const scheduleDeckAdvance = (delay = 2.35) => {
+        const goToDeckIndex = (requestedIndex, restartAutoplay = true) => {
+          if (!deckStep || deckCards.length < 2) return;
+          deckActiveIndex = (
+            (requestedIndex % deckCards.length) + deckCards.length
+          ) % deckCards.length;
+          deckTween?.kill();
+          deckTween = gsap.to(deckTrack, {
+            y: -deckStep * deckActiveIndex,
+            duration: DECK_TRANSITION_SECONDS,
+            ease: "power3.inOut",
+            onUpdate: updateDeckCards,
+            onComplete: updateDeckCards,
+          });
+
+          if (restartAutoplay && deckStarted && !deckPaused) {
+            scheduleDeckAdvance(DECK_AUTOPLAY_DELAY_SECONDS);
+          }
+        };
+
+        const scheduleDeckAdvance = (delay = DECK_AUTOPLAY_DELAY_SECONDS) => {
           deckAdvanceCall?.kill();
-          if (deckPaused || !deckStep || deckCards.length < 2) return;
+          if (!deckStarted || deckPaused || !deckStep || deckCards.length < 2) return;
           deckAdvanceCall = gsap.delayedCall(delay, () => {
             if (deckActiveIndex >= deckCards.length - 1) deckDirection = -1;
             else if (deckActiveIndex <= 0) deckDirection = 1;
-
-            const nextIndex = deckActiveIndex + deckDirection;
-            deckActiveIndex = nextIndex;
-            deckTween?.kill();
-            deckTween = gsap.to(deckTrack, {
-              y: -deckStep * deckActiveIndex,
-              duration: 1.15,
-              ease: "power3.inOut",
-              onUpdate: updateDeckCards,
-              onComplete: () => {
-                updateDeckCards();
-                scheduleDeckAdvance();
-              },
-            });
+            goToDeckIndex(deckActiveIndex + deckDirection, false);
+            scheduleDeckAdvance(DECK_AUTOPLAY_DELAY_SECONDS);
           });
+        };
+
+        const startDeckAutoplay = () => {
+          deckStarted = true;
+          scheduleDeckAdvance(DECK_AUTOPLAY_DELAY_SECONDS);
         };
 
         const pauseDeck = (reason) => {
@@ -401,17 +495,19 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           if (deckPauseReasons.size) return;
           deckPaused = false;
           deckWindow?.setAttribute("data-autoplay", "playing");
-          if (!deckTween?.isActive()) scheduleDeckAdvance(1.1);
+          if (deckStarted) scheduleDeckAdvance(DECK_AUTOPLAY_DELAY_SECONDS);
         };
 
         sizeDeck(0);
-        scheduleDeckAdvance(1.8);
+        introTimeline.call(startDeckAutoplay, [], "deckReveal");
 
         const handleDeckResize = () => {
           deckTween?.kill();
           deckAdvanceCall?.kill();
           sizeDeck(deckActiveIndex);
-          if (!deckPaused) scheduleDeckAdvance(1.1);
+          if (deckStarted && !deckPaused) {
+            scheduleDeckAdvance(DECK_AUTOPLAY_DELAY_SECONDS);
+          }
         };
 
         const handleDeckVisibility = () => {
@@ -420,21 +516,40 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
         };
         const handleDeckMouseEnter = () => pauseDeck("pointer");
         const handleDeckMouseLeave = () => resumeDeck("pointer");
-        const handleDeckFocusIn = () => pauseDeck("focus");
-        const handleDeckFocusOut = () => resumeDeck("focus");
+        const handleDeckKeyDown = (event) => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+          event.preventDefault();
+          if (event.key === "ArrowLeft") goToDeckIndex(deckActiveIndex - 1);
+          if (event.key === "ArrowRight") goToDeckIndex(deckActiveIndex + 1);
+          if (event.key === "Home") goToDeckIndex(0);
+          if (event.key === "End") goToDeckIndex(deckCards.length - 1);
+        };
+        const handleDeckControl = (event) => {
+          goToDeckIndex(Number(event.currentTarget.dataset.deckIndex));
+        };
+        const handleDeckPrevious = () => goToDeckIndex(deckActiveIndex - 1);
+        const handleDeckNext = () => goToDeckIndex(deckActiveIndex + 1);
 
         window.addEventListener("resize", handleDeckResize, { passive: true });
         deckWindow?.addEventListener("mouseenter", handleDeckMouseEnter);
         deckWindow?.addEventListener("mouseleave", handleDeckMouseLeave);
-        deckWindow?.addEventListener("focusin", handleDeckFocusIn);
-        deckWindow?.addEventListener("focusout", handleDeckFocusOut);
+        deckWindow?.addEventListener("keydown", handleDeckKeyDown);
+        deckControls.forEach((control) => {
+          control.addEventListener("click", handleDeckControl);
+        });
+        deckPrevious?.addEventListener("click", handleDeckPrevious);
+        deckNext?.addEventListener("click", handleDeckNext);
         document.addEventListener("visibilitychange", handleDeckVisibility);
         cleanups.push(() => {
           window.removeEventListener("resize", handleDeckResize);
           deckWindow?.removeEventListener("mouseenter", handleDeckMouseEnter);
           deckWindow?.removeEventListener("mouseleave", handleDeckMouseLeave);
-          deckWindow?.removeEventListener("focusin", handleDeckFocusIn);
-          deckWindow?.removeEventListener("focusout", handleDeckFocusOut);
+          deckWindow?.removeEventListener("keydown", handleDeckKeyDown);
+          deckControls.forEach((control) => {
+            control.removeEventListener("click", handleDeckControl);
+          });
+          deckPrevious?.removeEventListener("click", handleDeckPrevious);
+          deckNext?.removeEventListener("click", handleDeckNext);
           document.removeEventListener("visibilitychange", handleDeckVisibility);
         });
 
@@ -487,7 +602,7 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
         });
 
         const lightSections = gsap.utils.toArray(
-          ".dsr-hero, .dsr-features, .dsr-final",
+          ".dsr-hero, .dsr-final",
           root,
         );
         const updateBrandContrast = () => {
@@ -545,53 +660,6 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
               1,
             );
         }
-
-        gsap.from(".dsr-feature-card", {
-          y: 130,
-          rotateZ: (index) => (index - 1) * 3,
-          autoAlpha: 0,
-          stagger: 0.12,
-          duration: 1,
-          ease: "power4.out",
-          scrollTrigger: {
-            trigger: ".dsr-features-grid",
-            start: "top 78%",
-            toggleActions: "play none none reverse",
-          },
-        });
-
-        gsap.timeline({
-          scrollTrigger: {
-            trigger: ".dsr-memory-title",
-            start: "top 88%",
-            end: "top 28%",
-            scrub: 1,
-          },
-        })
-          .from(".dsr-memory-title-line span", {
-            yPercent: 110,
-            stagger: 0.1,
-            ease: "none",
-          });
-
-        gsap.timeline({
-          scrollTrigger: {
-            trigger: ".dsr-memory-layout",
-            start: "top 88%",
-            end: "top 30%",
-            scrub: 1,
-          },
-        })
-          .from(
-            ".dsr-memory-console",
-            { y: 130, rotateX: 12, autoAlpha: 0, ease: "none" },
-            0,
-          )
-          .from(
-            ".dsr-memory-list li",
-            { x: -32, autoAlpha: 0, stagger: 0.05, ease: "none" },
-            0,
-          );
 
         gsap.from(".dsr-final-letter", {
           yPercent: 110,
@@ -705,65 +773,15 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
         <section id="how-it-works" className="dsr-stack">
           <div className="dsr-stack-sticky">
             <div className="dsr-section-shell dsr-stack-heading">
-              <SectionMarker label="How it works" number="02" />
-              <h2>Capture. Compile. Dock.</h2>
-              <p>A deliberate path from one session to the next.</p>
+              <SectionMarker label="The handoff loop" number="02" />
+              <h2>Turn scattered sessions into trusted context.</h2>
+              <p>Capture what each agent learned, check it against the code, and continue in any tool.</p>
             </div>
 
             <div className="dsr-stack-cards">
               {PROCESS_STEPS.map((step) => (
                 <ProcessCard key={step.number} {...step} />
               ))}
-            </div>
-          </div>
-        </section>
-
-        <section className="dsr-features" aria-labelledby="features-heading">
-          <div className="dsr-section-shell">
-            <div className="dsr-features-heading">
-              <SectionMarker label="The state model" number="03" dark />
-              <h2 id="features-heading">Two contexts. One project.</h2>
-            </div>
-            <div className="dsr-features-grid">
-              {FEATURE_CARDS.map((feature) => (
-                <FeatureCard key={feature.number} {...feature} />
-              ))}
-            </div>
-          </div>
-        </section>
-
-        <section id="project-memory" className="dsr-memory">
-          <div className="dsr-section-shell">
-            <SectionMarker label="What gets carried" number="04" />
-            <h2
-              className="dsr-memory-title"
-              aria-label="Not chat history. Working state."
-            >
-              <span className="dsr-memory-title-line">
-                <span>Not chat history.</span>
-              </span>
-              <span className="dsr-memory-title-line dsr-memory-title-right">
-                <span>Working state.</span>
-              </span>
-            </h2>
-            <p className="dsr-memory-not-archive">Bounded. Source-backed. Current.</p>
-
-            <div className="dsr-memory-layout">
-              <div className="dsr-memory-copy">
-                <p>
-                  DaemonState compiles what the receiving agent needs now,
-                  without using the entire conversation as the default brief.
-                </p>
-                <ul className="dsr-memory-list">
-                  {MEMORY_ITEMS.map((item) => (
-                    <li key={item}>
-                      <Check aria-hidden="true" />
-                      <span>{item}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <MemoryConsole />
             </div>
           </div>
         </section>
@@ -1146,29 +1164,56 @@ function HeroDeck() {
       aria-label="Project memory examples carousel."
       className="dsr-deck-window"
       data-autoplay="playing"
+      data-autoplay-delay={DECK_AUTOPLAY_DELAY_SECONDS * 1000}
       tabIndex={0}
     >
       <div className="dsr-deck-track-shell">
         <div className="dsr-deck-track">
           {DECK_CARDS.map((card) => (
-            <DeckCard key={card.number} {...card} />
+            <DeckCard key={card.type} {...card} />
           ))}
         </div>
       </div>
-      <span className="dsr-deck-index">
-        / <b className="dsr-deck-count">01</b>
-      </span>
+      <div className="dsr-deck-controls" aria-label="Choose a card">
+        <button
+          type="button"
+          className="dsr-deck-arrow"
+          data-deck-action="previous"
+          aria-label="Show previous card"
+        >
+          <ArrowLeft aria-hidden="true" />
+        </button>
+        <div className="dsr-deck-dots" role="group" aria-label="Choose a specific card">
+          {DECK_CARDS.map((card, index) => (
+            <button
+              type="button"
+              className={`dsr-deck-dot${index === 0 ? " is-active" : ""}`}
+              data-deck-index={index}
+              aria-label={`Show card ${index + 1}: ${card.title}`}
+              aria-pressed={index === 0}
+              key={card.type}
+            />
+          ))}
+        </div>
+        <button
+          type="button"
+          className="dsr-deck-arrow"
+          data-deck-action="next"
+          aria-label="Show next card"
+        >
+          <ArrowRight aria-hidden="true" />
+        </button>
+      </div>
+      <p className="dsr-sr-only" aria-live="polite" data-deck-status>
+        Showing card 1 of 5.
+      </p>
     </div>
   );
 }
 
-function DeckCard({ number, eyebrow, title, type }) {
+function DeckCard({ title, type }) {
   return (
     <article className={`dsr-deck-card dsr-deck-card-${type}`}>
-      <header>
-        <span>{eyebrow}</span>
-        <small>/{number}</small>
-      </header>
       <h3>{title}</h3>
       <DeckVisual type={type} />
     </article>
@@ -1178,77 +1223,152 @@ function DeckCard({ number, eyebrow, title, type }) {
 function DeckVisual({ type }) {
   if (type === "sessions") {
     return (
-      <div className="dsr-deck-visual dsr-session-orbit" aria-hidden="true">
-        {TOOL_NAMES.map((name, index) => (
-          <span
-            className="dsr-session-agent"
-            key={name}
-            style={{ "--index": index }}
-          >
-            <AgentLogo name={name} />
-          </span>
-        ))}
-        <i><Layers3 /></i>
-      </div>
-    );
-  }
-
-  if (type === "graph") {
-    return (
-      <div className="dsr-deck-visual dsr-graph-visual" aria-hidden="true">
-        <span className="dsr-graph-node is-main">Decision</span>
-        <span className="dsr-graph-node is-one">Evidence</span>
-        <span className="dsr-graph-node is-two">Files</span>
-        <span className="dsr-graph-node is-three">Failed path</span>
-        <svg
-          className="dsr-graph-connectors"
-          viewBox="0 0 100 100"
-          preserveAspectRatio="none"
-        >
-          <path d="M50 38 C42 49 25 52 19 70" />
-          <path d="M50 38 C50 49 48 60 48 76" />
-          <path d="M50 38 C59 48 76 51 82 67" />
-        </svg>
-      </div>
-    );
-  }
-
-  if (type === "memory") {
-    return (
-      <div className="dsr-deck-visual dsr-memory-mosaic" aria-hidden="true">
-        <span className="dsr-mosaic-tile tile-a"><Code2 /></span>
-        <span className="dsr-mosaic-tile tile-b">14<br /><small>DECISIONS</small></span>
-        <span className="dsr-mosaic-tile tile-c"><DaemonStateIcon size={42} /></span>
-        <span className="dsr-mosaic-tile tile-d">08<br /><small>KEY FILES</small></span>
-        <span className="dsr-mosaic-tile tile-e"><Database /></span>
-        <i className="dsr-mosaic-ring" />
-      </div>
-    );
-  }
-
-  if (type === "handoff") {
-    return (
-      <div className="dsr-deck-visual dsr-handoff-visual" aria-hidden="true">
-        <div>
-          <span><CircleDot /> STATE COMPILED</span>
-          <strong>Continue provider adapter work</strong>
-          <small>Decision sourced · Blocker surfaced · Next action clear</small>
+      <div className="dsr-deck-visual dsr-session-table" aria-hidden="true">
+        <div className="dsr-session-key">
+          <span>Session</span>
+          <span>Repeated briefing</span>
+          <span>Useful work</span>
         </div>
-        <ArrowRight />
+        {[1, 2, 3, 4, 5].map((session) => (
+          <div className="dsr-session-row" key={session}>
+            <span className="dsr-session-id">
+              <small>Session</small>
+              <strong>{String(session).padStart(2, "0")}</strong>
+            </span>
+            <span className="dsr-session-journey">
+              <span className="dsr-session-repeat">
+                <strong>Project briefing</strong>
+                <small>Repo · decisions · constraints</small>
+              </span>
+              <ArrowRight className="dsr-session-arrow" />
+              <strong className="dsr-session-work">Build</strong>
+            </span>
+          </div>
+        ))}
+        <div className="dsr-repeat-total">
+          <strong>Same briefing ×5</strong>
+          <span>paid before every session</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (type === "compaction") {
+    return (
+      <div className="dsr-deck-visual dsr-compaction-visual" aria-hidden="true">
+        <div className="dsr-context-trigger">
+          <div>
+            <span>Context window</span>
+            <strong>Full</strong>
+          </div>
+          <div className="dsr-window-track">
+            {Array.from({ length: 10 }, (_, index) => <span key={index} />)}
+          </div>
+          <div className="dsr-trigger-result"><Zap /><strong>Compaction triggered</strong></div>
+        </div>
+        <div className="dsr-compaction-flow">
+          <section className="dsr-source-sheet">
+            <header><strong>Working state</strong><span>Before</span></header>
+            <div className="dsr-detail-list">
+              <div><span>Decision</span><strong>Use AuthMiddleware</strong></div>
+              <div><span>Why</span><strong>Keep auth at the API boundary</strong></div>
+              <div><span>Evidence</span><strong>Reproduced in app/api.py</strong></div>
+              <div><span>Failed path</span><strong>Polling caused a race</strong></div>
+            </div>
+          </section>
+          <div className="dsr-compressor">
+            <span />
+            <strong>Auto-summary</strong>
+            <span />
+          </div>
+          <section className="dsr-summary-sheet">
+            <header><strong>Summary</strong><span>After</span></header>
+            <div className="dsr-summary-main"><small>Kept</small><strong>Auth migration is in progress.</strong></div>
+            <div className="dsr-missing-list">
+              {["Why", "Evidence", "Failed path"].map((label) => (
+                <div key={label}><span>{label}</span><strong>Missing</strong></div>
+              ))}
+            </div>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+  if (type === "forgetting") {
+    return (
+      <div className="dsr-deck-visual dsr-chat-window" aria-hidden="true">
+        <header className="dsr-chat-chrome">
+          <span className="dsr-window-dots"><i /><i /><i /></span>
+          <strong>coding-session</strong>
+          <span>Live</span>
+        </header>
+        <div className="dsr-thread">
+          <section className="dsr-thread-lost">
+            <header><span>Earlier messages remain above</span><strong>Not visible</strong></header>
+            <div className="dsr-lost-messages">
+              {["Architecture", "Auth decision", "Failed approach", "Plan reasoning"].map((label) => (
+                <span key={label}>{label}<strong>Outside context</strong></span>
+              ))}
+            </div>
+          </section>
+          <div className="dsr-context-cut"><span>Active context starts here</span><strong>Everything above fell out</strong></div>
+          <section className="dsr-thread-active">
+            <header><span>What the model can see</span><strong>Active context</strong></header>
+            <div>
+              {["Current task", "Latest patch", "Test result"].map((label) => (
+                <span key={label}>{label}<strong>Now</strong></span>
+              ))}
+            </div>
+          </section>
+        </div>
+        <div className="dsr-chat-composer"><span>Continue working in this conversation…</span><i><ArrowUp /></i></div>
+      </div>
+    );
+  }
+
+  if (type === "lockin") {
+    return (
+      <div className="dsr-deck-visual dsr-provider-flow" aria-hidden="true">
+        <section className="dsr-provider-card">
+          <header><strong>Codex</strong><span>Current session</span></header>
+          <div className="dsr-context-pack">
+            <small>Your project context</small>
+            <strong>Decisions, evidence, constraints, next action</strong>
+            <i /><i />
+          </div>
+        </section>
+        <div className="dsr-provider-boundary">
+          <span /><i><LockKeyhole /></i><span />
+        </div>
+        <section className="dsr-provider-card">
+          <header><strong>Claude</strong><span>New session</span></header>
+          <div className="dsr-price-change">
+            <div><span>Pricing changed</span><strong>New</strong></div>
+            <div><s>Old price</s><ArrowRight /><strong>Lower price</strong></div>
+          </div>
+          <div className="dsr-empty-context"><FileQuestion /><strong>No project context</strong><span>Start the briefing again.</span></div>
+        </section>
       </div>
     );
   }
 
   return (
-    <div className="dsr-deck-visual dsr-continuity-visual" aria-hidden="true">
-      {["Codex", "Claude Code", "OpenCode"].map((name, index) => (
-        <span className="dsr-continuity-step" key={name}>
-          <span className="dsr-continuity-agent">
-            <AgentLogo name={name} />
-          </span>
-          {index < 2 && <i />}
-        </span>
-      ))}
+    <div className="dsr-deck-visual dsr-history-layout" aria-hidden="true">
+      <section className="dsr-new-chat">
+        <span>New chat</span>
+        <strong>How can I help?</strong>
+        <div>First, let me explain the project…</div>
+      </section>
+      <section className="dsr-history-gate">
+        <header><strong>History lesson</strong><span>Before work</span></header>
+        <div className="dsr-history-steps">
+          {["Recap the repository", "Rebuild the architecture", "Replay the decisions", "Rediscover failed paths"].map((label, index) => (
+            <div key={label}><span>{index + 1}</span><strong>{label}</strong><em>Again</em></div>
+          ))}
+        </div>
+        <div className="dsr-work-start"><strong>Useful work can finally start</strong><ArrowRight /></div>
+      </section>
     </div>
   );
 }
@@ -1413,45 +1533,235 @@ function ToolsBand() {
   );
 }
 
-function ProcessCard({ number, title, body, icon: Icon, tone, meta }) {
+function ProcessAgentLogo({ name }) {
+  if (name === "Codex") {
+    return (
+      <span className="dsr-process-agent-logo" aria-hidden="true">
+        <img src={openaiIcon} alt="" />
+      </span>
+    );
+  }
+
+  if (name === "Claude Code") {
+    return (
+      <span className="dsr-process-agent-logo is-claude" aria-hidden="true">
+        <svg viewBox="0 0 24 24">
+          <path d="M13.827 3.52h3.603L24 20h-3.603l-6.57-16.48zm-7.258 0h3.767L16.906 20h-3.674l-1.343-3.461H5.017L3.674 20H0L6.57 3.52zm2.285 5.357-2.07 5.675h4.14l-2.07-5.675z" />
+        </svg>
+      </span>
+    );
+  }
+
+  if (name === "Cursor") {
+    return (
+      <span className="dsr-process-agent-logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24">
+          <path d="M11.503.131 1.891 5.678a.84.84 0 0 0-.42.726v11.188c0 .3.162.575.42.724l9.609 5.55a1 1 0 0 0 .998 0l9.61-5.55a.84.84 0 0 0 .42-.724V6.404a.84.84 0 0 0-.42-.726L12.497.131a1.01 1.01 0 0 0-.996 0M2.657 6.338h18.55c.263 0 .43.287.297.515L12.23 22.918c-.062.107-.229.064-.229-.06V12.335a.59.59 0 0 0-.295-.51l-9.11-5.257c-.109-.063-.064-.23.061-.23" />
+        </svg>
+      </span>
+    );
+  }
+
+  if (name === "OpenCode") {
+    return (
+      <span className="dsr-process-agent-logo" aria-hidden="true">
+        <svg viewBox="0 0 24 30">
+          <path d="M18 24H6V12H18V24Z" opacity=".55" />
+          <path fillRule="evenodd" d="M18 6H6V24H18V6ZM24 30H0V0H24V30Z" />
+        </svg>
+      </span>
+    );
+  }
+
   return (
-    <article className={`dsr-stack-card dsr-stack-card-${tone}`}>
-      <header>
-        <span>STEP / {number}</span>
-        <Icon aria-hidden="true" />
-      </header>
-      <div className="dsr-stack-card-copy">
-        <h3>{title}</h3>
-        <p>{body}</p>
-      </div>
-      <div className="dsr-stack-card-visual" aria-hidden="true">
-        <span>{meta}</span>
-        <div>
-          <i />
-          <i />
-          <i />
-          <b><DaemonStateIcon size={46} /></b>
-        </div>
-      </div>
-      <small>{number} / 03</small>
-    </article>
+    <span className="dsr-process-agent-logo" aria-hidden="true">
+      <Sparkles />
+    </span>
   );
 }
 
-function FeatureCard({ number, title, body, icon: Icon }) {
+function ProcessDaemonMark({ className = "" }) {
   return (
-    <article className="dsr-feature-card">
-      <header>
-        <span>/{number}</span>
-        <Icon aria-hidden="true" />
-      </header>
-      <div>
-        <h3>{title}</h3>
-        <p>{body}</p>
+    <span className={`dsr-process-daemon-mark ${className}`.trim()} aria-hidden="true">
+      <DaemonStateIcon size={46} />
+    </span>
+  );
+}
+
+function CaptureProcessStory() {
+  return (
+    <div className="dsr-process-capture">
+      <ul
+        className="dsr-process-source-spread"
+        aria-label="Four attributed AI-tool session accounts"
+      >
+        {CAPTURE_SOURCES.map((source) => (
+          <li className="dsr-process-source-sheet" key={source.name}>
+            <div className="dsr-process-provider-head">
+              <ProcessAgentLogo name={source.name} />
+              <strong>{source.name}</strong>
+            </div>
+            <blockquote>“{source.claim}”</blockquote>
+          </li>
+        ))}
+      </ul>
+
+      <div className="dsr-process-convergence" aria-hidden="true">
+        <svg viewBox="0 0 640 104" preserveAspectRatio="none" fill="none">
+          <path d="M76 0V26L320 74" />
+          <path d="M240 0V32L320 74" />
+          <path d="M400 0V32L320 74" />
+          <path d="M564 0V26L320 74" />
+        </svg>
+        <ProcessDaemonMark className="dsr-process-central-mark" />
       </div>
-      <span className="dsr-feature-arrow" aria-hidden="true">
-        <ArrowUpRight />
-      </span>
+
+      <dl className="dsr-process-state-ribbon" aria-label="Captured working state">
+        {CAPTURED_STATE.map(([label, value]) => (
+          <div className="dsr-process-state-piece" key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
+function VerifyProcessStory() {
+  return (
+    <div className="dsr-process-verify">
+      <div className="dsr-process-verify-inputs">
+        <article className="dsr-process-evidence-sheet dsr-process-account-sheet">
+          <header className="dsr-process-sheet-title">
+            <h4>Session account</h4>
+            <span
+              className="dsr-process-mini-logos"
+              role="img"
+              aria-label="Codex, Claude Code, Cursor, and OpenCode sessions"
+            >
+              {HANDOFF_DESTINATIONS.map((name) => (
+                <ProcessAgentLogo name={name} key={name} />
+              ))}
+            </span>
+          </header>
+          <ol className="dsr-process-claim-list">
+            {SESSION_CLAIMS.map((claim, index) => (
+              <li key={claim}>
+                <span>{String(index + 1).padStart(2, "0")}</span>
+                <p>{claim}</p>
+              </li>
+            ))}
+          </ol>
+        </article>
+
+        <div className="dsr-process-verify-bridge" aria-hidden="true">
+          <ProcessDaemonMark />
+        </div>
+
+        <article className="dsr-process-evidence-sheet dsr-process-repo-sheet">
+          <header className="dsr-process-sheet-title">
+            <h4>Repository now</h4>
+            <code>2f91ac7</code>
+          </header>
+          <ul className="dsr-process-file-list">
+            {REPOSITORY_EVIDENCE.map(([marker, source, evidence]) => (
+              <li key={source}>
+                <span>{marker}</span>
+                <p><code>{source}</code><small>{evidence}</small></p>
+              </li>
+            ))}
+          </ul>
+        </article>
+      </div>
+
+      <ul className="dsr-process-proof" aria-label="Resolved state for the handoff">
+        {RESOLVED_STATE.map(([claim, evidence, status, tone]) => (
+          <li key={claim}>
+            <strong>{claim}</strong>
+            <span>{evidence}</span>
+            <em className={`is-${tone}`}>{status}</em>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ComposeProcessStory() {
+  const [destination, setDestination] = useState("Claude Code");
+
+  return (
+    <div className="dsr-process-compose">
+      <ul
+        className="dsr-process-context-stack"
+        aria-label="Workspace Context plus three selected Session Contexts"
+      >
+        {HANDOFF_CONTEXTS.map(([kind, name, provider]) => (
+          <li key={kind}>
+            <span className="dsr-process-context-kind">{kind}</span>
+            <strong>
+              {provider === "DaemonState"
+                ? <ProcessDaemonMark />
+                : <ProcessAgentLogo name={provider} />}
+              {name}
+            </strong>
+          </li>
+        ))}
+      </ul>
+
+      <div className="dsr-process-compose-join" aria-hidden="true">
+        <ProcessDaemonMark />
+      </div>
+
+      <article className="dsr-process-handoff-sheet">
+        <h4>Resume the authentication migration</h4>
+        <dl>
+          {HANDOFF_BRIEF.map(([label, value]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{value}</dd>
+            </div>
+          ))}
+        </dl>
+      </article>
+
+      <div className="dsr-process-destinations" aria-label="Choose a destination tool">
+        <span className="dsr-process-destination-title">Continue in</span>
+        {HANDOFF_DESTINATIONS.map((name) => (
+          <button
+            type="button"
+            aria-pressed={destination === name}
+            onClick={() => setDestination(name)}
+            key={name}
+          >
+            <ProcessAgentLogo name={name} />
+            <span>{name}</span>
+          </button>
+        ))}
+        <p>
+          Copy the reviewed brief
+          <span>Use it in any other composer.</span>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ProcessCard({ number, title, type }) {
+  const headingId = `process-step-${number}`;
+
+  return (
+    <article
+      className={`dsr-stack-card dsr-stack-card-${type}`}
+      aria-labelledby={headingId}
+    >
+      <h3 className="dsr-process-heading" id={headingId}>{title}</h3>
+      <div className="dsr-process-canvas">
+        {type === "capture" && <CaptureProcessStory />}
+        {type === "verify" && <VerifyProcessStory />}
+        {type === "compose" && <ComposeProcessStory />}
+      </div>
     </article>
   );
 }
@@ -1475,64 +1785,12 @@ function AnimatedPhrase({ text, offset = false }) {
   );
 }
 
-function MemoryConsole() {
-  return (
-    <div className="dsr-memory-console" aria-label="Working-state handoff architecture">
-      <header>
-        <span><Code2 /> WORKING STATE</span>
-        <span className="dsr-memory-live"><i /> CURRENT</span>
-      </header>
-
-      <div className="dsr-memory-console-body">
-        <div className="dsr-memory-inputs">
-          <span><History /> Session checkpoint</span>
-          <span><Code2 /> Repository snapshot</span>
-          <span><Database /> Decisions + evidence</span>
-        </div>
-        <div className="dsr-memory-flow" aria-hidden="true">
-          <i /><i /><i />
-        </div>
-        <div className="dsr-memory-core">
-          <article className="dsr-memory-thread-card">
-            <header>
-              <span>CURRENT THREAD</span>
-              <i aria-hidden="true" />
-            </header>
-            <strong>Provider-neutral handoff</strong>
-            <ul>
-              <li>Decision kept</li>
-              <li>Blocker visible</li>
-              <li>Next move clear</li>
-            </ul>
-          </article>
-          <p>Kept current as the project changes.</p>
-        </div>
-        <div className="dsr-memory-output-line" aria-hidden="true" />
-        <div className="dsr-memory-output">
-          <Sparkles aria-hidden="true" />
-          <div>
-            <span>NEXT AGENT</span>
-            <strong>Ready to copy.</strong>
-          </div>
-          <ArrowRight aria-hidden="true" />
-        </div>
-      </div>
-
-      <footer>
-        <span>State integrity</span>
-        <div><i /></div>
-        <strong>VERIFIED / DEMO</strong>
-      </footer>
-    </div>
-  );
-}
-
 function LandingFooter({ waitlistOnlyMode }) {
   return (
     <footer className="dsr-footer">
       <div className="dsr-footer-brand">
         <Link to="/" aria-label="DaemonState home">
-          <DaemonStateIcon size={34} />
+          <DaemonStateIcon size={68} />
           <span>DaemonState</span>
         </Link>
         <p>Source-backed continuity for coding agents.</p>
@@ -1544,7 +1802,6 @@ function LandingFooter({ waitlistOnlyMode }) {
           <a href="#problem">Why</a>
           <a href="#docking-layer">The layer</a>
           <a href="#how-it-works">How it works</a>
-          <a href="#project-memory">Working state</a>
         </div>
         <div>
           <span>Product</span>
