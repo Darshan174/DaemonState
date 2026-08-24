@@ -6,7 +6,7 @@ import PermissionsTerms from "./PermissionsTerms";
 
 
 describe("PermissionsTerms", () => {
-  it("summarizes the controlling GitHub license without expanding its grant", () => {
+  it("separates proprietary product terms from the public toolkit license", () => {
     render(
       <MemoryRouter>
         <PermissionsTerms />
@@ -16,22 +16,28 @@ describe("PermissionsTerms", () => {
     expect(screen.getByRole("heading", { name: "Permissions & terms" }))
       .toBeInTheDocument();
     expect(screen.getByText(/plain-language guide/i)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Read the license" }))
-      .toHaveAttribute("href", "/assets/legal/LICENSE");
-    expect(screen.getByRole("link", { name: /License on GitHub/i }))
+    expect(screen.getByRole("link", { name: /Read toolkit license/i }))
       .toHaveAttribute(
         "href",
         "https://github.com/Darshan174/DaemonState/blob/main/LICENSE",
       );
+    expect(screen.getByRole("link", { name: /View public toolkit/i }))
+      .toHaveAttribute("href", "https://github.com/Darshan174/DaemonState");
 
-    expect(screen.getByRole("heading", { name: "What you may do" }))
+    expect(screen.getByText(/DaemonState is proprietary software/i))
       .toBeInTheDocument();
-    expect(screen.getByText(/own self-hosted installation/i)).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Commercial uses need permission" }))
+    expect(screen.getByRole("heading", { name: "The terms follow what you receive" }))
       .toBeInTheDocument();
-    expect(screen.getByText(/paid hosted or managed service/i)).toBeInTheDocument();
-    expect(screen.getByText(/Versions through 0.2.0 were released under the MIT License/i))
+    expect(screen.getByText(/Only the public integration and demonstration toolkit/i))
       .toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "What SUL-1.0 permits" }))
+      .toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Commercial toolkit uses need permission" }))
+      .toBeInTheDocument();
+    expect(screen.getByText(/grants are not retroactively revoked/i))
+      .toBeInTheDocument();
+    expect(screen.queryByText(/DaemonState 0\.3\.0 and later/i))
+      .not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "privacy notice" }))
       .toHaveAttribute("href", "/privacy");
   });

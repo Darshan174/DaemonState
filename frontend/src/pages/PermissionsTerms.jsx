@@ -6,9 +6,7 @@ import "./PermissionsTerms.css";
 
 
 const PUBLIC_GITHUB_REPOSITORY = "https://github.com/Darshan174/DaemonState";
-const PRIVATE_GITHUB_REPOSITORY = "https://github.com/Darshan174/DaemonState-Private";
 const PUBLIC_LICENSE = `${PUBLIC_GITHUB_REPOSITORY}/blob/main/LICENSE`;
-const MIT_BOUNDARY = `${PRIVATE_GITHUB_REPOSITORY}/commit/45b7a6e653a1762bf91b99fae4c7adf3dafc55ce`;
 
 
 export default function PermissionsTerms() {
@@ -30,24 +28,31 @@ export default function PermissionsTerms() {
           <div className="dsr-terms-hero">
             <p className="dsr-terms-kicker">
               <span aria-hidden="true" />
-              DO / DON&apos;T AGREEMENT
+              PRODUCT / TOOLKIT TERMS
             </p>
             <h1 aria-label="Permissions & terms">
               Permissions
               <span>&amp; terms</span>
             </h1>
-            <p className="dsr-terms-version">DAEMONSTATE 0.3.0+ / SUL-1.0</p>
+            <p className="dsr-terms-version">
+              PROPRIETARY PRODUCT / PUBLIC TOOLKIT SUL-1.0
+            </p>
             <div className="dsr-terms-actions">
-              <a href="/assets/legal/LICENSE" className="dsr-terms-primary">
-                Read the license
-              </a>
               <a
                 href={PUBLIC_LICENSE}
                 target="_blank"
                 rel="noreferrer"
+                className="dsr-terms-primary"
+              >
+                Read toolkit license <span aria-hidden="true">↗</span>
+              </a>
+              <a
+                href={PUBLIC_GITHUB_REPOSITORY}
+                target="_blank"
+                rel="noreferrer"
                 className="dsr-terms-secondary"
               >
-                License on GitHub <span aria-hidden="true">↗</span>
+                View public toolkit <span aria-hidden="true">↗</span>
               </a>
             </div>
           </div>
@@ -55,33 +60,64 @@ export default function PermissionsTerms() {
           <article>
             <header className="dsr-terms-intro">
               <p>
-                DaemonState 0.3.0 and later are source-available under the
-                Sustainable Use License 1.0. By using the software, you agree
-                to that license.
+                DaemonState is proprietary software. The DaemonState engine,
+                production application, hosted services, and other non-public
+                components may be used only under the applicable DaemonState
+                product or commercial terms.
               </p>
               <aside>
-                This page is a plain-language guide. The published
-                {" "}<a href="/assets/legal/LICENSE">license text</a> controls if
-                anything here differs from it.
+                This page is a plain-language guide. The terms supplied with a
+                DaemonState product or service control that offering. The
+                published <a
+                  href={PUBLIC_LICENSE}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  SUL-1.0 license
+                </a> controls the separately distributed public toolkit.
               </aside>
             </header>
 
             <section>
-              <p className="dsr-terms-section-label">PERMITTED</p>
-              <h2>What you may do</h2>
+              <p className="dsr-terms-section-label">LICENSING MAP</p>
+              <h2>The terms follow what you receive</h2>
               <ul>
-                <li>Use DaemonState for personal or noncommercial purposes.</li>
                 <li>
-                  Use and modify your company&apos;s own self-hosted installation
-                  for its internal business.
+                  The private engine, production application, hosted services,
+                  and other non-public components are proprietary.
                 </li>
                 <li>
-                  Study, audit, copy, and adapt the source for those permitted
+                  A packaged Free product is governed by the DaemonState product
+                  terms supplied with it; free access does not make the private
+                  product source-available.
+                </li>
+                <li>
+                  Paid access is governed by the applicable commercial,
+                  subscription, or other written terms.
+                </li>
+                <li>
+                  Only the public integration and demonstration toolkit on
+                  GitHub is separately licensed under SUL-1.0.
+                </li>
+              </ul>
+            </section>
+
+            <section>
+              <p className="dsr-terms-section-label">PUBLIC TOOLKIT</p>
+              <h2>What SUL-1.0 permits</h2>
+              <p>
+                For the public toolkit only, the license permits personal and
+                noncommercial use and a company&apos;s internal business use. It
+                also permits you to:
+              </p>
+              <ul>
+                <li>
+                  Study, audit, copy, and adapt the toolkit for those permitted
                   uses.
                 </li>
                 <li>
-                  Share original or modified copies free of charge for
-                  noncommercial purposes, while keeping the required terms and
+                  Share original or modified toolkit copies free of charge for
+                  noncommercial purposes while keeping the required terms and
                   notices with them.
                 </li>
               </ul>
@@ -89,17 +125,14 @@ export default function PermissionsTerms() {
 
             <section>
               <p className="dsr-terms-section-label is-restricted">NOT INCLUDED</p>
-              <h2>Commercial uses need permission</h2>
-              <p>The standard license does not let you:</p>
+              <h2>Commercial toolkit uses need permission</h2>
+              <p>The public toolkit&apos;s SUL-1.0 license does not let you:</p>
               <ul>
-                <li>Sell DaemonState copies or paid distributions.</li>
-                <li>White-label DaemonState as a commercial product.</li>
+                <li>Sell toolkit copies or paid distributions.</li>
+                <li>White-label the toolkit as a commercial product.</li>
+                <li>Operate it as a paid hosted or managed service for others.</li>
                 <li>
-                  Operate it as a paid hosted or managed service for other
-                  people.
-                </li>
-                <li>
-                  Sell access to its functionality or make DaemonState a
+                  Sell access to its functionality or make the toolkit a
                   substantial source of value in a paid customer offering.
                 </li>
               </ul>
@@ -111,10 +144,11 @@ export default function PermissionsTerms() {
 
             <section>
               <p className="dsr-terms-section-label">CONDITIONS</p>
-              <h2>Keep the notices with the work</h2>
+              <h2>Keep the notices with the toolkit</h2>
               <ul>
                 <li>
-                  Anyone receiving a copy must also receive the license terms.
+                  Anyone receiving a toolkit copy must also receive the license
+                  terms.
                 </li>
                 <li>
                   Do not remove or obscure license, copyright, or other licensor
@@ -133,12 +167,12 @@ export default function PermissionsTerms() {
 
             <section>
               <p className="dsr-terms-section-label">PATENTS / TERMINATION</p>
-              <h2>Permission depends on compliance</h2>
+              <h2>SUL permission depends on compliance</h2>
               <p>
-                The patent grant follows the same license limits and ends if you
-                or your company make a written patent claim covered by the
-                license. Use outside the terms is unlicensed and automatically
-                terminates your license.
+                For the public toolkit, the patent grant follows the same SUL
+                limits and ends if you or your company make a written patent
+                claim covered by the license. Use outside the terms is unlicensed
+                and automatically terminates the SUL license.
               </p>
               <p>
                 After notice of a first violation, stopping every violation
@@ -149,24 +183,25 @@ export default function PermissionsTerms() {
 
             <section>
               <p className="dsr-terms-section-label">NO WARRANTY</p>
-              <h2>Provided as is</h2>
+              <h2>The public toolkit is provided as is</h2>
               <p>
-                As far as the law allows, DaemonState comes without warranty or
-                condition, and its licensors are not liable for damages arising
-                from these terms or from the use or nature of the software.
+                As far as the law allows, the public toolkit comes without
+                warranty or condition, and its licensors are not liable for
+                damages arising from the SUL terms or from the use or nature of
+                the toolkit. Any product or service warranty is governed by its
+                own applicable terms.
               </p>
             </section>
 
             <section>
-              <p className="dsr-terms-section-label">VERSION HISTORY</p>
-              <h2>Earlier releases stay MIT-licensed</h2>
+              <p className="dsr-terms-section-label">HISTORICAL RELEASES</p>
+              <h2>Earlier license grants are preserved</h2>
               <p>
-                Versions through 0.2.0 were released under the MIT License. That
-                grant is not retroactively changed. The final MIT-licensed source
-                is commit
-                {" "}<a href={MIT_BOUNDARY} target="_blank" rel="noreferrer">
-                  45b7a6e
-                </a>.
+                Certain historical software published by the project, including
+                code released under the MIT License, remains governed by the
+                license that accompanied those copies. Those grants are not
+                retroactively revoked, but they do not apply to current or future
+                DaemonState software unless expressly stated.
               </p>
             </section>
 
@@ -174,8 +209,9 @@ export default function PermissionsTerms() {
               <p className="dsr-terms-section-label">OTHER COMPONENTS</p>
               <h2>Third-party terms still apply</h2>
               <p>
-                Third-party software and fonts keep their own licenses and are
-                not covered by DaemonState&apos;s SUL-1.0 grant. Review the
+                Third-party software and fonts keep their own licenses. They are
+                not covered by DaemonState product terms or by the public
+                toolkit&apos;s SUL-1.0 grant. Review the
                 {" "}<a href="/assets/legal/THIRD_PARTY_NOTICES.txt">
                   third-party notices
                 </a> before redistributing the product.
@@ -187,9 +223,9 @@ export default function PermissionsTerms() {
               <h2>Need clarity or a different permission?</h2>
               <p>
                 Waitlist data is handled under the <Link to="/privacy">privacy
-                notice</Link>. For a commercial exception or a use near the
-                license boundary, get legal advice or written permission instead
-                of relying on this summary.
+                notice</Link>. For product terms, a commercial toolkit exception,
+                or a use near a license boundary, get legal advice or written
+                permission instead of relying on this summary.
               </p>
               <a
                 href="https://github.com/Darshan174"
