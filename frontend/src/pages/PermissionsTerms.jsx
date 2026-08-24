@@ -6,7 +6,6 @@ import "./PermissionsTerms.css";
 
 
 const PUBLIC_GITHUB_REPOSITORY = "https://github.com/Darshan174/DaemonState";
-const PUBLIC_LICENSE = `${PUBLIC_GITHUB_REPOSITORY}/blob/main/LICENSE`;
 
 
 export default function PermissionsTerms() {
@@ -28,23 +27,21 @@ export default function PermissionsTerms() {
           <div className="dsr-terms-hero">
             <p className="dsr-terms-kicker">
               <span aria-hidden="true" />
-              PRODUCT / TOOLKIT TERMS
+              SHIPPED SOFTWARE TERMS
             </p>
             <h1 aria-label="Permissions & terms">
               Permissions
               <span>&amp; terms</span>
             </h1>
             <p className="dsr-terms-version">
-              PROPRIETARY PRODUCT / PUBLIC TOOLKIT SUL-1.0
+              CURRENT DISTRIBUTION / SUL-1.0
             </p>
             <div className="dsr-terms-actions">
               <a
-                href={PUBLIC_LICENSE}
-                target="_blank"
-                rel="noreferrer"
+                href="/assets/legal/LICENSE"
                 className="dsr-terms-primary"
               >
-                Read toolkit license <span aria-hidden="true">↗</span>
+                Read current license
               </a>
               <a
                 href={PUBLIC_GITHUB_REPOSITORY}
@@ -60,21 +57,17 @@ export default function PermissionsTerms() {
           <article>
             <header className="dsr-terms-intro">
               <p>
-                DaemonState is proprietary software. The DaemonState engine,
-                production application, hosted services, and other non-public
-                components may be used only under the applicable DaemonState
-                product or commercial terms.
+                DaemonState software distributed with the current SUL-1.0
+                LICENSE—including the packaged product built from this
+                repository—is source-available under that license.
               </p>
               <aside>
-                This page is a plain-language guide. The terms supplied with a
-                DaemonState product or service control that offering. The
-                published <a
-                  href={PUBLIC_LICENSE}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  SUL-1.0 license
-                </a> controls the separately distributed public toolkit.
+                This page is a plain-language guide. The <a href="/assets/legal/LICENSE">
+                  license
+                </a> and NOTICE shipped with a distribution control that
+                distribution. Separate product or commercial terms control only
+                when they are expressly provided for a particular offering or
+                use.
               </aside>
             </header>
 
@@ -83,40 +76,41 @@ export default function PermissionsTerms() {
               <h2>The terms follow what you receive</h2>
               <ul>
                 <li>
-                  The private engine, production application, hosted services,
-                  and other non-public components are proprietary.
+                  The current packaged DaemonState product built from this
+                  repository is distributed under SUL-1.0.
                 </li>
                 <li>
-                  A packaged Free product is governed by the DaemonState product
-                  terms supplied with it; free access does not make the private
-                  product source-available.
+                  The public integration and demonstration toolkit on GitHub is
+                  separately distributed under SUL-1.0.
                 </li>
                 <li>
-                  Paid access is governed by the applicable commercial,
-                  subscription, or other written terms.
+                  Hosted services, private components not distributed under
+                  SUL-1.0, and separately licensed commercial offerings are
+                  governed by their applicable written terms.
                 </li>
                 <li>
-                  Only the public integration and demonstration toolkit on
-                  GitHub is separately licensed under SUL-1.0.
+                  A separate commercial license changes the standard grant only
+                  for the party and use that written license covers.
                 </li>
               </ul>
             </section>
 
             <section>
-              <p className="dsr-terms-section-label">PUBLIC TOOLKIT</p>
+              <p className="dsr-terms-section-label">SUL-1.0 DISTRIBUTIONS</p>
               <h2>What SUL-1.0 permits</h2>
               <p>
-                For the public toolkit only, the license permits personal and
-                noncommercial use and a company&apos;s internal business use. It
-                also permits you to:
+                For DaemonState software distributed under SUL-1.0, including
+                the current packaged product and public toolkit, the license
+                permits personal and noncommercial use and a company&apos;s internal
+                business use. It also permits you to:
               </p>
               <ul>
                 <li>
-                  Study, audit, copy, and adapt the toolkit for those permitted
+                  Study, audit, copy, and adapt the software for those permitted
                   uses.
                 </li>
                 <li>
-                  Share original or modified toolkit copies free of charge for
+                  Share original or modified copies free of charge for
                   noncommercial purposes while keeping the required terms and
                   notices with them.
                 </li>
@@ -125,14 +119,14 @@ export default function PermissionsTerms() {
 
             <section>
               <p className="dsr-terms-section-label is-restricted">NOT INCLUDED</p>
-              <h2>Commercial toolkit uses need permission</h2>
-              <p>The public toolkit&apos;s SUL-1.0 license does not let you:</p>
+              <h2>Commercial uses need permission</h2>
+              <p>The standard SUL-1.0 license does not let you:</p>
               <ul>
-                <li>Sell toolkit copies or paid distributions.</li>
-                <li>White-label the toolkit as a commercial product.</li>
+                <li>Sell copies or paid distributions.</li>
+                <li>White-label the software as a commercial product.</li>
                 <li>Operate it as a paid hosted or managed service for others.</li>
                 <li>
-                  Sell access to its functionality or make the toolkit a
+                  Sell access to its functionality or make the software a
                   substantial source of value in a paid customer offering.
                 </li>
               </ul>
@@ -144,11 +138,10 @@ export default function PermissionsTerms() {
 
             <section>
               <p className="dsr-terms-section-label">CONDITIONS</p>
-              <h2>Keep the notices with the toolkit</h2>
+              <h2>Keep the notices with the software</h2>
               <ul>
                 <li>
-                  Anyone receiving a toolkit copy must also receive the license
-                  terms.
+                  Anyone receiving a copy must also receive the license terms.
                 </li>
                 <li>
                   Do not remove or obscure license, copyright, or other licensor
@@ -169,10 +162,10 @@ export default function PermissionsTerms() {
               <p className="dsr-terms-section-label">PATENTS / TERMINATION</p>
               <h2>SUL permission depends on compliance</h2>
               <p>
-                For the public toolkit, the patent grant follows the same SUL
-                limits and ends if you or your company make a written patent
-                claim covered by the license. Use outside the terms is unlicensed
-                and automatically terminates the SUL license.
+                The patent grant follows the same SUL limits and ends if you or
+                your company make a written patent claim covered by the license.
+                Use outside the terms is unlicensed and automatically terminates
+                the SUL license.
               </p>
               <p>
                 After notice of a first violation, stopping every violation
@@ -183,13 +176,13 @@ export default function PermissionsTerms() {
 
             <section>
               <p className="dsr-terms-section-label">NO WARRANTY</p>
-              <h2>The public toolkit is provided as is</h2>
+              <h2>SUL-licensed software is provided as is</h2>
               <p>
-                As far as the law allows, the public toolkit comes without
+                As far as the law allows, SUL-licensed software comes without
                 warranty or condition, and its licensors are not liable for
                 damages arising from the SUL terms or from the use or nature of
-                the toolkit. Any product or service warranty is governed by its
-                own applicable terms.
+                the software. Any separately licensed product or service warranty
+                is governed by its own applicable terms.
               </p>
             </section>
 
@@ -210,8 +203,7 @@ export default function PermissionsTerms() {
               <h2>Third-party terms still apply</h2>
               <p>
                 Third-party software and fonts keep their own licenses. They are
-                not covered by DaemonState product terms or by the public
-                toolkit&apos;s SUL-1.0 grant. Review the
+                not covered by DaemonState&apos;s SUL-1.0 grant. Review the
                 {" "}<a href="/assets/legal/THIRD_PARTY_NOTICES.txt">
                   third-party notices
                 </a> before redistributing the product.
@@ -223,8 +215,8 @@ export default function PermissionsTerms() {
               <h2>Need clarity or a different permission?</h2>
               <p>
                 Waitlist data is handled under the <Link to="/privacy">privacy
-                notice</Link>. For product terms, a commercial toolkit exception,
-                or a use near a license boundary, get legal advice or written
+                notice</Link>. For separate product terms, a commercial exception,
+                or a use near the SUL boundary, get legal advice or written
                 permission instead of relying on this summary.
               </p>
               <a
