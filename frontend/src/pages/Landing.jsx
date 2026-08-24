@@ -260,7 +260,7 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
         const loader = root.querySelector(".dsr-loader");
         if (loader) loader.setAttribute("hidden", "");
         const deckTrack = root.querySelector(".dsr-deck-track");
-        const deckWindow = root.querySelector(".dsr-deck-window");
+        const deckStage = root.querySelector(".dsr-deck-stage");
         const deckCards = Array.from(root.querySelectorAll(".dsr-deck-card"));
         const deckControls = Array.from(root.querySelectorAll("[data-deck-index]"));
         const deckStatus = root.querySelector("[data-deck-status]");
@@ -306,10 +306,10 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           event.preventDefault();
         };
 
-        deckWindow?.setAttribute("data-autoplay", "paused");
+        deckStage?.setAttribute("data-autoplay", "paused");
         deckPrevious?.addEventListener("click", handleReducedPrevious);
         deckNext?.addEventListener("click", handleReducedNext);
-        deckWindow?.addEventListener("keydown", handleReducedKeyDown);
+        deckStage?.addEventListener("keydown", handleReducedKeyDown);
         window.addEventListener("resize", renderReducedDeck, { passive: true });
         renderReducedDeck();
         cleanups.push(() => {
@@ -318,7 +318,7 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           });
           deckPrevious?.removeEventListener("click", handleReducedPrevious);
           deckNext?.removeEventListener("click", handleReducedNext);
-          deckWindow?.removeEventListener("keydown", handleReducedKeyDown);
+          deckStage?.removeEventListener("keydown", handleReducedKeyDown);
           window.removeEventListener("resize", renderReducedDeck);
         });
         return;
@@ -386,7 +386,9 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           );
 
         const deckTrack = root.querySelector(".dsr-deck-track");
+        const deckStage = root.querySelector(".dsr-deck-stage");
         const deckWindow = root.querySelector(".dsr-deck-window");
+        const deckControlBar = root.querySelector(".dsr-deck-controls");
         const deckCards = gsap.utils.toArray(".dsr-deck-card", root);
         const deckControls = gsap.utils.toArray("[data-deck-index]", root);
         const deckStatus = root.querySelector("[data-deck-status]");
@@ -487,7 +489,7 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           deckPauseReasons.add(reason);
           if (deckPaused) return;
           deckPaused = true;
-          deckWindow?.setAttribute("data-autoplay", "paused");
+          deckStage?.setAttribute("data-autoplay", "paused");
           deckAdvanceCall?.pause();
         };
 
@@ -495,7 +497,7 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           deckPauseReasons.delete(reason);
           if (deckPauseReasons.size) return;
           deckPaused = false;
-          deckWindow?.setAttribute("data-autoplay", "playing");
+          deckStage?.setAttribute("data-autoplay", "playing");
           if (deckStarted) scheduleDeckAdvance(DECK_AUTOPLAY_DELAY_SECONDS);
         };
 
@@ -517,6 +519,10 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
         };
         const handleDeckMouseEnter = () => pauseDeck("pointer");
         const handleDeckMouseLeave = () => resumeDeck("pointer");
+        const handleDeckFocusIn = () => pauseDeck("focus");
+        const handleDeckFocusOut = (event) => {
+          if (!deckStage?.contains(event.relatedTarget)) resumeDeck("focus");
+        };
         const handleDeckKeyDown = (event) => {
           if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
           event.preventDefault();
@@ -534,7 +540,11 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
         window.addEventListener("resize", handleDeckResize, { passive: true });
         deckWindow?.addEventListener("mouseenter", handleDeckMouseEnter);
         deckWindow?.addEventListener("mouseleave", handleDeckMouseLeave);
-        deckWindow?.addEventListener("keydown", handleDeckKeyDown);
+        deckControlBar?.addEventListener("mouseenter", handleDeckMouseEnter);
+        deckControlBar?.addEventListener("mouseleave", handleDeckMouseLeave);
+        deckStage?.addEventListener("focusin", handleDeckFocusIn);
+        deckStage?.addEventListener("focusout", handleDeckFocusOut);
+        deckStage?.addEventListener("keydown", handleDeckKeyDown);
         deckControls.forEach((control) => {
           control.addEventListener("click", handleDeckControl);
         });
@@ -545,7 +555,11 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           window.removeEventListener("resize", handleDeckResize);
           deckWindow?.removeEventListener("mouseenter", handleDeckMouseEnter);
           deckWindow?.removeEventListener("mouseleave", handleDeckMouseLeave);
-          deckWindow?.removeEventListener("keydown", handleDeckKeyDown);
+          deckControlBar?.removeEventListener("mouseenter", handleDeckMouseEnter);
+          deckControlBar?.removeEventListener("mouseleave", handleDeckMouseLeave);
+          deckStage?.removeEventListener("focusin", handleDeckFocusIn);
+          deckStage?.removeEventListener("focusout", handleDeckFocusOut);
+          deckStage?.removeEventListener("keydown", handleDeckKeyDown);
           deckControls.forEach((control) => {
             control.removeEventListener("click", handleDeckControl);
           });
@@ -744,10 +758,6 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
               </a>
             </div>
           </div>
-
-          <a href="#problem" className="dsr-scroll-cue" aria-label="Scroll to learn more">
-            <span />
-          </a>
         </section>
 
         <section id="problem" className="dsr-problem">
@@ -1163,16 +1173,18 @@ function HeroDeck() {
   return (
     <div
       aria-label="Project memory examples carousel."
-      className="dsr-deck-window"
+      className="dsr-deck-stage"
       data-autoplay="playing"
       data-autoplay-delay={DECK_AUTOPLAY_DELAY_SECONDS * 1000}
       tabIndex={0}
     >
-      <div className="dsr-deck-track-shell">
-        <div className="dsr-deck-track">
-          {DECK_CARDS.map((card) => (
-            <DeckCard key={card.type} {...card} />
-          ))}
+      <div className="dsr-deck-window">
+        <div className="dsr-deck-track-shell">
+          <div className="dsr-deck-track">
+            {DECK_CARDS.map((card) => (
+              <DeckCard key={card.type} {...card} />
+            ))}
+          </div>
         </div>
       </div>
       <div className="dsr-deck-controls" aria-label="Choose a card">

@@ -35,7 +35,7 @@ def test_readme_documents_honest_setup_deployment_and_contributing_paths():
     gitignore = GITIGNORE.read_text(encoding="utf-8")
 
     assert "github.com/your-org/daemonstate.git" not in text
-    assert "git clone https://github.com/Darshan174/DaemonState.git daemonstate" in text
+    assert "git clone https://github.com/Darshan174/DaemonState-Private.git daemonstate" in text
     assert "bash scripts/self-host.sh" in text
     assert "bash scripts/doctor.sh --bare-metal" in text
     assert "bash scripts/setup.sh" in text
@@ -86,8 +86,8 @@ def test_pyproject_exposes_source_available_metadata():
     assert "knowledge-graph" in project["keywords"]
     assert "License :: OSI Approved :: MIT License" not in project["classifiers"]
     assert "Framework :: FastAPI" in project["classifiers"]
-    assert project["urls"]["Repository"] == "https://github.com/Darshan174/DaemonState"
-    assert project["urls"]["Issues"] == "https://github.com/Darshan174/DaemonState/issues"
+    assert project["urls"]["Repository"] == "https://github.com/Darshan174/DaemonState-Private"
+    assert project["urls"]["Issues"] == "https://github.com/Darshan174/DaemonState-Private/issues"
     assert any(
         dependency.startswith("sqlalchemy[asyncio]")
         for dependency in project["dependencies"]

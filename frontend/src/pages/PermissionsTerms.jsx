@@ -5,9 +5,10 @@ import "./LandingReplica.css";
 import "./PermissionsTerms.css";
 
 
-const GITHUB_REPOSITORY = "https://github.com/Darshan174/DaemonState";
-const LICENSING_GUIDE = `${GITHUB_REPOSITORY}/blob/main/docs/licensing.md`;
-const MIT_BOUNDARY = `${GITHUB_REPOSITORY}/commit/45b7a6e653a1762bf91b99fae4c7adf3dafc55ce`;
+const PUBLIC_GITHUB_REPOSITORY = "https://github.com/Darshan174/DaemonState";
+const PRIVATE_GITHUB_REPOSITORY = "https://github.com/Darshan174/DaemonState-Private";
+const PUBLIC_LICENSE = `${PUBLIC_GITHUB_REPOSITORY}/blob/main/LICENSE`;
+const MIT_BOUNDARY = `${PRIVATE_GITHUB_REPOSITORY}/commit/45b7a6e653a1762bf91b99fae4c7adf3dafc55ce`;
 
 
 export default function PermissionsTerms() {
@@ -41,12 +42,12 @@ export default function PermissionsTerms() {
                 Read the license
               </a>
               <a
-                href={LICENSING_GUIDE}
+                href={PUBLIC_LICENSE}
                 target="_blank"
                 rel="noreferrer"
                 className="dsr-terms-secondary"
               >
-                GitHub guide <span aria-hidden="true">↗</span>
+                License on GitHub <span aria-hidden="true">↗</span>
               </a>
             </div>
           </div>
@@ -207,7 +208,7 @@ export default function PermissionsTerms() {
         <span>© 2026 DaemonState</span>
         <div>
           <Link to="/privacy">Privacy notice</Link>
-          <a href={GITHUB_REPOSITORY} target="_blank" rel="noreferrer">GitHub</a>
+          <a href={PUBLIC_GITHUB_REPOSITORY} target="_blank" rel="noreferrer">GitHub</a>
         </div>
       </footer>
     </div>

@@ -57,10 +57,10 @@ dependencies = [
 daemonstate = "app.cli.main:main"
 
 [project.urls]
-Homepage = "https://github.com/Darshan174/DaemonState"
-Repository = "https://github.com/Darshan174/DaemonState"
-Issues = "https://github.com/Darshan174/DaemonState/issues"
-Documentation = "https://github.com/Darshan174/DaemonState#readme"
+Homepage = "https://github.com/Darshan174/DaemonState-Private"
+Repository = "https://github.com/Darshan174/DaemonState-Private"
+Issues = "https://github.com/Darshan174/DaemonState-Private/issues"
+Documentation = "https://github.com/Darshan174/DaemonState-Private#readme"
 
 [project.optional-dependencies]
 dev = [

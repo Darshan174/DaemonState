@@ -407,20 +407,32 @@
   text-align: right;
 }
 
+.dsr-deck-stage {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  overflow: hidden;
+  cursor: default;
+}
+
 .dsr-deck-window {
   position: absolute;
   top: 0;
   left: 50%;
-  z-index: 4;
+  z-index: 1;
   width: min(35vw, 520px);
-  height: 100%;
+  height: calc(100% - 72px);
   overflow: hidden;
   transform: translateX(-50%);
   transform-style: preserve-3d;
   cursor: default;
 }
 
-.dsr-deck-window:focus-visible {
+.dsr-deck-stage:focus-visible {
+  outline: 0;
+}
+
+.dsr-deck-stage:focus-visible .dsr-deck-window {
   outline: 2px solid rgba(199, 255, 101, 0.72);
   outline-offset: -6px;
 }
@@ -980,7 +992,7 @@
 
 .dsr-deck-controls {
   position: absolute;
-  bottom: calc(50% - (var(--dsr-deck-height) / 2) + 8px);
+  bottom: calc(24px + env(safe-area-inset-bottom, 0px));
   left: 50%;
   z-index: 12;
   display: flex;
@@ -1941,46 +1953,6 @@
 
 .dsr-hero-text-link svg {
   width: 12px;
-}
-
-.dsr-scroll-cue {
-  position: absolute;
-  bottom: 24px;
-  left: 50%;
-  z-index: 6;
-  display: block;
-  width: 30px;
-  height: 40px;
-  border: 1px solid rgba(10, 10, 11, 0.3);
-  border-radius: 999px;
-  transform: translateX(-50%);
-}
-
-.dsr-scroll-cue span {
-  position: absolute;
-  top: 8px;
-  left: 50%;
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: var(--dsr-black);
-  transform: translateX(-50%);
-  animation: dsr-scroll-cue 1.7s ease-in-out infinite;
-}
-
-@keyframes dsr-scroll-cue {
-  0% {
-    opacity: 0;
-    transform: translate(-50%, 0);
-  }
-  30% {
-    opacity: 1;
-  }
-  80%,
-  100% {
-    opacity: 0;
-    transform: translate(-50%, 18px);
-  }
 }
 
 .dsr-section-shell {
@@ -3761,6 +3733,10 @@
     width: 39vw;
   }
 
+  .dsr-hero-support {
+    bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+  }
+
   .dsr-system-frame {
     grid-template-columns: 150px minmax(0, 1fr) 205px;
   }
@@ -3857,7 +3833,7 @@
   }
 
   .dsr-hero {
-    min-height: 100svh;
+    min-height: max(100svh, 740px);
   }
 
   .dsr-hero-heading {
@@ -3956,7 +3932,7 @@
   }
 
   .dsr-hero-support {
-    bottom: 28px;
+    bottom: calc(64px + env(safe-area-inset-bottom, 0px));
     left: 15px;
     max-width: calc(100% - 30px);
   }
@@ -3966,10 +3942,6 @@
   }
 
   .dsr-hero-support p + p {
-    display: none;
-  }
-
-  .dsr-scroll-cue {
     display: none;
   }
 

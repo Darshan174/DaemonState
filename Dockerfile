@@ -14,7 +14,7 @@ RUN DAEMONSTATE_LEGAL_DIR=/legal npm run build
 # ── Stage 2: Python runtime (backend + serves built frontend) ─────────────────
 FROM python:3.12-slim
 
-LABEL org.opencontainers.image.source="https://github.com/Darshan174/DaemonState" \
+LABEL org.opencontainers.image.source="https://github.com/Darshan174/DaemonState-Private" \
       org.opencontainers.image.licenses="SUL-1.0"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
