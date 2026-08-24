@@ -18,10 +18,10 @@ describe("PermissionsTerms", () => {
     expect(screen.getByText(/plain-language guide/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Read the license" }))
       .toHaveAttribute("href", "/assets/legal/LICENSE");
-    expect(screen.getByRole("link", { name: /GitHub guide/i }))
+    expect(screen.getByRole("link", { name: /License on GitHub/i }))
       .toHaveAttribute(
         "href",
-        "https://github.com/Darshan174/DaemonState/blob/main/docs/licensing.md",
+        "https://github.com/Darshan174/DaemonState/blob/main/LICENSE",
       );
 
     expect(screen.getByRole("heading", { name: "What you may do" }))

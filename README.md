@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Darshan174/DaemonState/releases"><img alt="Version 0.3.0" src="https://img.shields.io/badge/version-0.3.0-171713"></a>
-  <a href="https://github.com/Darshan174/DaemonState/blob/main/LICENSE"><img alt="SUL 1.0 license" src="https://img.shields.io/badge/license-SUL--1.0-d9ff68"></a>
+  <a href="https://github.com/Darshan174/DaemonState-Private/releases"><img alt="Version 0.3.0" src="https://img.shields.io/badge/version-0.3.0-171713"></a>
+  <a href="https://github.com/Darshan174/DaemonState-Private/blob/main/LICENSE"><img alt="SUL 1.0 license" src="https://img.shields.io/badge/license-SUL--1.0-d9ff68"></a>
   <img alt="Python 3.12 or newer" src="https://img.shields.io/badge/python-%E2%89%A53.12-3776AB">
   <img alt="Active alpha" src="https://img.shields.io/badge/status-active%20alpha-f59e0b">
 </p>
@@ -89,7 +89,7 @@ installed Codex, Claude, or OpenCode desktop app. Setup prebuilds the native
 paste helper used by the cards.
 
 ```bash
-git clone https://github.com/Darshan174/DaemonState.git daemonstate
+git clone https://github.com/Darshan174/DaemonState-Private.git daemonstate
 cd daemonstate
 bash scripts/doctor.sh --bare-metal
 bash scripts/setup.sh
@@ -112,7 +112,7 @@ UI at <http://localhost:5000> and the API remains at port 8000.
 Requirements: Git, Docker, and Docker Compose v2 with `up --wait` support.
 
 ```bash
-git clone https://github.com/Darshan174/DaemonState.git daemonstate
+git clone https://github.com/Darshan174/DaemonState-Private.git daemonstate
 cd daemonstate
 bash scripts/self-host.sh
 ```

@@ -180,7 +180,7 @@ describe("Landing", () => {
       removeEventListener: vi.fn(),
     }));
     const { container } = renderLanding();
-    const heroDeck = container.querySelector(".dsr-deck-window");
+    const heroDeck = container.querySelector(".dsr-deck-stage");
 
     await waitFor(() => expect(heroDeck).toHaveAttribute("data-autoplay", "paused"));
     fireEvent.click(
@@ -217,6 +217,9 @@ describe("Landing", () => {
       "href",
       "https://github.com/Darshan174/DaemonState",
     );
+    expect(
+      within(screen.getByRole("contentinfo")).getByRole("link", { name: "GitHub" }),
+    ).toHaveAttribute("href", "https://github.com/Darshan174/DaemonState");
   });
 
   it("keeps obvious product entry points in local product mode", () => {
@@ -228,7 +231,7 @@ describe("Landing", () => {
     expect(container.querySelector(".dsr-landing")).toBeInTheDocument();
     expect(container.querySelectorAll(".dsr-deck-card")).toHaveLength(5);
     expect(container.querySelector(".dsr-deck-track")).toBeInTheDocument();
-    const heroDeck = container.querySelector(".dsr-deck-window");
+    const heroDeck = container.querySelector(".dsr-deck-stage");
     expect(heroDeck).toHaveAttribute(
       "data-autoplay",
       "playing",
@@ -238,10 +241,13 @@ describe("Landing", () => {
       .toBeInTheDocument();
     expect(within(heroDeck).getByRole("button", { name: "Show next card" }))
       .toBeInTheDocument();
+    expect(heroDeck.querySelectorAll(".dsr-deck-controls")).toHaveLength(1);
     const directCardControls = heroDeck.querySelectorAll("[data-deck-index]");
     expect(directCardControls).toHaveLength(5);
     expect(directCardControls[0]).toHaveAttribute("aria-pressed", "true");
     expect(heroDeck.querySelector(".dsr-deck-index")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Scroll to learn more" }))
+      .not.toBeInTheDocument();
     expect(heroDeck.querySelectorAll(".dsr-deck-card > header")).toHaveLength(0);
     expect(within(heroDeck).queryByText("Session library")).not.toBeInTheDocument();
     expect(within(heroDeck).queryByText("Decisions + evidence")).not.toBeInTheDocument();
