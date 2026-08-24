@@ -43,8 +43,8 @@ You need Git and Python 3.10 or newer. The demo has no runtime dependencies and
 does not require network access after cloning.
 
 ```bash
-git clone https://github.com/Darshan174/DaemonState-Public.git daemonstate-public
-cd daemonstate-public
+git clone https://github.com/Darshan174/DaemonState.git daemonstate
+cd daemonstate
 python -m daemonstate_public demo
 ```
 
