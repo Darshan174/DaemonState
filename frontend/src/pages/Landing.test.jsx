@@ -173,27 +173,90 @@ describe("Landing", () => {
     vi.useRealTimers();
   });
 
-  it("keeps the card controls usable when reduced motion disables autoplay", async () => {
+  it("keeps cursor swiping and keyboard navigation usable with reduced motion", async () => {
     vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({
       matches: true,
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
     }));
     const { container } = renderLanding();
-    const heroDeck = container.querySelector(".dsr-deck-window");
+    const heroDeck = container.querySelector(".dsr-deck-stage");
+    const deckWindow = heroDeck.querySelector(".dsr-deck-window");
+    const deckCards = [...heroDeck.querySelectorAll(".dsr-deck-card")];
+    Object.defineProperty(deckCards[0], "offsetHeight", {
+      configurable: true,
+      value: 340,
+    });
 
     await waitFor(() => expect(heroDeck).toHaveAttribute("data-autoplay", "paused"));
-    fireEvent.click(
-      within(heroDeck).getByRole("button", {
-        name: "Show card 2: Context compaction kept the summary. It lost the nuance.",
-      }),
-    );
+    expect(deckCards[0]).toHaveClass("is-active");
+    expect(deckCards[0]).toHaveAttribute("aria-hidden", "false");
+    expect(deckCards.slice(1).every(
+      (card) => card.getAttribute("aria-hidden") === "true",
+    )).toBe(true);
+    fireEvent(deckWindow, new MouseEvent("pointerdown", {
+      bubbles: true,
+      button: 0,
+      clientY: 260,
+    }));
+    fireEvent(deckWindow, new MouseEvent("pointermove", {
+      bubbles: true,
+      cancelable: true,
+      clientY: 180,
+    }));
+    fireEvent(deckWindow, new MouseEvent("pointerup", {
+      bubbles: true,
+      clientY: 180,
+    }));
 
-    expect(heroDeck.querySelector('[data-deck-index="1"]'))
-      .toHaveAttribute("aria-pressed", "true");
     expect(heroDeck.querySelector("[data-deck-status]")).toHaveTextContent(
       "Showing card 2 of 5.",
     );
+    expect(deckCards[1]).toHaveClass("is-active");
+    expect(deckCards[1]).toHaveAttribute("aria-hidden", "false");
+    expect(deckCards[0]).toHaveAttribute("data-deck-position", "previous");
+    expect(deckCards[2]).toHaveAttribute("data-deck-position", "next");
+    expect(deckWindow).not.toHaveClass("is-dragging");
+
+    fireEvent.keyDown(heroDeck, { key: "ArrowDown" });
+    expect(heroDeck.querySelector("[data-deck-status]")).toHaveTextContent(
+      "Showing card 3 of 5.",
+    );
+  });
+
+  it("keeps drag listeners without registering cursor-follow tilt", async () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }));
+    vi.stubGlobal("scrollTo", vi.fn());
+    const addEventListener = vi.spyOn(EventTarget.prototype, "addEventListener");
+
+    try {
+      const { container } = renderLanding();
+      const landing = container.querySelector(".dsr-landing");
+
+      await waitFor(() => expect(landing).toHaveAttribute("data-motion", "ready"));
+
+      const hero = container.querySelector(".dsr-hero");
+      const deckWindow = container.querySelector(".dsr-deck-window");
+      const eventTypesFor = (element) => addEventListener.mock.calls
+        .filter((_, index) => addEventListener.mock.instances[index] === element)
+        .map(([eventType]) => eventType);
+
+      expect(eventTypesFor(hero)).not.toContain("pointermove");
+      expect(eventTypesFor(hero)).not.toContain("pointerleave");
+      expect(eventTypesFor(deckWindow)).not.toContain("mouseenter");
+      expect(eventTypesFor(deckWindow)).not.toContain("mouseleave");
+      expect(eventTypesFor(deckWindow)).toEqual(expect.arrayContaining([
+        "pointerdown",
+        "pointermove",
+        "pointerup",
+      ]));
+    } finally {
+      addEventListener.mockRestore();
+    }
   });
 
   it("moves directly from the product story into the final call to action", () => {
@@ -217,6 +280,9 @@ describe("Landing", () => {
       "href",
       "https://github.com/Darshan174/DaemonState",
     );
+    expect(
+      within(screen.getByRole("contentinfo")).getByRole("link", { name: "GitHub" }),
+    ).toHaveAttribute("href", "https://github.com/Darshan174/DaemonState");
   });
 
   it("keeps obvious product entry points in local product mode", () => {
@@ -228,20 +294,24 @@ describe("Landing", () => {
     expect(container.querySelector(".dsr-landing")).toBeInTheDocument();
     expect(container.querySelectorAll(".dsr-deck-card")).toHaveLength(5);
     expect(container.querySelector(".dsr-deck-track")).toBeInTheDocument();
-    const heroDeck = container.querySelector(".dsr-deck-window");
+    const heroDeck = container.querySelector(".dsr-deck-stage");
     expect(heroDeck).toHaveAttribute(
       "data-autoplay",
       "playing",
     );
-    expect(heroDeck).toHaveAttribute("data-autoplay-delay", "2500");
-    expect(within(heroDeck).getByRole("button", { name: "Show previous card" }))
+    expect(heroDeck).toHaveAttribute("data-autoplay-delay", "3200");
+    expect(heroDeck).toHaveAttribute("aria-roledescription", "carousel");
+    expect(within(heroDeck).queryByRole("button", { name: "Show previous card" }))
+      .not.toBeInTheDocument();
+    expect(within(heroDeck).queryByRole("button", { name: "Show next card" }))
+      .not.toBeInTheDocument();
+    expect(heroDeck.querySelectorAll(".dsr-deck-controls")).toHaveLength(0);
+    expect(heroDeck.querySelectorAll("[data-deck-index]")).toHaveLength(0);
+    expect(within(heroDeck).getByText(/Drag or swipe the cards vertically/i))
       .toBeInTheDocument();
-    expect(within(heroDeck).getByRole("button", { name: "Show next card" }))
-      .toBeInTheDocument();
-    const directCardControls = heroDeck.querySelectorAll("[data-deck-index]");
-    expect(directCardControls).toHaveLength(5);
-    expect(directCardControls[0]).toHaveAttribute("aria-pressed", "true");
     expect(heroDeck.querySelector(".dsr-deck-index")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Scroll to learn more" }))
+      .not.toBeInTheDocument();
     expect(heroDeck.querySelectorAll(".dsr-deck-card > header")).toHaveLength(0);
     expect(within(heroDeck).queryByText("Session library")).not.toBeInTheDocument();
     expect(within(heroDeck).queryByText("Decisions + evidence")).not.toBeInTheDocument();
