@@ -2,7 +2,6 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useWaitlist } from "@clerk/react";
 import { Link } from "react-router-dom";
 import {
-  ArrowLeft,
   ArrowRight,
   ArrowUp,
   ArrowUpRight,
@@ -44,8 +43,10 @@ const ROTATING_AGENT_NAMES = [
   "Grok",
 ];
 const ROTATING_AGENT_INTERVAL_MS = 1000;
-const DECK_AUTOPLAY_DELAY_SECONDS = 2.5;
-const DECK_TRANSITION_SECONDS = 0.45;
+const DECK_AUTOPLAY_DELAY_SECONDS = 3.2;
+const DECK_TRANSITION_SECONDS = 0.68;
+const DECK_DRAG_THRESHOLD_RATIO = 0.12;
+const DECK_DRAG_THRESHOLD_MIN_PX = 36;
 
 const DECK_CARDS = [
   {
@@ -261,25 +262,63 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
         if (loader) loader.setAttribute("hidden", "");
         const deckTrack = root.querySelector(".dsr-deck-track");
         const deckStage = root.querySelector(".dsr-deck-stage");
+        const deckWindow = root.querySelector(".dsr-deck-window");
         const deckCards = Array.from(root.querySelectorAll(".dsr-deck-card"));
-        const deckControls = Array.from(root.querySelectorAll("[data-deck-index]"));
         const deckStatus = root.querySelector("[data-deck-status]");
-        const deckPrevious = root.querySelector('[data-deck-action="previous"]');
-        const deckNext = root.querySelector('[data-deck-action="next"]');
         let deckActiveIndex = 0;
         let deckStep = 0;
+        let reducedDeckDrag = null;
+
+        const updateReducedCardDepth = (trackY) => {
+          const progress = Math.max(
+            0,
+            Math.min(
+              deckCards.length - 1,
+              -trackY / Math.max(deckStep, 1),
+            ),
+          );
+          const isCompact = window.innerWidth <= 760;
+          const depthX = isCompact ? 6 : 14;
+          const depthY = isCompact ? 10 : 22;
+          const scaleStep = isCompact ? 0.025 : 0.045;
+
+          deckCards.forEach((card, index) => {
+            const relative = index - progress;
+            const distance = Math.abs(relative);
+            const depth = Math.min(distance, 1);
+            const direction = Math.max(-1, Math.min(1, relative));
+            const isActive = distance < 0.5;
+
+            card.style.transform = [
+              `translate3d(${direction * depthX}px, ${-direction * depthY}px, 0)`,
+              `scale(${1 - depth * scaleStep})`,
+            ].join(" ");
+            card.style.zIndex = String(
+              100 - Math.round(Math.min(distance, 5) * 10),
+            );
+            card.classList.toggle("is-active", isActive);
+            card.classList.toggle("is-adjacent", !isActive && distance < 1.5);
+            card.dataset.deckPosition = isActive
+              ? "active"
+              : distance >= 1.5
+                ? "hidden"
+                : relative < 0
+                  ? "previous"
+                  : "next";
+            card.setAttribute("aria-hidden", String(!isActive));
+          });
+        };
 
         const renderReducedDeck = () => {
           if (!deckTrack || !deckCards.length) return;
           const styles = window.getComputedStyle(deckTrack);
+          const parsedGap = Number.parseFloat(styles.rowGap || styles.gap || "0");
           deckStep = deckCards[0].offsetHeight
-            + Number.parseFloat(styles.rowGap || styles.gap || "0");
-          deckTrack.style.transform = `translate3d(0, ${-deckStep * deckActiveIndex}px, 0)`;
-          deckControls.forEach((control, index) => {
-            const isActive = index === deckActiveIndex;
-            control.classList.toggle("is-active", isActive);
-            control.setAttribute("aria-pressed", String(isActive));
-          });
+            + (Number.isFinite(parsedGap) ? parsedGap : 0);
+          const trackY = -deckStep * deckActiveIndex;
+          deckTrack.style.transform = `translate3d(0, ${trackY}px, 0)`;
+          updateReducedCardDepth(trackY);
+          deckStage?.setAttribute("data-active-index", String(deckActiveIndex));
           if (deckStatus) {
             deckStatus.textContent = `Showing card ${deckActiveIndex + 1} of ${deckCards.length}.`;
           }
@@ -290,35 +329,95 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           ) % deckCards.length;
           renderReducedDeck();
         };
-        const reducedControlHandlers = deckControls.map((control) => {
-          const handler = () => showReducedDeckCard(Number(control.dataset.deckIndex));
-          control.addEventListener("click", handler);
-          return [control, handler];
-        });
-        const handleReducedPrevious = () => showReducedDeckCard(deckActiveIndex - 1);
-        const handleReducedNext = () => showReducedDeckCard(deckActiveIndex + 1);
         const handleReducedKeyDown = (event) => {
-          if (event.key === "ArrowLeft") showReducedDeckCard(deckActiveIndex - 1);
-          else if (event.key === "ArrowRight") showReducedDeckCard(deckActiveIndex + 1);
-          else if (event.key === "Home") showReducedDeckCard(0);
+          if (["ArrowLeft", "ArrowUp"].includes(event.key)) {
+            showReducedDeckCard(deckActiveIndex - 1);
+          } else if (["ArrowRight", "ArrowDown"].includes(event.key)) {
+            showReducedDeckCard(deckActiveIndex + 1);
+          } else if (event.key === "Home") showReducedDeckCard(0);
           else if (event.key === "End") showReducedDeckCard(deckCards.length - 1);
           else return;
           event.preventDefault();
         };
+        const handleReducedPointerDown = (event) => {
+          if (
+            !deckStep
+            || event.isPrimary === false
+            || (event.pointerType === "mouse" && event.button > 0)
+          ) return;
+
+          reducedDeckDrag = {
+            pointerId: event.pointerId,
+            startY: event.clientY,
+            deltaY: 0,
+          };
+          deckWindow?.classList.add("is-dragging");
+          try {
+            deckWindow?.setPointerCapture?.(event.pointerId);
+          } catch {
+            // Pointer capture is not implemented in every reduced-motion test environment.
+          }
+        };
+        const handleReducedPointerMove = (event) => {
+          if (!reducedDeckDrag || event.pointerId !== reducedDeckDrag.pointerId) return;
+          const deltaY = event.clientY - reducedDeckDrag.startY;
+          reducedDeckDrag.deltaY = deltaY;
+          if (Math.abs(deltaY) > 3) event.preventDefault();
+
+          const minimumY = -deckStep * (deckCards.length - 1);
+          let nextY = -deckStep * deckActiveIndex + deltaY;
+          if (nextY > 0) nextY *= 0.28;
+          if (nextY < minimumY) nextY = minimumY + (nextY - minimumY) * 0.28;
+          deckTrack.style.transform = `translate3d(0, ${nextY}px, 0)`;
+          updateReducedCardDepth(nextY);
+        };
+        const finishReducedPointer = (event, cancelled = false) => {
+          if (!reducedDeckDrag || event.pointerId !== reducedDeckDrag.pointerId) return;
+          const { pointerId, deltaY } = reducedDeckDrag;
+          reducedDeckDrag = null;
+          deckWindow?.classList.remove("is-dragging");
+          try {
+            if (deckWindow?.hasPointerCapture?.(pointerId)) {
+              deckWindow.releasePointerCapture(pointerId);
+            }
+          } catch {
+            // The pointer may already have been released by the browser.
+          }
+
+          const threshold = Math.max(
+            DECK_DRAG_THRESHOLD_MIN_PX,
+            deckStep * DECK_DRAG_THRESHOLD_RATIO,
+          );
+          if (!cancelled && Math.abs(deltaY) >= threshold) {
+            const requestedIndex = Math.max(
+              0,
+              Math.min(
+                deckCards.length - 1,
+                deckActiveIndex + (deltaY < 0 ? 1 : -1),
+              ),
+            );
+            showReducedDeckCard(requestedIndex);
+          } else {
+            renderReducedDeck();
+          }
+        };
+        const handleReducedPointerUp = (event) => finishReducedPointer(event);
+        const handleReducedPointerCancel = (event) => finishReducedPointer(event, true);
 
         deckStage?.setAttribute("data-autoplay", "paused");
-        deckPrevious?.addEventListener("click", handleReducedPrevious);
-        deckNext?.addEventListener("click", handleReducedNext);
         deckStage?.addEventListener("keydown", handleReducedKeyDown);
+        deckWindow?.addEventListener("pointerdown", handleReducedPointerDown);
+        deckWindow?.addEventListener("pointermove", handleReducedPointerMove);
+        deckWindow?.addEventListener("pointerup", handleReducedPointerUp);
+        deckWindow?.addEventListener("pointercancel", handleReducedPointerCancel);
         window.addEventListener("resize", renderReducedDeck, { passive: true });
         renderReducedDeck();
         cleanups.push(() => {
-          reducedControlHandlers.forEach(([control, handler]) => {
-            control.removeEventListener("click", handler);
-          });
-          deckPrevious?.removeEventListener("click", handleReducedPrevious);
-          deckNext?.removeEventListener("click", handleReducedNext);
           deckStage?.removeEventListener("keydown", handleReducedKeyDown);
+          deckWindow?.removeEventListener("pointerdown", handleReducedPointerDown);
+          deckWindow?.removeEventListener("pointermove", handleReducedPointerMove);
+          deckWindow?.removeEventListener("pointerup", handleReducedPointerUp);
+          deckWindow?.removeEventListener("pointercancel", handleReducedPointerCancel);
           window.removeEventListener("resize", renderReducedDeck);
         });
         return;
@@ -388,49 +487,69 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
         const deckTrack = root.querySelector(".dsr-deck-track");
         const deckStage = root.querySelector(".dsr-deck-stage");
         const deckWindow = root.querySelector(".dsr-deck-window");
-        const deckControlBar = root.querySelector(".dsr-deck-controls");
         const deckCards = gsap.utils.toArray(".dsr-deck-card", root);
-        const deckControls = gsap.utils.toArray("[data-deck-index]", root);
         const deckStatus = root.querySelector("[data-deck-status]");
-        const deckPrevious = root.querySelector('[data-deck-action="previous"]');
-        const deckNext = root.querySelector('[data-deck-action="next"]');
         let deckStep = 0;
         let deckActiveIndex = 0;
         let deckDirection = 1;
         let deckPaused = false;
         let deckStarted = false;
+        let deckDrag = null;
         const deckPauseReasons = new Set();
 
         const updateDeckCards = () => {
           const trackY = Number(gsap.getProperty(deckTrack, "y")) || 0;
+          const progress = Math.max(
+            0,
+            Math.min(
+              deckCards.length - 1,
+              -trackY / Math.max(deckStep, 1),
+            ),
+          );
           const activeIndex = Math.max(
             0,
             Math.min(
               deckCards.length - 1,
-              Math.round(Math.abs(trackY) / Math.max(deckStep, 1)),
+              Math.round(progress),
             ),
           );
-
-          deckControls.forEach((control, index) => {
-            const isActive = index === activeIndex;
-            control.classList.toggle("is-active", isActive);
-            control.setAttribute("aria-pressed", String(isActive));
-          });
+          const isCompact = window.innerWidth <= 760;
+          const depthX = isCompact ? 6 : 14;
+          const depthY = isCompact ? 10 : 22;
+          const scaleStep = isCompact ? 0.025 : 0.045;
 
           if (deckStatus) {
             deckStatus.textContent = `Showing card ${activeIndex + 1} of ${deckCards.length}.`;
           }
+          deckStage?.setAttribute("data-active-index", String(activeIndex));
 
           deckCards.forEach((card, index) => {
-            const distance = Math.min(
-              Math.abs(index * deckStep + trackY) / Math.max(deckStep, 1),
-              1,
-            );
+            const relative = index - progress;
+            const distance = Math.abs(relative);
+            const depth = Math.min(distance, 1);
+            const direction = Math.max(-1, Math.min(1, relative));
+            const isActive = distance < 0.5;
+
             gsap.set(card, {
-              scale: 1 - distance * 0.085,
-              opacity: 1 - distance * 0.48,
-              rotateZ: (index - activeIndex) * 0.65,
+              x: direction * depthX,
+              y: -direction * depthY,
+              scale: 1 - depth * scaleStep,
+              opacity: 1,
+              zIndex: 100 - Math.round(Math.min(distance, 5) * 10),
+              rotateX: 0,
+              rotateY: 0,
+              rotateZ: 0,
             });
+            card.classList.toggle("is-active", isActive);
+            card.classList.toggle("is-adjacent", !isActive && distance < 1.5);
+            card.dataset.deckPosition = isActive
+              ? "active"
+              : distance >= 1.5
+                ? "hidden"
+                : relative < 0
+                  ? "previous"
+                  : "next";
+            card.setAttribute("aria-hidden", String(!isActive));
           });
         };
 
@@ -438,8 +557,9 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           if (!deckCards.length || !deckTrack) return;
           const firstCard = deckCards[0];
           const styles = window.getComputedStyle(deckTrack);
+          const parsedGap = Number.parseFloat(styles.rowGap || styles.gap || "0");
           deckStep = firstCard.offsetHeight
-            + Number.parseFloat(styles.rowGap || styles.gap || "0");
+            + (Number.isFinite(parsedGap) ? parsedGap : 0);
           deckActiveIndex = Math.max(
             0,
             Math.min(deckCards.length - 1, activeIndex),
@@ -459,7 +579,7 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           deckTween = gsap.to(deckTrack, {
             y: -deckStep * deckActiveIndex,
             duration: DECK_TRANSITION_SECONDS,
-            ease: "power3.inOut",
+            ease: "expo.inOut",
             onUpdate: updateDeckCards,
             onComplete: updateDeckCards,
           });
@@ -517,84 +637,113 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
           if (document.hidden) pauseDeck("visibility");
           else resumeDeck("visibility");
         };
-        const handleDeckMouseEnter = () => pauseDeck("pointer");
-        const handleDeckMouseLeave = () => resumeDeck("pointer");
         const handleDeckFocusIn = () => pauseDeck("focus");
         const handleDeckFocusOut = (event) => {
           if (!deckStage?.contains(event.relatedTarget)) resumeDeck("focus");
         };
         const handleDeckKeyDown = (event) => {
-          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+          if (![
+            "ArrowLeft",
+            "ArrowRight",
+            "ArrowUp",
+            "ArrowDown",
+            "Home",
+            "End",
+          ].includes(event.key)) return;
           event.preventDefault();
-          if (event.key === "ArrowLeft") goToDeckIndex(deckActiveIndex - 1);
-          if (event.key === "ArrowRight") goToDeckIndex(deckActiveIndex + 1);
+          if (["ArrowLeft", "ArrowUp"].includes(event.key)) {
+            goToDeckIndex(deckActiveIndex - 1);
+          }
+          if (["ArrowRight", "ArrowDown"].includes(event.key)) {
+            goToDeckIndex(deckActiveIndex + 1);
+          }
           if (event.key === "Home") goToDeckIndex(0);
           if (event.key === "End") goToDeckIndex(deckCards.length - 1);
         };
-        const handleDeckControl = (event) => {
-          goToDeckIndex(Number(event.currentTarget.dataset.deckIndex));
+        const handleDeckPointerDown = (event) => {
+          if (
+            !deckStep
+            || event.isPrimary === false
+            || (event.pointerType === "mouse" && event.button > 0)
+          ) return;
+
+          deckTween?.kill();
+          pauseDeck("drag");
+          deckDrag = {
+            pointerId: event.pointerId,
+            startY: event.clientY,
+            startTrackY: Number(gsap.getProperty(deckTrack, "y")) || 0,
+            deltaY: 0,
+          };
+          deckStage?.classList.add("is-dragging");
+          deckWindow?.classList.add("is-dragging");
+          try {
+            deckWindow?.setPointerCapture?.(event.pointerId);
+          } catch {
+            // Pointer capture can be unavailable in test browsers.
+          }
         };
-        const handleDeckPrevious = () => goToDeckIndex(deckActiveIndex - 1);
-        const handleDeckNext = () => goToDeckIndex(deckActiveIndex + 1);
+        const handleDeckPointerMove = (event) => {
+          if (!deckDrag || event.pointerId !== deckDrag.pointerId) return;
+          const deltaY = event.clientY - deckDrag.startY;
+          deckDrag.deltaY = deltaY;
+          if (Math.abs(deltaY) > 3) event.preventDefault();
+
+          const minimumY = -deckStep * (deckCards.length - 1);
+          let nextY = deckDrag.startTrackY + deltaY;
+          if (nextY > 0) nextY *= 0.28;
+          if (nextY < minimumY) nextY = minimumY + (nextY - minimumY) * 0.28;
+          gsap.set(deckTrack, { y: nextY });
+          updateDeckCards();
+        };
+        const finishDeckPointer = (event, cancelled = false) => {
+          if (!deckDrag || event.pointerId !== deckDrag.pointerId) return;
+          const { pointerId, deltaY } = deckDrag;
+          deckDrag = null;
+          deckStage?.classList.remove("is-dragging");
+          deckWindow?.classList.remove("is-dragging");
+          try {
+            if (deckWindow?.hasPointerCapture?.(pointerId)) {
+              deckWindow.releasePointerCapture(pointerId);
+            }
+          } catch {
+            // The browser can release capture before pointercancel reaches us.
+          }
+
+          const threshold = Math.max(
+            DECK_DRAG_THRESHOLD_MIN_PX,
+            deckStep * DECK_DRAG_THRESHOLD_RATIO,
+          );
+          let requestedIndex = deckActiveIndex;
+          if (!cancelled && Math.abs(deltaY) >= threshold) {
+            requestedIndex += deltaY < 0 ? 1 : -1;
+          }
+          requestedIndex = Math.max(0, Math.min(deckCards.length - 1, requestedIndex));
+          goToDeckIndex(requestedIndex, false);
+          resumeDeck("drag");
+        };
+        const handleDeckPointerUp = (event) => finishDeckPointer(event);
+        const handleDeckPointerCancel = (event) => finishDeckPointer(event, true);
 
         window.addEventListener("resize", handleDeckResize, { passive: true });
-        deckWindow?.addEventListener("mouseenter", handleDeckMouseEnter);
-        deckWindow?.addEventListener("mouseleave", handleDeckMouseLeave);
-        deckControlBar?.addEventListener("mouseenter", handleDeckMouseEnter);
-        deckControlBar?.addEventListener("mouseleave", handleDeckMouseLeave);
+        deckWindow?.addEventListener("pointerdown", handleDeckPointerDown);
+        deckWindow?.addEventListener("pointermove", handleDeckPointerMove);
+        deckWindow?.addEventListener("pointerup", handleDeckPointerUp);
+        deckWindow?.addEventListener("pointercancel", handleDeckPointerCancel);
         deckStage?.addEventListener("focusin", handleDeckFocusIn);
         deckStage?.addEventListener("focusout", handleDeckFocusOut);
         deckStage?.addEventListener("keydown", handleDeckKeyDown);
-        deckControls.forEach((control) => {
-          control.addEventListener("click", handleDeckControl);
-        });
-        deckPrevious?.addEventListener("click", handleDeckPrevious);
-        deckNext?.addEventListener("click", handleDeckNext);
         document.addEventListener("visibilitychange", handleDeckVisibility);
         cleanups.push(() => {
           window.removeEventListener("resize", handleDeckResize);
-          deckWindow?.removeEventListener("mouseenter", handleDeckMouseEnter);
-          deckWindow?.removeEventListener("mouseleave", handleDeckMouseLeave);
-          deckControlBar?.removeEventListener("mouseenter", handleDeckMouseEnter);
-          deckControlBar?.removeEventListener("mouseleave", handleDeckMouseLeave);
+          deckWindow?.removeEventListener("pointerdown", handleDeckPointerDown);
+          deckWindow?.removeEventListener("pointermove", handleDeckPointerMove);
+          deckWindow?.removeEventListener("pointerup", handleDeckPointerUp);
+          deckWindow?.removeEventListener("pointercancel", handleDeckPointerCancel);
           deckStage?.removeEventListener("focusin", handleDeckFocusIn);
           deckStage?.removeEventListener("focusout", handleDeckFocusOut);
           deckStage?.removeEventListener("keydown", handleDeckKeyDown);
-          deckControls.forEach((control) => {
-            control.removeEventListener("click", handleDeckControl);
-          });
-          deckPrevious?.removeEventListener("click", handleDeckPrevious);
-          deckNext?.removeEventListener("click", handleDeckNext);
           document.removeEventListener("visibilitychange", handleDeckVisibility);
-        });
-
-        const hero = root.querySelector(".dsr-hero");
-        const handleHeroMove = (event) => {
-          if (event.pointerType === "touch") return;
-          const x = (event.clientX / window.innerWidth - 0.5) * 5;
-          const y = (event.clientY / window.innerHeight - 0.5) * -4;
-          gsap.to(heroDeck, {
-            rotateY: x,
-            rotateX: y,
-            transformPerspective: 1100,
-            duration: 0.7,
-            ease: "power3.out",
-          });
-        };
-        const handleHeroLeave = () => {
-          gsap.to(heroDeck, {
-            rotateX: 0,
-            rotateY: 0,
-            duration: 0.8,
-            ease: "power3.out",
-          });
-        };
-
-        hero?.addEventListener("pointermove", handleHeroMove);
-        hero?.addEventListener("pointerleave", handleHeroLeave);
-        cleanups.push(() => {
-          hero?.removeEventListener("pointermove", handleHeroMove);
-          hero?.removeEventListener("pointerleave", handleHeroLeave);
         });
 
         gsap.to(".dsr-reveal-word", {
@@ -1173,9 +1322,12 @@ function HeroDeck() {
   return (
     <div
       aria-label="Project memory examples carousel."
+      aria-describedby="dsr-deck-instructions"
+      aria-roledescription="carousel"
       className="dsr-deck-stage"
       data-autoplay="playing"
       data-autoplay-delay={DECK_AUTOPLAY_DELAY_SECONDS * 1000}
+      role="region"
       tabIndex={0}
     >
       <div className="dsr-deck-window">
@@ -1187,36 +1339,9 @@ function HeroDeck() {
           </div>
         </div>
       </div>
-      <div className="dsr-deck-controls" aria-label="Choose a card">
-        <button
-          type="button"
-          className="dsr-deck-arrow"
-          data-deck-action="previous"
-          aria-label="Show previous card"
-        >
-          <ArrowLeft aria-hidden="true" />
-        </button>
-        <div className="dsr-deck-dots" role="group" aria-label="Choose a specific card">
-          {DECK_CARDS.map((card, index) => (
-            <button
-              type="button"
-              className={`dsr-deck-dot${index === 0 ? " is-active" : ""}`}
-              data-deck-index={index}
-              aria-label={`Show card ${index + 1}: ${card.title}`}
-              aria-pressed={index === 0}
-              key={card.type}
-            />
-          ))}
-        </div>
-        <button
-          type="button"
-          className="dsr-deck-arrow"
-          data-deck-action="next"
-          aria-label="Show next card"
-        >
-          <ArrowRight aria-hidden="true" />
-        </button>
-      </div>
+      <p className="dsr-sr-only" id="dsr-deck-instructions">
+        Drag or swipe the cards vertically. Use the arrow keys, Home, or End for keyboard navigation.
+      </p>
       <p className="dsr-sr-only" aria-live="polite" data-deck-status>
         Showing card 1 of 5.
       </p>
