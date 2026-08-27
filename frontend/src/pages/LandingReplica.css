@@ -416,17 +416,38 @@
 
 .dsr-deck-window {
   --dsr-deck-height: clamp(340px, 35vw, 500px);
-  --dsr-deck-aperture: clamp(112px, 10vw, 148px);
+  --dsr-deck-aperture: clamp(230px, 22vw, 320px);
+  --dsr-deck-edge-fade: clamp(10px, 1vw, 16px);
   position: absolute;
   top: 50%;
   left: 50%;
   z-index: 1;
   width: min(64vw, 920px);
-  height: calc(var(--dsr-deck-height) + var(--dsr-deck-aperture));
+  height: min(
+    calc(var(--dsr-deck-height) + var(--dsr-deck-aperture)),
+    calc(100% - 80px)
+  );
   overflow: hidden;
+  background: transparent;
+  isolation: isolate;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--dsr-deck-edge-fade),
+    #000 calc(100% - var(--dsr-deck-edge-fade)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--dsr-deck-edge-fade),
+    #000 calc(100% - var(--dsr-deck-edge-fade)),
+    transparent 100%
+  );
   transform: translate(-50%, -50%);
   cursor: grab;
-  touch-action: pan-y;
+  /* Keep vertical pointer streams in the carousel while preserving zoom. */
+  touch-action: pan-x pinch-zoom;
 }
 
 .dsr-deck-window.is-dragging {
@@ -457,7 +478,7 @@
   width: 100%;
   gap: clamp(20px, 1.8vw, 28px);
   isolation: isolate;
-  touch-action: pan-y;
+  touch-action: pan-x pinch-zoom;
   will-change: transform;
 }
 
@@ -473,8 +494,7 @@
   color: var(--dsr-white);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    0 18px 46px rgba(8, 8, 10, 0.2),
-    0 38px 92px rgba(8, 8, 10, 0.16);
+    0 16px 48px rgba(8, 8, 10, 0.12);
   transform-origin: center;
   transition:
     box-shadow 0.48s cubic-bezier(0.22, 1, 0.36, 1),
@@ -486,8 +506,7 @@
 .dsr-deck-card.is-active {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.13),
-    0 22px 54px rgba(8, 8, 10, 0.27),
-    0 46px 112px rgba(8, 8, 10, 0.22);
+    0 22px 64px rgba(8, 8, 10, 0.17);
 }
 
 .dsr-deck-card::after {
@@ -1001,6 +1020,8 @@
   --dsr-card-text-small: clamp(0.58rem, 1.55cqw, 0.82rem);
   --dsr-card-text-body: clamp(0.65rem, 1.75cqw, 0.92rem);
   --dsr-card-text-strong: clamp(0.72rem, 1.95cqw, 1.05rem);
+  --dsr-compaction-green-deep: #6aa31b;
+  --dsr-card-danger: #d23f3f;
   top: clamp(86px, 7.5vw, 108px);
   right: clamp(20px, 2vw, 28px);
   bottom: clamp(20px, 2vw, 28px);
@@ -1102,7 +1123,7 @@
   align-content: center;
   padding: clamp(3px, 0.7cqw, 6px) clamp(7px, 1.4cqw, 11px);
   border-radius: clamp(6px, 1.1cqw, 9px);
-  background: #ffe2dc;
+  background: #ffad9e;
 }
 
 .dsr-session-repeat strong {
@@ -1193,7 +1214,7 @@
 
 .dsr-context-trigger > div:first-child strong,
 .dsr-trigger-result {
-  color: var(--dsr-lime);
+  color: var(--dsr-compaction-green-deep);
 }
 
 .dsr-window-track {
@@ -1209,11 +1230,11 @@
 .dsr-window-track span {
   height: clamp(7px, 1.4cqw, 11px);
   border-radius: 2px;
-  background: #6aa31b;
+  background: var(--dsr-lime);
 }
 
 .dsr-window-track span:nth-last-child(-n + 2) {
-  background: var(--dsr-lime);
+  background: var(--dsr-compaction-green-deep);
 }
 
 .dsr-trigger-result {
@@ -1360,7 +1381,7 @@
 }
 
 .dsr-missing-list strong {
-  color: var(--dsr-lime);
+  color: var(--dsr-card-danger);
 }
 
 /* Forgetting */
@@ -1481,7 +1502,7 @@
   gap: clamp(6px, 1cqw, 9px);
   padding: clamp(5px, 0.85cqw, 7px) clamp(7px, 1.2cqw, 10px);
   border-radius: clamp(5px, 0.8cqw, 7px);
-  background: var(--dsr-coral);
+  background: #d59184;
   color: var(--dsr-ink);
   font-size: var(--dsr-card-text-small);
 }
@@ -1490,7 +1511,7 @@
   padding: clamp(6px, 1cqw, 9px);
   border: 1px solid var(--dsr-lime);
   border-radius: clamp(6px, 1cqw, 8px);
-  background: rgba(199, 255, 101, 0.05);
+  background: rgba(199, 255, 101, 0.14);
 }
 
 .dsr-thread-active header strong {
@@ -1573,7 +1594,28 @@
   font-size: var(--dsr-card-text-strong);
 }
 
-.dsr-provider-card > header span {
+.dsr-provider-name {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: clamp(5px, 1cqw, 8px);
+}
+
+.dsr-provider-app-icon {
+  display: grid;
+  width: clamp(17px, 4cqw, 24px);
+  height: clamp(17px, 4cqw, 24px);
+  flex: 0 0 auto;
+  place-items: center;
+}
+
+.dsr-provider-app-icon .dsr-agent-logo img,
+.dsr-provider-app-icon .dsr-agent-logo svg {
+  width: 100%;
+  height: 100%;
+}
+
+.dsr-provider-card > header > span {
   color: rgba(17, 17, 18, 0.5);
   font-size: var(--dsr-card-text-micro);
 }
@@ -1637,7 +1679,7 @@
   gap: clamp(4px, 0.7cqw, 6px);
   padding: clamp(7px, 1.2cqw, 10px);
   border-radius: clamp(6px, 1cqw, 8px);
-  background: #dce8ff;
+  background: #a9c8ff;
   font-size: var(--dsr-card-text-small);
 }
 
@@ -1764,7 +1806,7 @@
   align-items: center;
   padding: clamp(4px, 0.7cqw, 6px) clamp(6px, 1cqw, 9px);
   border-radius: clamp(5px, 0.8cqw, 7px);
-  background: #ffe2dc;
+  background: #ffad9e;
   font-size: var(--dsr-card-text-small);
 }
 
@@ -3274,10 +3316,6 @@
   gap: 18px;
 }
 
-.dsr-final-actions > .dsr-text-link {
-  align-self: flex-end;
-}
-
 .dsr-waitlist-card {
   position: relative;
   isolation: isolate;
@@ -3301,21 +3339,6 @@
     0 3px 8px rgba(17, 17, 18, 0.05);
 }
 
-.dsr-waitlist-card::before {
-  position: absolute;
-  z-index: 0;
-  inset: 0;
-  background-image:
-    linear-gradient(rgba(17, 17, 18, 0.09) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(17, 17, 18, 0.09) 1px, transparent 1px);
-  background-size: 40px 40px;
-  content: "";
-  opacity: 0.72;
-  pointer-events: none;
-  -webkit-mask-image: linear-gradient(45deg, #000 0%, transparent 50%, #000 100%);
-  mask-image: linear-gradient(45deg, #000 0%, transparent 50%, #000 100%);
-}
-
 .dsr-waitlist-card > * {
   position: relative;
   z-index: 1;
@@ -3325,24 +3348,8 @@
   text-align: center;
 }
 
-.dsr-waitlist-heading > span {
-  display: inline-flex;
-  min-height: 28px;
-  align-items: center;
-  padding: 0 12px;
-  border: 1px solid rgba(17, 17, 18, 0.12);
-  border-radius: 999px;
-  background: rgba(199, 255, 101, 0.74);
-  color: var(--dsr-ink);
-  font-family: var(--dsr-mono);
-  font-size: 0.61rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  box-shadow: 0 4px 12px rgba(17, 17, 18, 0.06);
-}
-
 .dsr-waitlist-heading h3 {
-  margin: 19px 0 0;
+  margin: 0;
   color: var(--dsr-ink);
   font-size: clamp(2.45rem, 4.25vw, 4.3rem);
   font-weight: 500;
@@ -3552,26 +3559,6 @@
 
 .dsr-round-cta svg {
   width: 20px;
-}
-
-.dsr-text-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 12px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--dsr-ink);
-  font-family: var(--dsr-mono);
-  font-size: 0.72rem;
-  text-transform: uppercase;
-}
-
-.dsr-text-link svg {
-  width: 16px;
-  transition: transform 0.35s ease;
-}
-
-.dsr-text-link:hover svg {
-  transform: rotate(45deg);
 }
 
 .dsr-footer {
@@ -3803,7 +3790,8 @@
 
   .dsr-deck-window {
     --dsr-deck-height: clamp(285px, 72vw, 380px);
-    --dsr-deck-aperture: 80px;
+    --dsr-deck-aperture: clamp(120px, 32vw, 160px);
+    --dsr-deck-edge-fade: clamp(8px, 2.5vw, 12px);
     top: calc(50% + 85px);
     width: 100%;
     height: calc(var(--dsr-deck-height) + var(--dsr-deck-aperture));
@@ -4432,18 +4420,10 @@
     border-radius: 20px;
   }
 
-  .dsr-final-actions > .dsr-text-link {
-    align-self: flex-end;
-  }
-
   .dsr-round-cta {
     width: 165px;
     padding: 23px;
     font-size: 0.62rem;
-  }
-
-  .dsr-text-link {
-    font-size: 0.58rem;
   }
 
   .dsr-footer {
@@ -4490,10 +4470,6 @@
 
   .dsr-waitlist-card {
     padding: 34px 18px;
-  }
-
-  .dsr-waitlist-card::before {
-    background-size: 32px 32px;
   }
 
   .dsr-waitlist-heading h3 {

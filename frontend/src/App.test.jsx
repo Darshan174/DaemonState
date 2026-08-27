@@ -90,10 +90,10 @@ beforeEach(() => {
   });
 });
 
-it("hides product routes only when the waitlist deployment flag is enabled", () => {
+it("defaults production to waitlist-only while allowing an explicit override", () => {
   expect(waitlistOnly({ VITE_WAITLIST_ONLY: "true" })).toBe(true);
   expect(waitlistOnly({ VITE_WAITLIST_ONLY: "false" })).toBe(false);
-  expect(waitlistOnly({ MODE: "production" })).toBe(false);
+  expect(waitlistOnly({ MODE: "production" })).toBe(true);
   expect(waitlistOnly({ MODE: "development" })).toBe(false);
 });
 
