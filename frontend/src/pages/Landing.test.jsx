@@ -188,7 +188,7 @@ describe("Landing", () => {
     vi.useRealTimers();
   });
 
-  it("keeps the card controls usable when reduced motion disables autoplay", async () => {
+  it("keeps cursor swiping and keyboard navigation usable with reduced motion", async () => {
     vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({
       matches: true,
       addEventListener: vi.fn(),
@@ -196,19 +196,82 @@ describe("Landing", () => {
     }));
     const { container } = renderLanding();
     const heroDeck = container.querySelector(".dsr-deck-stage");
+    const deckWindow = heroDeck.querySelector(".dsr-deck-window");
+    const deckCards = [...heroDeck.querySelectorAll(".dsr-deck-card")];
+    Object.defineProperty(deckCards[0], "offsetHeight", {
+      configurable: true,
+      value: 340,
+    });
 
     await waitFor(() => expect(heroDeck).toHaveAttribute("data-autoplay", "paused"));
-    fireEvent.click(
-      within(heroDeck).getByRole("button", {
-        name: "Show card 2: Context compaction kept the summary. It lost the nuance.",
-      }),
-    );
+    expect(deckCards[0]).toHaveClass("is-active");
+    expect(deckCards[0]).toHaveAttribute("aria-hidden", "false");
+    expect(deckCards.slice(1).every(
+      (card) => card.getAttribute("aria-hidden") === "true",
+    )).toBe(true);
+    fireEvent(deckWindow, new MouseEvent("pointerdown", {
+      bubbles: true,
+      button: 0,
+      clientY: 260,
+    }));
+    fireEvent(deckWindow, new MouseEvent("pointermove", {
+      bubbles: true,
+      cancelable: true,
+      clientY: 180,
+    }));
+    fireEvent(deckWindow, new MouseEvent("pointerup", {
+      bubbles: true,
+      clientY: 180,
+    }));
 
-    expect(heroDeck.querySelector('[data-deck-index="1"]'))
-      .toHaveAttribute("aria-pressed", "true");
     expect(heroDeck.querySelector("[data-deck-status]")).toHaveTextContent(
       "Showing card 2 of 5.",
     );
+    expect(deckCards[1]).toHaveClass("is-active");
+    expect(deckCards[1]).toHaveAttribute("aria-hidden", "false");
+    expect(deckCards[0]).toHaveAttribute("data-deck-position", "previous");
+    expect(deckCards[2]).toHaveAttribute("data-deck-position", "next");
+    expect(deckWindow).not.toHaveClass("is-dragging");
+
+    fireEvent.keyDown(heroDeck, { key: "ArrowDown" });
+    expect(heroDeck.querySelector("[data-deck-status]")).toHaveTextContent(
+      "Showing card 3 of 5.",
+    );
+  });
+
+  it("keeps drag listeners without registering cursor-follow tilt", async () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }));
+    vi.stubGlobal("scrollTo", vi.fn());
+    const addEventListener = vi.spyOn(EventTarget.prototype, "addEventListener");
+
+    try {
+      const { container } = renderLanding();
+      const landing = container.querySelector(".dsr-landing");
+
+      await waitFor(() => expect(landing).toHaveAttribute("data-motion", "ready"));
+
+      const hero = container.querySelector(".dsr-hero");
+      const deckWindow = container.querySelector(".dsr-deck-window");
+      const eventTypesFor = (element) => addEventListener.mock.calls
+        .filter((_, index) => addEventListener.mock.instances[index] === element)
+        .map(([eventType]) => eventType);
+
+      expect(eventTypesFor(hero)).not.toContain("pointermove");
+      expect(eventTypesFor(hero)).not.toContain("pointerleave");
+      expect(eventTypesFor(deckWindow)).not.toContain("mouseenter");
+      expect(eventTypesFor(deckWindow)).not.toContain("mouseleave");
+      expect(eventTypesFor(deckWindow)).toEqual(expect.arrayContaining([
+        "pointerdown",
+        "pointermove",
+        "pointerup",
+      ]));
+    } finally {
+      addEventListener.mockRestore();
+    }
   });
 
   it("moves directly from the product story into the final call to action", () => {
@@ -233,27 +296,6 @@ describe("Landing", () => {
     expect(screen.queryByRole("link", { name: "GitHub" })).not.toBeInTheDocument();
   });
 
-  it("keeps page scrolling available over the autoplay carousel", () => {
-    const deckTrackRule = landingReplicaCss.match(
-      /\.dsr-deck-track\s*\{([^}]*)\}/,
-    )?.[1];
-
-    expect(deckTrackRule).toMatch(/touch-action:\s*pan-y\s*;/);
-  });
-
-  it("keeps the story-card components solid instead of frosted", () => {
-    const storyCardStart = landingReplicaCss.indexOf("/* Hero story cards */");
-    const storyCardEnd = landingReplicaCss.indexOf(
-      ".dsr-hero-support {",
-      storyCardStart,
-    );
-    const storyCardCss = landingReplicaCss.slice(storyCardStart, storyCardEnd);
-
-    expect(storyCardStart).toBeGreaterThanOrEqual(0);
-    expect(storyCardEnd).toBeGreaterThan(storyCardStart);
-    expect(storyCardCss).not.toContain("backdrop-filter");
-  });
-
   it("uses a transparent expanded deck holder with a narrow edge fade", () => {
     const deckWindowRule = landingReplicaCss.match(
       /\.dsr-deck-window\s*\{([^}]*)\}/,
@@ -270,6 +312,18 @@ describe("Landing", () => {
 
   it("keeps the waitlist card free of decorative grid overlays", () => {
     expect(landingReplicaCss).not.toMatch(/\.dsr-waitlist-card::(?:before|after)/);
+  });
+
+  it("reserves vertical touch gestures for the card carousel", () => {
+    const deckWindowRule = landingReplicaCss.match(
+      /\.dsr-deck-window\s*\{([^}]*)\}/,
+    )?.[1];
+    const deckTrackRule = landingReplicaCss.match(
+      /\.dsr-deck-track\s*\{([^}]*)\}/,
+    )?.[1];
+
+    expect(deckWindowRule).toMatch(/touch-action:\s*pan-x pinch-zoom\s*;/);
+    expect(deckTrackRule).toMatch(/touch-action:\s*pan-x pinch-zoom\s*;/);
   });
 
   it("keeps obvious product entry points in local product mode", () => {
@@ -293,15 +347,16 @@ describe("Landing", () => {
       "data-autoplay",
       "playing",
     );
-    expect(heroDeck).toHaveAttribute("data-autoplay-delay", "2500");
-    expect(within(heroDeck).getByRole("button", { name: "Show previous card" }))
+    expect(heroDeck).toHaveAttribute("data-autoplay-delay", "3200");
+    expect(heroDeck).toHaveAttribute("aria-roledescription", "carousel");
+    expect(within(heroDeck).queryByRole("button", { name: "Show previous card" }))
+      .not.toBeInTheDocument();
+    expect(within(heroDeck).queryByRole("button", { name: "Show next card" }))
+      .not.toBeInTheDocument();
+    expect(heroDeck.querySelectorAll(".dsr-deck-controls")).toHaveLength(0);
+    expect(heroDeck.querySelectorAll("[data-deck-index]")).toHaveLength(0);
+    expect(within(heroDeck).getByText(/Drag or swipe the cards vertically/i))
       .toBeInTheDocument();
-    expect(within(heroDeck).getByRole("button", { name: "Show next card" }))
-      .toBeInTheDocument();
-    expect(heroDeck.querySelectorAll(".dsr-deck-controls")).toHaveLength(1);
-    const directCardControls = heroDeck.querySelectorAll("[data-deck-index]");
-    expect(directCardControls).toHaveLength(5);
-    expect(directCardControls[0]).toHaveAttribute("aria-pressed", "true");
     expect(heroDeck.querySelector(".dsr-deck-index")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Scroll to learn more" }))
       .not.toBeInTheDocument();
