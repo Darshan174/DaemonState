@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -5,6 +8,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import Landing from "./Landing";
 import { ThemeProvider } from "../context/ThemeContext";
 import { WAITLIST_CONSENT_VERSION } from "../waitlist/tracking";
+
+const landingReplicaCss = readFileSync(
+  resolve(process.cwd(), "src/pages/LandingReplica.css"),
+  "utf8",
+);
 
 const clerkMock = vi.hoisted(() => ({
   errors: { fields: {} },
@@ -73,6 +81,13 @@ describe("Landing", () => {
       "email",
     );
     expect(screen.getByRole("button", { name: "Join waitlist" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Join the waitlist. Start free." }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/priority access and receive your first two weeks free/i),
+    ).toBeInTheDocument();
+    expect(container.querySelector(".dsr-waitlist-perks")).not.toBeInTheDocument();
     const privacyLinks = screen.getAllByRole("link", { name: "Privacy notice" });
     expect(privacyLinks.some((link) => link.getAttribute("href") === "/privacy"))
       .toBe(true);
@@ -213,13 +228,48 @@ describe("Landing", () => {
     expect(
       screen.getByRole("contentinfo").querySelector(".dsr-footer-brand svg"),
     ).toHaveAttribute("width", "68");
-    expect(screen.getByRole("link", { name: "Follow the build" })).toHaveAttribute(
-      "href",
-      "https://github.com/Darshan174/DaemonState",
+    expect(screen.queryByRole("link", { name: "Follow the build" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "GitHub" })).not.toBeInTheDocument();
+  });
+
+  it("keeps page scrolling available over the autoplay carousel", () => {
+    const deckTrackRule = landingReplicaCss.match(
+      /\.dsr-deck-track\s*\{([^}]*)\}/,
+    )?.[1];
+
+    expect(deckTrackRule).toMatch(/touch-action:\s*pan-y\s*;/);
+  });
+
+  it("keeps the story-card components solid instead of frosted", () => {
+    const storyCardStart = landingReplicaCss.indexOf("/* Hero story cards */");
+    const storyCardEnd = landingReplicaCss.indexOf(
+      ".dsr-hero-support {",
+      storyCardStart,
     );
-    expect(
-      within(screen.getByRole("contentinfo")).getByRole("link", { name: "GitHub" }),
-    ).toHaveAttribute("href", "https://github.com/Darshan174/DaemonState");
+    const storyCardCss = landingReplicaCss.slice(storyCardStart, storyCardEnd);
+
+    expect(storyCardStart).toBeGreaterThanOrEqual(0);
+    expect(storyCardEnd).toBeGreaterThan(storyCardStart);
+    expect(storyCardCss).not.toContain("backdrop-filter");
+  });
+
+  it("uses a transparent expanded deck holder with a narrow edge fade", () => {
+    const deckWindowRule = landingReplicaCss.match(
+      /\.dsr-deck-window\s*\{([^}]*)\}/,
+    )?.[1];
+
+    expect(deckWindowRule).toMatch(/width:\s*min\(64vw, 920px\)\s*;/);
+    expect(deckWindowRule).toMatch(
+      /--dsr-deck-edge-fade:\s*clamp\(10px, 1vw, 16px\)\s*;/,
+    );
+    expect(deckWindowRule).toMatch(/background:\s*transparent\s*;/);
+    expect(deckWindowRule).toMatch(/mask-image:\s*linear-gradient/);
+    expect(landingReplicaCss).not.toMatch(/\.dsr-deck-window::(?:before|after)/);
+  });
+
+  it("keeps the waitlist card free of decorative grid overlays", () => {
+    expect(landingReplicaCss).not.toMatch(/\.dsr-waitlist-card::(?:before|after)/);
   });
 
   it("keeps obvious product entry points in local product mode", () => {
@@ -231,6 +281,13 @@ describe("Landing", () => {
     expect(container.querySelector(".dsr-landing")).toBeInTheDocument();
     expect(container.querySelectorAll(".dsr-deck-card")).toHaveLength(5);
     expect(container.querySelector(".dsr-deck-track")).toBeInTheDocument();
+    const providerCard = container.querySelector(".dsr-deck-card-lockin");
+    const providerIcons = providerCard.querySelectorAll(".dsr-provider-app-icon");
+    expect(providerIcons).toHaveLength(2);
+    expect(providerIcons[0].querySelector(".dsr-agent-logo-codex"))
+      .toBeInTheDocument();
+    expect(providerIcons[1].querySelector(".dsr-agent-logo-claude"))
+      .toBeInTheDocument();
     const heroDeck = container.querySelector(".dsr-deck-stage");
     expect(heroDeck).toHaveAttribute(
       "data-autoplay",
@@ -262,7 +319,7 @@ describe("Landing", () => {
     expect(screen.queryByText(/Drag to explore/i)).not.toBeInTheDocument();
     expect(container.querySelector(".dsr-system-frame")).not.toBeInTheDocument();
     expect(container.querySelectorAll(".dsr-stack-card")).toHaveLength(3);
-    expect(container.querySelectorAll(".dsr-agent-logo")).toHaveLength(6);
+    expect(container.querySelectorAll(".dsr-agent-logo")).toHaveLength(8);
     expect(container.querySelectorAll(".dsr-tool-avatar")).toHaveLength(6);
     expect(container.querySelectorAll(".dsr-agent-logo-gemini")).toHaveLength(1);
     expect(container.querySelectorAll(".dsr-agent-logo-cursor")).toHaveLength(1);
@@ -327,7 +384,7 @@ describe("Landing", () => {
       });
     });
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(await screen.findByText(/check your inbox for confirmation/i))
+    expect(await screen.findByText(/two free weeks are reserved for launch/i))
       .toBeInTheDocument();
     expect(screen.getByRole("button", { name: "You're in" })).toBeDisabled();
   });
@@ -338,7 +395,7 @@ describe("Landing", () => {
       status: 201,
       json: async () => ({
         status: "registered",
-        message: "You're on the DaemonState waitlist.",
+        message: "You're in. Your two free weeks are reserved for launch.",
       }),
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -368,7 +425,11 @@ describe("Landing", () => {
         }),
       );
     });
-    expect(await screen.findByText("You're on the DaemonState waitlist."))
+    expect(
+      await screen.findByText(
+        "You're in. Your two free weeks are reserved for launch.",
+      ),
+    )
       .toBeInTheDocument();
     expect(screen.getByRole("button", { name: "You're in" })).toBeDisabled();
   });

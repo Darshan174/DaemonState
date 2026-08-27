@@ -416,13 +416,30 @@
 }
 
 .dsr-deck-window {
+  --dsr-deck-edge-fade: clamp(10px, 1vw, 16px);
   position: absolute;
   top: 0;
   left: 50%;
   z-index: 1;
-  width: min(35vw, 520px);
+  width: min(64vw, 920px);
   height: calc(100% - 72px);
   overflow: hidden;
+  background: transparent;
+  isolation: isolate;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--dsr-deck-edge-fade),
+    #000 calc(100% - var(--dsr-deck-edge-fade)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--dsr-deck-edge-fade),
+    #000 calc(100% - var(--dsr-deck-edge-fade)),
+    transparent 100%
+  );
   transform: translateX(-50%);
   transform-style: preserve-3d;
   cursor: default;
@@ -465,9 +482,18 @@
   border-radius: 18px;
   background: var(--dsr-black);
   color: var(--dsr-white);
-  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.11);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 16px 48px rgba(8, 8, 10, 0.12);
   transform-origin: center;
   user-select: none;
+  will-change: transform;
+}
+
+.dsr-deck-card.is-active {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.13),
+    0 22px 64px rgba(8, 8, 10, 0.17);
 }
 
 .dsr-deck-card::after {
@@ -974,6 +1000,8 @@
 }
 
 .dsr-deck-visual {
+  --dsr-compaction-green-deep: #6aa31b;
+  --dsr-card-danger: #d23f3f;
   top: clamp(67px, 6.3vw, 84px);
   right: 18px;
   bottom: 38px;
@@ -1002,11 +1030,9 @@
   padding: 3px 5px;
   border: 1px solid rgba(17, 17, 18, 0.14);
   border-radius: 999px;
-  background: rgba(246, 246, 242, 0.9);
+  background: #f6f6f2;
   box-shadow: 0 7px 20px rgba(17, 17, 18, 0.18);
   transform: translateX(-50%);
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
 }
 
 .dsr-deck-arrow,
@@ -1156,7 +1182,7 @@
   align-content: center;
   padding: 3px 7px;
   border-radius: 6px;
-  background: #ffe2dc;
+  background: #ffad9e;
 }
 
 .dsr-session-repeat strong {
@@ -1247,7 +1273,7 @@
 
 .dsr-context-trigger > div:first-child strong,
 .dsr-trigger-result {
-  color: var(--dsr-coral);
+  color: var(--dsr-compaction-green-deep);
 }
 
 .dsr-window-track {
@@ -1263,11 +1289,11 @@
 .dsr-window-track span {
   height: clamp(5px, 0.62vw, 8px);
   border-radius: 2px;
-  background: #f5b6aa;
+  background: var(--dsr-lime);
 }
 
 .dsr-window-track span:nth-last-child(-n + 2) {
-  background: var(--dsr-coral);
+  background: var(--dsr-compaction-green-deep);
 }
 
 .dsr-trigger-result {
@@ -1414,7 +1440,7 @@
 }
 
 .dsr-missing-list strong {
-  color: var(--dsr-coral);
+  color: var(--dsr-card-danger);
 }
 
 /* Forgetting */
@@ -1533,7 +1559,7 @@
   gap: 6px;
   padding: 4px 6px;
   border-radius: 5px;
-  background: var(--dsr-coral);
+  background: #d59184;
   color: var(--dsr-ink);
   font-size: clamp(0.3rem, 0.39vw, 0.39rem);
 }
@@ -1542,7 +1568,7 @@
   padding: 5px;
   border: 1px solid var(--dsr-lime);
   border-radius: 6px;
-  background: rgba(199, 255, 101, 0.05);
+  background: rgba(199, 255, 101, 0.14);
 }
 
 .dsr-thread-active header strong {
@@ -1625,7 +1651,28 @@
   font-size: clamp(0.45rem, 0.59vw, 0.59rem);
 }
 
-.dsr-provider-card > header span {
+.dsr-provider-name {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: clamp(5px, 1cqw, 8px);
+}
+
+.dsr-provider-app-icon {
+  display: grid;
+  width: clamp(17px, 4cqw, 24px);
+  height: clamp(17px, 4cqw, 24px);
+  flex: 0 0 auto;
+  place-items: center;
+}
+
+.dsr-provider-app-icon .dsr-agent-logo img,
+.dsr-provider-app-icon .dsr-agent-logo svg {
+  width: 100%;
+  height: 100%;
+}
+
+.dsr-provider-card > header > span {
   color: rgba(17, 17, 18, 0.5);
   font-size: 0.7em;
 }
@@ -1689,7 +1736,7 @@
   gap: 4px;
   padding: 6px;
   border-radius: 6px;
-  background: #dce8ff;
+  background: #a9c8ff;
   font-size: clamp(0.34rem, 0.45vw, 0.45rem);
 }
 
@@ -1816,7 +1863,7 @@
   align-items: center;
   padding: 3px 5px;
   border-radius: 5px;
-  background: #ffe2dc;
+  background: #ffad9e;
   font-size: clamp(0.32rem, 0.43vw, 0.43rem);
 }
 
@@ -3326,10 +3373,6 @@
   gap: 18px;
 }
 
-.dsr-final-actions > .dsr-text-link {
-  align-self: flex-end;
-}
-
 .dsr-waitlist-card {
   position: relative;
   isolation: isolate;
@@ -3353,21 +3396,6 @@
     0 3px 8px rgba(17, 17, 18, 0.05);
 }
 
-.dsr-waitlist-card::before {
-  position: absolute;
-  z-index: 0;
-  inset: 0;
-  background-image:
-    linear-gradient(rgba(17, 17, 18, 0.09) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(17, 17, 18, 0.09) 1px, transparent 1px);
-  background-size: 40px 40px;
-  content: "";
-  opacity: 0.72;
-  pointer-events: none;
-  -webkit-mask-image: linear-gradient(45deg, #000 0%, transparent 50%, #000 100%);
-  mask-image: linear-gradient(45deg, #000 0%, transparent 50%, #000 100%);
-}
-
 .dsr-waitlist-card > * {
   position: relative;
   z-index: 1;
@@ -3377,24 +3405,8 @@
   text-align: center;
 }
 
-.dsr-waitlist-heading > span {
-  display: inline-flex;
-  min-height: 28px;
-  align-items: center;
-  padding: 0 12px;
-  border: 1px solid rgba(17, 17, 18, 0.12);
-  border-radius: 999px;
-  background: rgba(199, 255, 101, 0.74);
-  color: var(--dsr-ink);
-  font-family: var(--dsr-mono);
-  font-size: 0.61rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  box-shadow: 0 4px 12px rgba(17, 17, 18, 0.06);
-}
-
 .dsr-waitlist-heading h3 {
-  margin: 19px 0 0;
+  margin: 0;
   color: var(--dsr-ink);
   font-size: clamp(2.45rem, 4.25vw, 4.3rem);
   font-weight: 500;
@@ -3604,26 +3616,6 @@
 
 .dsr-round-cta svg {
   width: 20px;
-}
-
-.dsr-text-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 12px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--dsr-ink);
-  font-family: var(--dsr-mono);
-  font-size: 0.72rem;
-  text-transform: uppercase;
-}
-
-.dsr-text-link svg {
-  width: 16px;
-  transition: transform 0.35s ease;
-}
-
-.dsr-text-link:hover svg {
-  transform: rotate(45deg);
 }
 
 .dsr-footer {
@@ -3855,6 +3847,7 @@
 
   .dsr-deck-window {
     --dsr-deck-height: min(58vw, 230px);
+    --dsr-deck-edge-fade: clamp(8px, 2.5vw, 12px);
     top: 47%;
     width: 100%;
     height: 34vh;
@@ -4473,18 +4466,10 @@
     border-radius: 20px;
   }
 
-  .dsr-final-actions > .dsr-text-link {
-    align-self: flex-end;
-  }
-
   .dsr-round-cta {
     width: 165px;
     padding: 23px;
     font-size: 0.62rem;
-  }
-
-  .dsr-text-link {
-    font-size: 0.58rem;
   }
 
   .dsr-footer {
@@ -4531,10 +4516,6 @@
 
   .dsr-waitlist-card {
     padding: 34px 18px;
-  }
-
-  .dsr-waitlist-card::before {
-    background-size: 32px 32px;
   }
 
   .dsr-waitlist-heading h3 {

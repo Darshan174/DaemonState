@@ -17,6 +17,9 @@ from app.time import utc_now
 router = APIRouter()
 _EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 WAITLIST_CONSENT_VERSION = "2026-08-23"
+_WAITLIST_SUCCESS_MESSAGE = (
+    "You're in. Your two free weeks are reserved for launch."
+)
 _ATTRIBUTION_FIELDS = (
     "utm_source",
     "utm_medium",
@@ -110,7 +113,7 @@ async def register_waitlist_signup(
     if payload.website.strip():
         return {
             "status": "registered",
-            "message": "You're on the DaemonState waitlist.",
+            "message": _WAITLIST_SUCCESS_MESSAGE,
         }
 
     signup = WaitlistSignup(
@@ -139,5 +142,5 @@ async def register_waitlist_signup(
 
     return {
         "status": "registered",
-        "message": "You're on the DaemonState waitlist.",
+        "message": _WAITLIST_SUCCESS_MESSAGE,
     }
