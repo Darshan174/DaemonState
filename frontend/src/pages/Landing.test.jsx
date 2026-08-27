@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -5,6 +8,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import Landing from "./Landing";
 import { ThemeProvider } from "../context/ThemeContext";
 import { WAITLIST_CONSENT_VERSION } from "../waitlist/tracking";
+
+const landingReplicaCss = readFileSync(
+  resolve(process.cwd(), "src/pages/LandingReplica.css"),
+  "utf8",
+);
 
 const clerkMock = vi.hoisted(() => ({
   errors: { fields: {} },
@@ -283,6 +291,18 @@ describe("Landing", () => {
     expect(
       within(screen.getByRole("contentinfo")).getByRole("link", { name: "GitHub" }),
     ).toHaveAttribute("href", "https://github.com/Darshan174/DaemonState");
+  });
+
+  it("reserves vertical touch gestures for the card carousel", () => {
+    const deckWindowRule = landingReplicaCss.match(
+      /\.dsr-deck-window\s*\{([^}]*)\}/,
+    )?.[1];
+    const deckTrackRule = landingReplicaCss.match(
+      /\.dsr-deck-track\s*\{([^}]*)\}/,
+    )?.[1];
+
+    expect(deckWindowRule).toMatch(/touch-action:\s*pan-x pinch-zoom\s*;/);
+    expect(deckTrackRule).toMatch(/touch-action:\s*pan-x pinch-zoom\s*;/);
   });
 
   it("keeps obvious product entry points in local product mode", () => {

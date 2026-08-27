@@ -426,7 +426,8 @@
   overflow: hidden;
   transform: translate(-50%, -50%);
   cursor: grab;
-  touch-action: pan-y;
+  /* Keep vertical pointer streams in the carousel while preserving zoom. */
+  touch-action: pan-x pinch-zoom;
 }
 
 .dsr-deck-window.is-dragging {
@@ -457,7 +458,7 @@
   width: 100%;
   gap: clamp(20px, 1.8vw, 28px);
   isolation: isolate;
-  touch-action: pan-y;
+  touch-action: pan-x pinch-zoom;
   will-change: transform;
 }
 
@@ -1798,6 +1799,111 @@
 
 .dsr-work-start svg {
   width: clamp(11px, 1.9cqw, 15px);
+}
+
+/* Frosted surfaces live inside the solid story cards. */
+.dsr-session-row,
+.dsr-source-sheet,
+.dsr-summary-sheet,
+.dsr-provider-card,
+.dsr-history-gate {
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  background: rgba(246, 246, 242, 0.76);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 8px 22px rgba(0, 0, 0, 0.18);
+  -webkit-backdrop-filter: blur(18px) saturate(135%);
+  backdrop-filter: blur(18px) saturate(135%);
+}
+
+.dsr-context-trigger,
+.dsr-chat-window,
+.dsr-new-chat {
+  border: 1px solid rgba(255, 255, 255, 0.17);
+  background: rgba(41, 41, 44, 0.68);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.13),
+    0 10px 26px rgba(0, 0, 0, 0.24);
+  -webkit-backdrop-filter: blur(18px) saturate(125%);
+  backdrop-filter: blur(18px) saturate(125%);
+}
+
+.dsr-chat-chrome,
+.dsr-chat-composer {
+  background: rgba(246, 246, 242, 0.78);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
+  backdrop-filter: blur(14px) saturate(130%);
+}
+
+.dsr-chat-chrome {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.42);
+}
+
+.dsr-chat-composer {
+  border-top: 1px solid rgba(255, 255, 255, 0.42);
+}
+
+.dsr-session-repeat,
+.dsr-history-steps > div {
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  background: rgba(255, 226, 220, 0.68);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  -webkit-backdrop-filter: blur(12px) saturate(125%);
+  backdrop-filter: blur(12px) saturate(125%);
+}
+
+.dsr-session-work,
+.dsr-context-pack,
+.dsr-work-start {
+  border: 1px solid rgba(225, 255, 173, 0.5);
+  background: rgba(199, 255, 101, 0.68);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42);
+  -webkit-backdrop-filter: blur(12px) saturate(130%);
+  backdrop-filter: blur(12px) saturate(130%);
+}
+
+.dsr-context-cut {
+  border: 1px solid rgba(255, 184, 170, 0.48);
+  background: rgba(255, 127, 103, 0.7);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34);
+  -webkit-backdrop-filter: blur(12px) saturate(130%);
+  backdrop-filter: blur(12px) saturate(130%);
+}
+
+.dsr-price-change {
+  border: 1px solid rgba(235, 241, 255, 0.58);
+  background: rgba(220, 232, 255, 0.68);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  -webkit-backdrop-filter: blur(12px) saturate(125%);
+  backdrop-filter: blur(12px) saturate(125%);
+}
+
+.dsr-summary-main,
+.dsr-thread-active > div > span,
+.dsr-new-chat > div,
+.dsr-empty-context {
+  border: 1px solid rgba(255, 255, 255, 0.36);
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  -webkit-backdrop-filter: blur(12px) saturate(120%);
+  backdrop-filter: blur(12px) saturate(120%);
+}
+
+.dsr-window-track,
+.dsr-lost-messages > span {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.075);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  -webkit-backdrop-filter: blur(12px) saturate(120%);
+  backdrop-filter: blur(12px) saturate(120%);
+}
+
+.dsr-thread-active {
+  background: rgba(199, 255, 101, 0.065);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  -webkit-backdrop-filter: blur(12px) saturate(120%);
+  backdrop-filter: blur(12px) saturate(120%);
 }
 
 .dsr-hero-support {
