@@ -90,11 +90,13 @@ beforeEach(() => {
   });
 });
 
-it("hides product routes only when the waitlist deployment flag is enabled", () => {
-  expect(waitlistOnly({ VITE_WAITLIST_ONLY: "true" })).toBe(true);
-  expect(waitlistOnly({ VITE_WAITLIST_ONLY: "false" })).toBe(false);
-  expect(waitlistOnly({ MODE: "production" })).toBe(false);
-  expect(waitlistOnly({ MODE: "development" })).toBe(false);
+it("limits the default waitlist to the public site while allowing an explicit override", () => {
+  expect(waitlistOnly({ VITE_WAITLIST_ONLY: "true" }, "localhost")).toBe(true);
+  expect(waitlistOnly({ VITE_WAITLIST_ONLY: "false" }, "daemonstate.com")).toBe(false);
+  expect(waitlistOnly({ MODE: "production" }, "daemonstate.com")).toBe(true);
+  expect(waitlistOnly({ MODE: "production" }, "www.daemonstate.com.")).toBe(true);
+  expect(waitlistOnly({ MODE: "production" }, "localhost")).toBe(false);
+  expect(waitlistOnly({ MODE: "production" }, "app.daemonstate.com")).toBe(false);
 });
 
 it("exposes the public permissions and terms route", async () => {

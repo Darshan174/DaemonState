@@ -28,7 +28,6 @@ import {
 } from "../waitlist/tracking";
 import "./LandingReplica.css";
 
-const GITHUB_URL = "https://github.com/Darshan174/DaemonState";
 // 0.08s start delay + 0.55s color transition + 0.25s hold + 0.32s fade = 1.2s total.
 const LOADER_MESSAGE_HOLD_SECONDS = 0.25;
 
@@ -962,15 +961,6 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
 
           <div className="dsr-final-actions">
             <WaitlistForm />
-            <a
-              href={GITHUB_URL}
-              target="_blank"
-              rel="noreferrer"
-              className="dsr-text-link"
-            >
-              Follow the build
-              <ArrowUpRight aria-hidden="true" />
-            </a>
           </div>
         </section>
       </main>
@@ -992,7 +982,7 @@ function DatabaseWaitlistForm() {
   const [website, setWebsite] = useState("");
   const [submission, setSubmission] = useState("idle");
   const [message, setMessage] = useState(
-    "Private beta. No spam — just launch access and occasional progress notes.",
+    "Email only. No card required — just launch access and occasional progress notes.",
   );
 
   const handleSubmit = async (event) => {
@@ -1012,7 +1002,10 @@ function DatabaseWaitlistForm() {
       });
       setSubmission("success");
       setEmail("");
-      setMessage(result.message || "You're on the DaemonState waitlist.");
+      setMessage(
+        result.message
+          || "You're in. Your two free weeks are reserved for launch.",
+      );
       captureWaitlistEvent("waitlist_joined", analyticsProperties);
     } catch (error) {
       setSubmission("error");
@@ -1049,7 +1042,7 @@ function ClerkWaitlistForm() {
   const [website, setWebsite] = useState("");
   const [submission, setSubmission] = useState("idle");
   const [message, setMessage] = useState(
-    "Join now and we'll email you when your private-beta account is ready.",
+    "Email only. No card required — we'll contact you when access is ready.",
   );
 
   const handleSubmit = async (event) => {
@@ -1063,7 +1056,7 @@ function ClerkWaitlistForm() {
     if (website.trim()) {
       setSubmission("success");
       setEmail("");
-      setMessage("You're on the DaemonState waitlist.");
+      setMessage("You're in. Your two free weeks are reserved for launch.");
       return;
     }
 
@@ -1072,7 +1065,9 @@ function ClerkWaitlistForm() {
       if (result?.error) throw result.error;
       setSubmission("success");
       setEmail("");
-      setMessage("You're on the list. Check your inbox for confirmation.");
+      setMessage(
+        "You're in. Check your inbox—your two free weeks are reserved for launch.",
+      );
       captureWaitlistEvent("waitlist_joined", analyticsProperties);
     } catch (error) {
       setSubmission("error");
@@ -1091,7 +1086,7 @@ function ClerkWaitlistForm() {
       isSuccess={isSuccess}
       managedByClerk
       message={isSuccess && submission !== "success"
-        ? "You're already on the list. We'll email you when access is ready."
+        ? "You're already on the list. Your two free weeks are reserved for launch."
         : message}
       onEmailChange={setEmail}
       onSubmit={handleSubmit}
@@ -1137,11 +1132,10 @@ function WaitlistCard({
       data-waitlist-provider={provider}
     >
       <div className="dsr-waitlist-heading">
-        <span>EARLY ACCESS / PRIVATE BETA</span>
-        <h3>Join the private beta.</h3>
+        <h3>Join the waitlist. Start free.</h3>
         <p>
-          Get early access to DaemonState and help shape a practical continuity
-          layer for coding agents.
+          Join the waitlist for priority access and receive your first two
+          weeks free—just leave your email.
         </p>
       </div>
 
@@ -1186,7 +1180,7 @@ function WaitlistCard({
         </div>
 
         <p id="waitlist-consent" className="dsr-waitlist-consent">
-          By joining, you agree to receive private-beta access and occasional
+          By joining, you agree to receive launch access and occasional
           product updates. Unsubscribe anytime.{" "}
           <Link to="/privacy" target="_blank" rel="noreferrer">Privacy notice</Link>.
         </p>
@@ -1469,7 +1463,15 @@ function DeckVisual({ type }) {
     return (
       <div className="dsr-deck-visual dsr-provider-flow" aria-hidden="true">
         <section className="dsr-provider-card">
-          <header><strong>Codex</strong><span>Current session</span></header>
+          <header>
+            <strong className="dsr-provider-name">
+              <span className="dsr-provider-app-icon" aria-hidden="true">
+                <AgentLogo name="Codex" />
+              </span>
+              Codex
+            </strong>
+            <span>Current session</span>
+          </header>
           <div className="dsr-context-pack">
             <small>Your project context</small>
             <strong>Decisions, evidence, constraints, next action</strong>
@@ -1480,7 +1482,15 @@ function DeckVisual({ type }) {
           <span /><i><LockKeyhole /></i><span />
         </div>
         <section className="dsr-provider-card">
-          <header><strong>Claude</strong><span>New session</span></header>
+          <header>
+            <strong className="dsr-provider-name">
+              <span className="dsr-provider-app-icon" aria-hidden="true">
+                <AgentLogo name="Claude Code" />
+              </span>
+              Claude
+            </strong>
+            <span>New session</span>
+          </header>
           <div className="dsr-price-change">
             <div><span>Pricing changed</span><strong>New</strong></div>
             <div><s>Old price</s><ArrowRight /><strong>Lower price</strong></div>
@@ -1945,7 +1955,6 @@ function LandingFooter({ waitlistOnlyMode }) {
           <span>Product</span>
           {!waitlistOnlyMode && <Link to="/app">Open product</Link>}
           <a href="#early-access">Join waitlist</a>
-          <a href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
         </div>
         <div>
           <span>Legal</span>

@@ -79,7 +79,7 @@ async def test_registers_and_normalizes_waitlist_email(client, db_session):
     assert response.status_code == 201
     assert response.json() == {
         "status": "registered",
-        "message": "You're on the DaemonState waitlist.",
+        "message": "You're in. Your two free weeks are reserved for launch.",
     }
     signup = await db_session.scalar(select(WaitlistSignup))
     assert signup is not None
