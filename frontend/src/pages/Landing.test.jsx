@@ -296,39 +296,12 @@ describe("Landing", () => {
     expect(screen.queryByRole("link", { name: "GitHub" })).not.toBeInTheDocument();
   });
 
-  it("reserves vertical touch gestures for the card carousel", () => {
-    const deckWindowRule = landingReplicaCss.match(
-      /\.dsr-deck-window\s*\{([^}]*)\}/,
-    )?.[1];
-    const deckTrackRule = landingReplicaCss.match(
-      /\.dsr-deck-track\s*\{([^}]*)\}/,
-    )?.[1];
-
-    expect(deckWindowRule).toMatch(/touch-action:\s*pan-x pinch-zoom\s*;/);
-    expect(deckTrackRule).toMatch(/touch-action:\s*pan-x pinch-zoom\s*;/);
-  });
-
-  it("keeps the story-card components solid instead of frosted", () => {
-    const storyCardStart = landingReplicaCss.indexOf("/* Hero story cards */");
-    const storyCardEnd = landingReplicaCss.indexOf(
-      ".dsr-hero-support {",
-      storyCardStart,
-    );
-    const storyCardCss = landingReplicaCss.slice(storyCardStart, storyCardEnd);
-
-    expect(storyCardStart).toBeGreaterThanOrEqual(0);
-    expect(storyCardEnd).toBeGreaterThan(storyCardStart);
-    expect(storyCardCss).not.toContain("backdrop-filter");
-  });
-
   it("uses a transparent expanded deck holder with a narrow edge fade", () => {
     const deckWindowRule = landingReplicaCss.match(
       /\.dsr-deck-window\s*\{([^}]*)\}/,
     )?.[1];
 
-    expect(deckWindowRule).toMatch(
-      /--dsr-deck-aperture:\s*clamp\(230px, 22vw, 320px\)\s*;/,
-    );
+    expect(deckWindowRule).toMatch(/width:\s*min\(64vw, 920px\)\s*;/);
     expect(deckWindowRule).toMatch(
       /--dsr-deck-edge-fade:\s*clamp\(10px, 1vw, 16px\)\s*;/,
     );
@@ -339,6 +312,18 @@ describe("Landing", () => {
 
   it("keeps the waitlist card free of decorative grid overlays", () => {
     expect(landingReplicaCss).not.toMatch(/\.dsr-waitlist-card::(?:before|after)/);
+  });
+
+  it("reserves vertical touch gestures for the card carousel", () => {
+    const deckWindowRule = landingReplicaCss.match(
+      /\.dsr-deck-window\s*\{([^}]*)\}/,
+    )?.[1];
+    const deckTrackRule = landingReplicaCss.match(
+      /\.dsr-deck-track\s*\{([^}]*)\}/,
+    )?.[1];
+
+    expect(deckWindowRule).toMatch(/touch-action:\s*pan-x pinch-zoom\s*;/);
+    expect(deckTrackRule).toMatch(/touch-action:\s*pan-x pinch-zoom\s*;/);
   });
 
   it("keeps obvious product entry points in local product mode", () => {

@@ -9,6 +9,7 @@ import {
   FileQuestion,
   LockKeyhole,
   Menu,
+  ShieldCheck,
   Sparkles,
   Zap,
   X,
@@ -764,7 +765,7 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
         });
 
         const lightSections = gsap.utils.toArray(
-          ".dsr-hero, .dsr-final",
+          ".dsr-hero, .dsr-features, .dsr-final",
           root,
         );
         const updateBrandContrast = () => {
