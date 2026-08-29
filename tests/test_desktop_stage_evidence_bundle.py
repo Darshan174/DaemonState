@@ -14,7 +14,10 @@ from app.config import settings
 from app.services.access import AccessScope
 from app.services.continuation_runtime import (
     ContinuationRunError,
+    DesktopStageAttachmentBundle,
+    _desktop_stage_delivery_receipt,
     _materialize_desktop_stage_attachments,
+    _desktop_stage_target_capability_profile,
 )
 
 
@@ -80,6 +83,120 @@ def _session_context(
         },
         baseline_bytes,
     )
+
+
+def test_desktop_stage_receipt_stops_at_the_observed_delivery_boundary(
+    tmp_path: Path,
+) -> None:
+    bundle = DesktopStageAttachmentBundle(
+        root=tmp_path / "bundle",
+        deliveries={
+            "A2": {
+                "receiver_local_reference": str(tmp_path / "A2.png"),
+                "sha256": "2" * 64,
+                "media_type": "image/png",
+            },
+            "A1": {
+                "receiver_local_reference": str(tmp_path / "A1.png"),
+                "sha256": "1" * 64,
+                "media_type": "image/png",
+            },
+        },
+        baseline_delivery={
+            "id": "PB-exact",
+            "receiver_local_reference": str(tmp_path / "baseline.json"),
+            "manifest_sha256": "b" * 64,
+        },
+    )
+
+    receipt = _desktop_stage_delivery_receipt(
+        bundle,
+        provider="codex",
+        context_sha256="c" * 64,
+        paste_verified=True,
+        context_loaded=True,
+    )
+
+    assert receipt["status"] == "staged_awaiting_user_submission"
+    assert receipt["verified_delivery_ready"] is False
+    assert receipt["blocking_issue_codes"] == [
+        "receiver_submission_unobserved",
+        "receiver_consumption_unacknowledged",
+        "native_image_attachment_unavailable",
+    ]
+    assert receipt["submission_observed"] is False
+    assert receipt["receiver_acknowledged"] is False
+    assert receipt["text"] == {
+        "status": "composer_insert_verified",
+        "sha256": "c" * 64,
+        "composer_insert_verified": True,
+        "receiver_acknowledged": False,
+    }
+    assert receipt["evidence"]["required_count"] == 3
+    assert receipt["evidence"]["staged_count"] == 3
+    assert receipt["evidence"]["attachment_ids"] == ["A1", "A2"]
+    assert receipt["evidence"]["protected_baseline_id"] == "PB-exact"
+    assert receipt["evidence"]["receiver_acknowledged_ids"] == []
+    assert receipt["evidence"]["receiver_acknowledged"] is False
+    assert receipt["failure_state"] == {
+        "schema_version": "continuation.delivery_failure_state.v1",
+        "submission": {
+            "status": "unobserved",
+            "code": "receiver_submission_unobserved",
+            "blocks_verified_delivery": True,
+        },
+        "receiver_consumption": {
+            "status": "unacknowledged",
+            "code": "receiver_consumption_unacknowledged",
+            "blocks_verified_delivery": True,
+        },
+        "native_image_attachment": {
+            "status": "unsupported",
+            "code": "native_image_attachment_unavailable",
+            "attachment_ids": ["A1", "A2"],
+            "blocks_verified_delivery": True,
+        },
+    }
+    assert "receiver consumption have not been observed" in receipt["claim_boundary"]
+
+
+def test_desktop_capability_profile_does_not_promote_provider_image_support() -> None:
+    profile = _desktop_stage_target_capability_profile("codex")
+    capabilities = profile["capabilities"]
+
+    assert capabilities["native_image_attachment"]["provider_supported"] is True
+    assert capabilities["native_image_attachment"]["adapter_supported"] is False
+    assert capabilities["native_image_attachment"]["effective"] is False
+    assert capabilities["receiver_consumption_acknowledgement"]["effective"] is False
+    assert capabilities["automatic_execution"]["effective"] is False
+
+
+def test_desktop_stage_receipt_does_not_promote_unverified_paste_dispatch() -> None:
+    receipt = _desktop_stage_delivery_receipt(
+        None,
+        provider="codex",
+        context_sha256="d" * 64,
+        paste_verified=False,
+        context_loaded=False,
+    )
+
+    assert receipt["text"]["status"] == "paste_dispatched_unverified"
+    assert receipt["text"]["composer_insert_verified"] is False
+    assert receipt["text"]["receiver_acknowledged"] is False
+    assert receipt["evidence"]["status"] == "not_required"
+    assert receipt["evidence"]["required_count"] == 0
+    assert receipt["submission_observed"] is False
+    assert receipt["verified_delivery_ready"] is False
+    assert receipt["blocking_issue_codes"] == [
+        "receiver_submission_unobserved",
+        "receiver_consumption_unacknowledged",
+    ]
+    assert receipt["failure_state"]["native_image_attachment"] == {
+        "status": "not_required",
+        "code": None,
+        "attachment_ids": [],
+        "blocks_verified_delivery": False,
+    }
 
 
 def test_stage_bundle_materializes_exact_baseline_without_attachments(
@@ -220,4 +337,3 @@ def test_change_stage_fails_closed_without_an_exact_baseline(
 
     assert error.value.code == "required_stage_evidence_delivery_failed"
     assert "No desktop app was opened" in str(error.value)
-

@@ -1,0 +1,150 @@
+{
+  "schema_version": "context_quality_benchmark.v1",
+  "captured_at": "2026-08-20T00:00:00+05:30",
+  "repository_branch": "codex/fix-continuation-handoffs",
+  "repository_head": "844db45",
+  "workspace": {
+    "id": "1b8fcd91-c3e4-4570-9174-68c00e1dbac0",
+    "slug": "daemonstate-2",
+    "name": "Daemonstate"
+  },
+  "privacy": {
+    "raw_context_committed": false,
+    "description": "Only immutable identifiers, hashes, scores, and issue codes are tracked. Raw local session text remains in the gitignored application database."
+  },
+  "rubric": {
+    "version": "background_context_rubric.v1",
+    "session": {
+      "goal_and_dependency_fidelity": 30,
+      "useful_background_coverage": 20,
+      "evidence_and_uncertainty": 15,
+      "snapshot_freshness": 10,
+      "non_destructive_safety": 10,
+      "background_only_semantics": 10,
+      "signal_density": 5,
+      "hard_caps": {
+        "unresolved_or_wrong_active_objective": 29,
+        "generated_action_or_acceptance_criteria": 49,
+        "missing_required_dependency_or_asserted_unverified_truth": 19,
+        "destructive_instruction": 0
+      }
+    },
+    "workspace": {
+      "product_truth": 20,
+      "capability_and_workflow_coverage": 20,
+      "architecture_and_current_repository_usefulness": 20,
+      "durable_knowledge_and_provenance": 15,
+      "freshness_and_evidence_labels": 10,
+      "background_and_non_destructive_safety": 10,
+      "signal_density": 5
+    }
+  },
+  "session_contexts": [
+    {
+      "case_id": "34bcf2d694",
+      "checkpoint_id": "723c8a15-3356-4525-bffa-0570788266de",
+      "checkpoint_payload_sha256": "531ee47cf65fe430da54f2e5622b4d470226a487ef4eb228f0b7ebe76a2f874a",
+      "rendered_sha256": "0cbf4dcd800823ae1917fda5d6670582b96dfd4d11363c66ec2413257d8317cf",
+      "rendered_bytes": 8232,
+      "score": 49,
+      "verdict": "reject",
+      "hard_failures": ["INFERRED_ACTION_PRESENT", "GENERATED_ACCEPTANCE_CRITERIA_PRESENT", "TARGET_INFERENCE_CONTAMINATED_BY_SESSION_ONLY_PUSH"]
+    },
+    {
+      "case_id": "3682a763b2",
+      "checkpoint_id": "fa6daaaa-92ae-49fc-85f8-8ebf65df673e",
+      "checkpoint_payload_sha256": "508a8f4dc60b4b13a841ef99a3e7f083c67db93a2fa06ea3ac8613fcd334c508",
+      "rendered_sha256": "6408a6e60a841a09fc08415abf8298f3492abf7d6948826da663927053cb17a7",
+      "rendered_bytes": 3252,
+      "score": 19,
+      "verdict": "reject",
+      "hard_failures": ["INFERRED_ACTION_PRESENT", "GENERATED_ACCEPTANCE_CRITERIA_PRESENT", "REQUIRED_ATTACHMENT_DEPENDENCY_OMITTED"]
+    },
+    {
+      "case_id": "a8b9026a94",
+      "checkpoint_id": "38ee1650-33bb-4123-a777-63360d8c05d3",
+      "checkpoint_payload_sha256": "cfe06179042cc2127d4fc001c6085f2a3e1dc6fcb3ca73f41e8cd09c8f2b8c13",
+      "rendered_sha256": "8aaac17126fb43bde72cb954e305a365709574f94c20176a4a4340d54dbb870d",
+      "rendered_bytes": 5100,
+      "score": 49,
+      "verdict": "reject",
+      "hard_failures": ["INFERRED_ACTION_PRESENT", "GENERATED_ACCEPTANCE_CRITERIA_PRESENT", "TARGET_INFERENCE_CONTAMINATED_BY_SESSION_ONLY_PUSH"]
+    },
+    {
+      "case_id": "4904543c1b",
+      "checkpoint_id": "a2eaa5e3-a84f-436e-929b-1276d5cd89eb",
+      "checkpoint_payload_sha256": "f0c40aad05f4cd00360f323895d214164041d5e54b8012d098da1408c40274a3",
+      "rendered_sha256": "c61956b9ccc354b47c3ac7653318bc9adb2ffcee0fdbb9390b76da8ebd374cb2",
+      "rendered_bytes": 3020,
+      "score": 49,
+      "verdict": "reject",
+      "hard_failures": ["INFERRED_ACTION_PRESENT", "GENERATED_ACCEPTANCE_CRITERIA_PRESENT"]
+    },
+    {
+      "case_id": "cfacd30870",
+      "checkpoint_id": "493eb16d-c819-4730-9dff-defbace6ee76",
+      "checkpoint_payload_sha256": "738d3b2e0576d825424988f219a1c63be42a834d568a4b2ba88636e5a7e4c6dc",
+      "rendered_sha256": "ef13aa1cf951977d345f1a4947d929b87ba2195696fb488081aa5a3fdd564676",
+      "rendered_bytes": 3979,
+      "score": 29,
+      "verdict": "reject",
+      "hard_failures": ["UNRESOLVED_OR_WRONG_ACTIVE_OBJECTIVE", "INFERRED_ACTION_PRESENT", "GENERATED_ACCEPTANCE_CRITERIA_PRESENT"]
+    },
+    {
+      "case_id": "66929aee60",
+      "checkpoint_id": "ac81621c-9d57-49b5-90a6-6cf92db9cc91",
+      "checkpoint_payload_sha256": "320e759ddc30ce14107551d00144e94863091f5c8ee128c1596783d29a8e02ca",
+      "rendered_sha256": "a35b4a35022f37ebfa4282f0820bca71f5ef7231f1396d9fea376948ab39fd02",
+      "rendered_bytes": 2612,
+      "score": 29,
+      "verdict": "reject",
+      "hard_failures": ["UNRESOLVED_OR_WRONG_ACTIVE_OBJECTIVE", "INFERRED_ACTION_PRESENT", "GENERATED_ACCEPTANCE_CRITERIA_PRESENT"]
+    },
+    {
+      "case_id": "87405f4687",
+      "checkpoint_id": "5eed28f2-1a8b-47d2-8689-cea19094f15c",
+      "checkpoint_payload_sha256": "7130242c53f7dadd38b11cc11835c331546918d2080bb15d4550dbcc15ff474b",
+      "rendered_sha256": "0d14e67decd996b1bd66e92bd140764fe691da185ccd00558ecdb9f602636a4a",
+      "rendered_bytes": 3605,
+      "score": 29,
+      "verdict": "reject",
+      "hard_failures": ["UNRESOLVED_OR_WRONG_ACTIVE_OBJECTIVE", "INFERRED_ACTION_PRESENT", "GENERATED_ACCEPTANCE_CRITERIA_PRESENT"]
+    },
+    {
+      "case_id": "968ab8a38e",
+      "checkpoint_id": "06f177df-8fd3-4b96-830e-e02f5ed30d3b",
+      "checkpoint_payload_sha256": "fe55d5711fd8b5c31455fcfcf93af08252e1a00904799b64bf8089ffdec752a4",
+      "rendered_sha256": "2eb10bcb805a4c83f2ed1a1fc170256763f2fae092d20c7d8aff21f7aeebc433",
+      "rendered_bytes": 3685,
+      "score": 29,
+      "verdict": "reject",
+      "hard_failures": ["UNRESOLVED_OR_WRONG_ACTIVE_OBJECTIVE", "INFERRED_ACTION_PRESENT", "GENERATED_ACCEPTANCE_CRITERIA_PRESENT"]
+    }
+  ],
+  "session_summary": {
+    "count": 8,
+    "mean_score": 35.3,
+    "activated": 0,
+    "review": 0,
+    "rejected": 8,
+    "background_only_failures": 8,
+    "wrong_or_unresolved_objective": 4,
+    "required_dependency_omissions": 1
+  },
+  "workspace_context": {
+    "context_pack_id": "e3ccd7f1-6d42-42a5-b6f4-f9ad56103791",
+    "markdown_sha256": "4b1bd12ff02a86791bcc12dfeb064dc064f5fd74a2cb40d5d9e66e3b95690a73",
+    "foundation_semantic_sha256": "8f748b8a35ba840026fd32e1d646405584a54dba4c47f16367e915c28f225a6b",
+    "foundation_artifact_sha256": "5cfa3fcd2dae84e0b7b97c3fdbeb125c5f6b4992eef063131ec321559a9f4cce",
+    "rendered_chars": 26390,
+    "existing_compiler_score": 65.5,
+    "brutal_score": 59,
+    "verdict": "review",
+    "existing_copy_ready": true,
+    "required_lane_coverage": 0.25,
+    "provenance_score": 0,
+    "exact_snapshot_verification_runs": 0,
+    "promoted_durable_facts": 0,
+    "hard_failures": ["AUTO_PROMOTION_UNJUSTIFIED", "DURABLE_PROVENANCE_EMPTY", "REQUIRED_VERIFICATION_MISSING"]
+  }
+}

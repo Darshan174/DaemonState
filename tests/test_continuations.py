@@ -4419,6 +4419,22 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     assert body["delivery"]["context_scope"] == "session"
     assert body["delivery"]["context_render_variant"] == brief_variant
     assert body["delivery"]["source_session_id"] == "waiting-handoff-source"
+    receipt = body["delivery"]["delivery_receipt"]
+    assert receipt["schema_version"] == "continuation.delivery_receipt.v1"
+    assert receipt["status"] == "staged_awaiting_user_submission"
+    assert receipt["submission_observed"] is False
+    assert receipt["receiver_acknowledged"] is False
+    assert receipt["text"]["composer_insert_verified"] is True
+    assert receipt["evidence"]["required_count"] >= 1
+    assert receipt["evidence"]["staged_count"] == receipt["evidence"]["required_count"]
+    assert receipt["evidence"]["receiver_acknowledged_ids"] == []
+    capability_profile = body["delivery"]["target_capability_profile"]
+    assert capability_profile["provider"] == target_provider
+    assert capability_profile["surface"] == "desktop_composer"
+    native_attachment = capability_profile["capabilities"]["native_image_attachment"]
+    assert native_attachment["provider_supported"] is (target_provider == "codex")
+    assert native_attachment["adapter_supported"] is False
+    assert native_attachment["effective"] is False
     assert body["delivery"]["continuation_lead_sha256"] == (continuation_lead_sha256)
     assert (
         body["delivery"]["harness_session"]["continuation_lead_sha256"] == continuation_lead_sha256
@@ -4434,6 +4450,11 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     assert body["delivery"]["harness_session"]["paste_requested"] is True
     assert body["delivery"]["harness_session"]["paste_verified"] is True
     assert body["delivery"]["harness_session"]["context_copied"] is True
+    assert (
+        body["delivery"]["harness_session"]["delivery_receipt_status"]
+        == "staged_awaiting_user_submission"
+    )
+    assert body["delivery"]["harness_session"]["receiver_acknowledged"] is False
     assert body["delivery"]["harness_session"]["context_render_variant"] == (brief_variant)
     assert body["delivery"]["harness_session"]["source_session_id"] == ("waiting-handoff-source")
     assert body["delivery"]["harness_session"]["prefill_requested"] is False
@@ -4465,15 +4486,29 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
         },
     )
     assert canonical_handoff.status_code == 200, canonical_handoff.text
-    assert canonical_handoff.json()["schema_version"] == "session_handoff.v1"
-    assert canonical_handoff.json()["continuation_lead"]["request_verbatim"] == (continuation_lead)
-    assert canonical_handoff.json()["current_goal"]["request_verbatim"] == goal
-    assert canonical_handoff.json()["task_mode"] == body["delivery"]["task_mode"]
-    assert (
-        canonical_handoff.json()["execution_policy"]["permission_mode"]
-        == (body["delivery"]["filesystem_mode"])
+    public_context = canonical_handoff.json()
+    assert public_context["schema_version"] == "session_background.v1"
+    assert public_context["compatibility"]["legacy_schema_version"] == (
+        "session_handoff.v1"
     )
-    canonical_context = canonical_handoff.json()["content"]
+    assert public_context["semantic_schema_version"] == "session_context.v3"
+    assert public_context["context_role"] == "background_only"
+    assert public_context["render_variant"] == "session_context_background.v2"
+    assert public_context["continuation_lead"]["request_verbatim"] == continuation_lead
+    assert public_context["current_goal"]["request_verbatim"] == goal
+    assert public_context["readiness"]["status"] == "awaiting_user_instruction"
+    assert "task_mode" not in public_context
+    assert "execution_policy" not in public_context
+    assert "exact_next_action" not in public_context
+    canonical_context = public_context["content"]
+    assert canonical_context.startswith("# Session Context — background")
+    assert "Awaiting user instruction" in canonical_context
+    assert "## Start here" not in canonical_context
+    assert "## Done when" not in canonical_context
+    assert canonical_context != staged_context
+    assert public_context["quality_control"]["artifact_sha256"] == (
+        public_context["sha256"]
+    )
     receiver_baseline_line = next(
         line
         for line in staged_context.splitlines()
@@ -4488,38 +4523,6 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
         == receiver_baseline_sha256
     )
     assert "Receiver-local protected-baseline manifest:" not in canonical_context
-
-    # A fresh endpoint call performs a fresh read-only repository capture, so
-    # its observation timestamp is intentionally newer. The desktop stage also
-    # enriches only the receiving copy with a verified receiver-local baseline
-    # path; the checkpoint endpoint remains source-provenance-only.
-    def without_capture_time(value: str) -> str:
-        return "\n".join(
-            line
-            for line in value.splitlines()
-            if not line.startswith("- Captured at: `")
-            and not line.startswith(
-                "- Receiver-local protected-baseline manifest:"
-            )
-            and not line.startswith(
-                "- Direct-copy delivery:"
-            )
-            and "receiver-local protected-baseline manifest" not in line.casefold()
-            and (
-                "captured branch, head, fingerprint, and bounded status inventory"
-                not in line.casefold()
-            )
-        )
-
-    assert without_capture_time(staged_context) == without_capture_time(canonical_context)
-    if brief_variant == "compact_v2":
-        assert "- Direct-copy delivery:" in canonical_context
-        assert "- Direct-copy delivery:" not in staged_context
-        assert "receiver-local protected-baseline manifest" in staged_context.casefold()
-        assert (
-            "captured branch, HEAD, fingerprint, and bounded status inventory"
-            in canonical_context
-        )
     expected_heading = (
         "# Continuation Brief v2\n"
         if brief_variant == "compact_v2"

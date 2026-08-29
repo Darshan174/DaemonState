@@ -14,6 +14,67 @@ function sha256Text(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+function activeQualityControl(artifactSha256, overrides = {}) {
+  return {
+    schema_version: "context_quality_activation.v1",
+    status: "active",
+    copy_allowed: true,
+    candidate_id: "context-candidate-1",
+    active_candidate_id: "context-candidate-1",
+    observation_sha256: "a".repeat(64),
+    artifact_sha256: artifactSha256,
+    semantic_sha256: "b".repeat(64),
+    evaluation_id: "context-evaluation-1",
+    pointer_generation: 1,
+    decision: "promote",
+    policy_version: "context_quality_policy.v1",
+    ...overrides,
+  };
+}
+
+function reviewQualityControl(artifactSha256, overrides = {}) {
+  return activeQualityControl(artifactSha256, {
+    status: "review_required",
+    copy_allowed: false,
+    candidate_id: "review-candidate-1",
+    active_candidate_id: "previous-candidate-1",
+    evaluation_id: "review-evaluation-1",
+    pointer_generation: 4,
+    decision: "review",
+    ...overrides,
+  });
+}
+
+function reviewCandidate(control, contextKind, overrides = {}) {
+  return {
+    candidate_id: control.candidate_id,
+    context_kind: contextKind,
+    artifact_sha256: control.artifact_sha256,
+    semantic_sha256: control.semantic_sha256,
+    observation_sha256: control.observation_sha256,
+    evaluation_id: control.evaluation_id,
+    decision: "review",
+    hard_failures: [],
+    warnings: ["CURRENT_VERIFICATION_INCOMPLETE"],
+    diff: {
+      added: ["claim-new"],
+      retained: [],
+      modified: [],
+      weakened: [],
+      strengthened: [],
+      not_observed: [],
+      exclusion_changed: [],
+      details: [{ claim_id: "claim-new", change: "added" }],
+    },
+    pointer_id: "pointer-1",
+    pointer_generation: control.pointer_generation,
+    active: false,
+    copy_allowed: false,
+    permissions_current: true,
+    ...overrides,
+  };
+}
+
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (value && typeof value === "object") {
@@ -192,6 +253,7 @@ function checkpointData() {
 
 function sessionHandoff(content, overrides = {}) {
   const quality = overrides.quality_report || {};
+  const contentSha256 = overrides.sha256 || sha256Text(content);
   const readinessDimensions = overrides.readiness_dimensions || {
     semantic_readiness: quality.semantic_readiness || { copy_ready: true },
     evidence_access: quality.evidence_access || {
@@ -204,7 +266,8 @@ function sessionHandoff(content, overrides = {}) {
     },
   };
   return {
-    schema_version: "session_handoff.v1",
+    schema_version: "session_background.v1",
+    compatibility: { legacy_schema_version: "session_handoff.v1" },
     scope: "session",
     provider: "codex",
     session_id: "session-1",
@@ -216,7 +279,8 @@ function sessionHandoff(content, overrides = {}) {
     captured_at: "2026-07-21T09:58:00Z",
     estimated_tokens: 320,
     content,
-    sha256: sha256Text(content),
+    sha256: contentSha256,
+    quality_control: activeQualityControl(contentSha256),
     quality_report: {
       status: "ready",
       copy_ready: true,
@@ -227,6 +291,11 @@ function sessionHandoff(content, overrides = {}) {
       evidence_access: { status: "not_required", blocks_copy: false },
     },
     readiness_dimensions: readinessDimensions,
+    operation_capabilities: overrides.operation_capabilities || {
+      preview: { allowed: true, status: "ready" },
+      clipboard_copy: { allowed: true, status: "ready" },
+      automatic_execution: { allowed: false, status: "not_applicable" },
+    },
     token_accounting: overrides.token_accounting || {
       ...readinessDimensions.budget_fit,
       blocks_automatic_delivery: false,
@@ -409,6 +478,7 @@ const preparedContext = {
   },
   attention: [],
   context_pack_id: "pack-1",
+  quality_control: activeQualityControl(sha256Text(projectContextContent)),
   project_context: {
     schema_version: "continuation_staging_context.v1",
     scope: "project",
@@ -516,6 +586,12 @@ const mocks = vi.hoisted(() => ({
   prepare: { mutateAsync: vi.fn(), isPending: false },
   capture: { mutateAsync: vi.fn(), isPending: false },
   handoff: { mutateAsync: vi.fn(), isPending: false },
+  contextCandidates: {
+    workspace: { data: { workspace_id: "workspace-1", candidates: [] }, isLoading: false, isFetching: false, isError: false },
+    session: { data: { workspace_id: "workspace-1", candidates: [] }, isLoading: false, isFetching: false, isError: false },
+  },
+  contextCandidatesHook: vi.fn(),
+  activateCandidate: { mutateAsync: vi.fn(), isPending: false },
   overlayStatus: {
     data: {
       available: true,
@@ -544,6 +620,11 @@ vi.mock("../api/hooks", () => ({
   useLatestCheckpoint: (...args) => mocks.latestHook(...args),
   useCaptureCheckpoint: () => mocks.capture,
   useCheckpointHandoff: () => mocks.handoff,
+  useContextQualityCandidates: (...args) => {
+    mocks.contextCandidatesHook(...args);
+    return mocks.contextCandidates[args[1]];
+  },
+  useActivateContextCandidate: () => mocks.activateCandidate,
   useDesktopOverlayStatus: () => mocks.overlayStatus,
   useSessionLibrary: () => mocks.library,
   useSetDesktopOverlayVisibility: () => mocks.overlayVisibility,
@@ -630,6 +711,23 @@ beforeEach(() => {
     sessionHandoff("# Session Context\n\nSESSION_CONTEXT_ONLY"),
   );
   mocks.handoff.isPending = false;
+  mocks.contextCandidates.workspace = {
+    data: { workspace_id: "workspace-1", candidates: [] },
+    isLoading: false,
+    isFetching: false,
+    isError: false,
+  };
+  mocks.contextCandidates.session = {
+    data: { workspace_id: "workspace-1", candidates: [] },
+    isLoading: false,
+    isFetching: false,
+    isError: false,
+  };
+  mocks.contextCandidatesHook.mockReset();
+  mocks.activateCandidate.mutateAsync.mockReset().mockResolvedValue({
+    quality_control: activeQualityControl("activation-response-metadata-only"),
+  });
+  mocks.activateCandidate.isPending = false;
   mocks.overlayStatus.data = {
     available: true,
     visible: false,
@@ -1924,7 +2022,7 @@ describe("ExecutePage", () => {
   });
 
   it("keeps copy enabled and shows an advisory for budget-only overflow", async () => {
-    const advisory = "Generated context is 214 tokens above its optimization target; copying remains available.";
+    const advisory = "Background is 214 tokens above its optimization target; copying remains available.";
     mocks.handoff.mutateAsync.mockResolvedValue(sessionHandoff(
       "# Session Context\n\nOVER_BUDGET_BUT_SEMANTICALLY_READY",
       {
@@ -1956,7 +2054,7 @@ describe("ExecutePage", () => {
     await waitFor(() => expect(within(sessionCard).getByText(
       advisory,
     )).toBeInTheDocument());
-    expect(within(sessionCard).getByText("Ready · Compacted")).toBeInTheDocument();
+    expect(within(sessionCard).getByText("Background available")).toBeInTheDocument();
     expect(within(sessionCard).getByRole("button", {
       name: "Copy Harden checkpoint capture Session Context",
     })).toBeEnabled();
@@ -1979,9 +2077,130 @@ describe("ExecutePage", () => {
   });
 
   it.each([
+    ["rejected", { status: "rejected" }],
+    ["quarantined", { status: "quarantined" }],
+    ["mismatched", { active_candidate_id: "different-candidate" }],
+  ])("never copies a %s Session Context candidate", async (_label, override) => {
+    const content = "# Session Context\n\nACTIVATION_CONTROLLED_SESSION";
+    const response = sessionHandoff(content, {
+      quality_control: activeQualityControl(sha256Text(content), override),
+    });
+    expect(response.quality_report.copy_ready).toBe(true);
+    mocks.handoff.mutateAsync.mockResolvedValue(response);
+    selectDefaultSession();
+    renderMemory();
+
+    const sessionCard = screen.getByRole("article", {
+      name: "Harden checkpoint capture",
+    });
+    await waitFor(() => expect(within(sessionCard).getByText(
+      "Background available · Review required",
+    )).toBeInTheDocument());
+    const copy = within(sessionCard).getByRole("button", {
+      name: "Harden checkpoint capture Session Context requires review before copy",
+    });
+    expect(copy).toBeDisabled();
+    fireEvent.click(copy);
+
+    expect(mocks.handoff.mutateAsync).toHaveBeenCalledTimes(1);
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+  });
+
+  it("reviews and activates a Session Context, then refreshes before copy", async () => {
+    const content = "# Session Context\n\nSESSION_REVIEWED_CANDIDATE";
+    const artifactSha = sha256Text(content);
+    const control = reviewQualityControl(artifactSha, {
+      candidate_id: "session-review-candidate",
+      evaluation_id: "session-review-evaluation",
+    });
+    const underReview = sessionHandoff(content, { quality_control: control });
+    const active = sessionHandoff(content, {
+      quality_control: activeQualityControl(artifactSha, {
+        candidate_id: control.candidate_id,
+        active_candidate_id: control.candidate_id,
+        evaluation_id: control.evaluation_id,
+        pointer_generation: control.pointer_generation + 1,
+      }),
+    });
+    mocks.contextCandidates.session.data = {
+      workspace_id: "workspace-1",
+      candidates: [reviewCandidate(control, "session", {
+        warnings: ["HIGH_CLAIM_NOT_OBSERVED_REVIEW_REQUIRED"],
+        diff: {
+          added: [],
+          retained: [],
+          modified: [],
+          weakened: [],
+          strengthened: [],
+          not_observed: ["session-goal"],
+          exclusion_changed: [],
+          details: [{ claim_id: "session-goal", change: "not_observed" }],
+        },
+      })],
+    };
+    mocks.handoff.mutateAsync
+      .mockResolvedValueOnce(underReview)
+      .mockResolvedValue(active);
+    mocks.activateCandidate.mutateAsync.mockResolvedValue({
+      quality_control: active.quality_control,
+      content: "ACTIVATION_RESPONSE_MUST_NEVER_BE_COPIED",
+    });
+    selectDefaultSession();
+    renderMemory();
+
+    const panel = await screen.findByRole("region", {
+      name: "Harden checkpoint capture Session Context review required",
+    });
+    expect(within(panel).getByText("Pointer generation").parentElement).toHaveTextContent("4");
+    expect(panel).toHaveTextContent("High claim not observed review required");
+    expect(panel).toHaveTextContent("session-goal: Not observed");
+    const activate = within(panel).getByRole("button", {
+      name: "Activate reviewed candidate",
+    });
+    expect(activate).toBeDisabled();
+    fireEvent.change(within(panel).getByLabelText(
+      "Review reason for Harden checkpoint capture Session Context",
+    ), { target: { value: "Reviewed the historical goal gap." } });
+    expect(activate).toBeEnabled();
+    fireEvent.click(activate);
+
+    await waitFor(() => expect(mocks.activateCandidate.mutateAsync).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      candidateId: "session-review-candidate",
+      evaluationId: "session-review-evaluation",
+      expectedGeneration: 4,
+      reason: "Reviewed the historical goal gap.",
+    }));
+    await waitFor(() => expect(screen.queryByRole("region", {
+      name: "Harden checkpoint capture Session Context review required",
+    })).not.toBeInTheDocument());
+    expect(mocks.capture.mutateAsync).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      provider: "codex",
+      sessionId: "session-1",
+      updateGenericLatest: false,
+    });
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+
+    const sessionCard = screen.getByRole("article", {
+      name: "Harden checkpoint capture",
+    });
+    fireEvent.click(within(sessionCard).getByRole("button", {
+      name: "Copy Harden checkpoint capture Session Context",
+    }));
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(content));
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalledWith(
+      "ACTIVATION_RESPONSE_MUST_NEVER_BE_COPIED",
+    );
+  });
+
+  it.each([
     {
       blocker: "semantic",
-      readiness: "Needs clarification",
+      readiness: "Background available · Review required",
+      copyButtonName: (
+        "Harden checkpoint capture Session Context requires review before copy"
+      ),
       blockingIssue: {
         code: "completion_remaining_conflict",
         severity: "blocking",
@@ -1994,7 +2213,10 @@ describe("ExecutePage", () => {
     },
     {
       blocker: "evidence",
-      readiness: "Required evidence unavailable",
+      readiness: "Background available · Required evidence unavailable",
+      copyButtonName: (
+        "Required evidence unavailable for Harden checkpoint capture Session Context"
+      ),
       blockingIssue: {
         code: "required_evidence_unavailable",
         severity: "blocking",
@@ -2007,6 +2229,7 @@ describe("ExecutePage", () => {
     },
   ])("previews but never copies Session Context with a $blocker blocker", async ({
     readiness,
+    copyButtonName,
     blockingIssue,
     dimensions,
   }) => {
@@ -2040,10 +2263,10 @@ describe("ExecutePage", () => {
       blockingIssue.message,
     );
     expect(within(dialog).getByRole("button", {
-      name: "Copy Harden checkpoint capture Session Context",
+      name: copyButtonName,
     })).toBeDisabled();
     expect(within(sessionCard).getByRole("button", {
-      name: "Copy Harden checkpoint capture Session Context",
+      name: copyButtonName,
     })).toBeDisabled();
     expect(within(sessionCard).getByText(readiness)).toBeInTheDocument();
     expect(within(sessionCard).getByText(
@@ -2051,6 +2274,107 @@ describe("ExecutePage", () => {
         `Harden checkpoint capture Session Context is not copy-ready.*${blockingIssue.message}`,
       ),
     )).toBeInTheDocument();
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+  });
+
+  it("shows receiver-pending background without a normal Session Context copy action", async () => {
+    const content = "# Session Context\n\nRECEIVER_PENDING_BACKGROUND";
+    const evidenceAccess = {
+      status: "materialization_required",
+      blocks_copy: true,
+      receiver_materialization_required_ids: ["attachment-1"],
+    };
+    mocks.handoff.mutateAsync.mockResolvedValue(sessionHandoff(content, {
+      quality_report: {
+        status: "materialization_required",
+        copy_ready: false,
+        automatic_execution_ready: false,
+        blocking_issues: [{
+          code: "required_evidence_receiver_materialization_required",
+          severity: "blocking",
+          message: "Required evidence must be materialized for the receiver.",
+        }],
+        warnings: [],
+        semantic_readiness: { copy_ready: true },
+        evidence_access: evidenceAccess,
+      },
+      readiness: { status: "materialization_required" },
+      readiness_dimensions: {
+        semantic_readiness: { copy_ready: true },
+        evidence_access: evidenceAccess,
+        source_completeness: { status: "complete" },
+        receiver_readiness: {
+          status: "materialization_required",
+          required_attachment_ids: ["attachment-1"],
+        },
+        budget_fit: {
+          efficiency_target: { within_target: true, overflow_tokens: 0 },
+          destination_limit: { status: "unknown", overflow_tokens: 0 },
+        },
+      },
+      attachment_dependencies: [{
+        id: "attachment-1",
+        necessity: "required",
+      }],
+      operation_capabilities: {
+        preview: { allowed: true, status: "ready" },
+        clipboard_copy: {
+          allowed: false,
+          status: "materialization_required",
+          blocking_issue_codes: [
+            "required_evidence_receiver_materialization_required",
+          ],
+        },
+        automatic_execution: {
+          allowed: false,
+          status: "materialization_required",
+          blocking_issue_codes: [
+            "required_evidence_receiver_materialization_required",
+          ],
+        },
+      },
+    }));
+    selectDefaultSession();
+    renderMemory();
+
+    const sessionCard = screen.getByRole("article", {
+      name: "Harden checkpoint capture",
+    });
+    await waitFor(() => expect(within(sessionCard).getByText(
+      "Background available · Evidence pending",
+    )).toBeInTheDocument());
+    expect(within(sessionCard).getByLabelText(
+      "Harden checkpoint capture Session Context prompt preview content",
+    )).toHaveTextContent("RECEIVER_PENDING_BACKGROUND");
+    expect(within(sessionCard).queryByRole("button", {
+      name: "Copy Harden checkpoint capture Session Context",
+    })).not.toBeInTheDocument();
+    const pendingCopy = within(sessionCard).getByRole("button", {
+      name: "Required evidence pending for Harden checkpoint capture Session Context",
+    });
+    expect(pendingCopy).toBeDisabled();
+    expect(pendingCopy).toHaveClass("btn-secondary");
+    expect(pendingCopy).not.toHaveClass("btn-primary");
+    expect(within(sessionCard).queryByText(/^Ready$/)).not.toBeInTheDocument();
+
+    fireEvent.click(within(sessionCard).getByRole("button", {
+      name: "Preview Harden checkpoint capture Session Context",
+    }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "Harden checkpoint capture Session Context Preview",
+    });
+    expect(within(dialog).getByText(
+      "Background available · Evidence pending",
+    )).toBeInTheDocument();
+    expect(within(dialog).getByRole("status")).toHaveTextContent(
+      "available for preview, but required evidence is not ready for the receiver",
+    );
+    expect(within(dialog).queryByRole("button", {
+      name: "Copy Harden checkpoint capture Session Context",
+    })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", {
+      name: "Required evidence pending for Harden checkpoint capture Session Context",
+    })).toBeDisabled();
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
   });
 
@@ -2340,6 +2664,10 @@ describe("ExecutePage", () => {
       ...preparedContext,
       context_pack_id: "pack-2",
       markdown: freshMarkdown,
+      quality_control: activeQualityControl(sha256Text(freshMarkdown), {
+        candidate_id: "context-candidate-2",
+        active_candidate_id: "context-candidate-2",
+      }),
       manifest: {
         ...preparedContext.manifest,
         context_pack_id: "pack-2",
@@ -2510,6 +2838,143 @@ describe("ExecutePage", () => {
     expect(await screen.findByText(
       /Workspace Context is not copy-ready.*No safe repository-stated product purpose/i,
     )).toBeInTheDocument();
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["rejected", { status: "rejected" }],
+    ["quarantined", { status: "quarantined" }],
+    ["mismatched", { active_candidate_id: "different-candidate" }],
+  ])("never copies a %s Workspace Context candidate", async (_label, override) => {
+    const response = {
+      ...preparedContext,
+      quality_control: activeQualityControl(
+        preparedContext.manifest.rendering.markdown_sha256,
+        override,
+      ),
+    };
+    expect(response.manifest.workspace_foundation.quality_report.copy_ready).toBe(true);
+    mocks.prepare.mutateAsync.mockResolvedValue(response);
+    renderMemory();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "compiler returned an incomplete Workspace Context",
+    );
+    expect(screen.getByRole("button", {
+      name: "Copy Workspace Context",
+    })).toBeDisabled();
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+  });
+
+  it("reviews and activates Workspace Context, then recompiles before copy", async () => {
+    const artifactSha = preparedContext.manifest.rendering.markdown_sha256;
+    const control = reviewQualityControl(artifactSha, {
+      candidate_id: "workspace-review-candidate",
+      evaluation_id: "workspace-review-evaluation",
+      pointer_generation: 7,
+    });
+    const underReview = { ...preparedContext, quality_control: control };
+    const active = {
+      ...preparedContext,
+      quality_control: activeQualityControl(artifactSha, {
+        candidate_id: control.candidate_id,
+        active_candidate_id: control.candidate_id,
+        evaluation_id: control.evaluation_id,
+        pointer_generation: control.pointer_generation + 1,
+      }),
+    };
+    mocks.contextCandidates.workspace.data = {
+      workspace_id: "workspace-1",
+      candidates: [reviewCandidate(control, "workspace", {
+        warnings: ["CURRENT_VERIFICATION_INCOMPLETE"],
+        diff: {
+          added: ["repo-purpose"],
+          retained: [],
+          modified: [],
+          weakened: [],
+          strengthened: [],
+          not_observed: [],
+          exclusion_changed: [],
+          details: [{ claim_id: "repo-purpose", change: "added" }],
+        },
+      })],
+    };
+    mocks.prepare.mutateAsync
+      .mockResolvedValueOnce(underReview)
+      .mockResolvedValue(active);
+    mocks.activateCandidate.mutateAsync.mockResolvedValue({
+      quality_control: active.quality_control,
+      markdown: "ACTIVATION_RESPONSE_MUST_NEVER_BE_COPIED",
+    });
+    renderMemory();
+
+    const panel = await screen.findByRole("region", {
+      name: "Workspace Context review required",
+    });
+    expect(within(panel).getByText("Pointer generation").parentElement).toHaveTextContent("7");
+    expect(panel).toHaveTextContent("Current verification incomplete");
+    expect(panel).toHaveTextContent("repo-purpose: Added");
+    expect(screen.getByRole("button", { name: "Copy Workspace Context" })).toBeDisabled();
+    const activate = within(panel).getByRole("button", {
+      name: "Activate reviewed candidate",
+    });
+    fireEvent.change(within(panel).getByLabelText(
+      "Review reason for Workspace Context",
+    ), { target: { value: "Reviewed the incomplete verification warning." } });
+    fireEvent.click(activate);
+
+    await waitFor(() => expect(mocks.activateCandidate.mutateAsync).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      candidateId: "workspace-review-candidate",
+      evaluationId: "workspace-review-evaluation",
+      expectedGeneration: 7,
+      reason: "Reviewed the incomplete verification warning.",
+    }));
+    await waitFor(() => expect(screen.queryByRole("region", {
+      name: "Workspace Context review required",
+    })).not.toBeInTheDocument());
+    expect(mocks.prepare.mutateAsync).toHaveBeenCalledTimes(2);
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy Workspace Context" }));
+    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      preparedContext.markdown,
+    ));
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalledWith(
+      "ACTIVATION_RESPONSE_MUST_NEVER_BE_COPIED",
+    );
+  });
+
+  it("keeps activation disabled when the listed evaluation no longer matches", async () => {
+    const artifactSha = preparedContext.manifest.rendering.markdown_sha256;
+    const control = reviewQualityControl(artifactSha, {
+      candidate_id: "stale-review-candidate",
+      evaluation_id: "frozen-evaluation",
+    });
+    mocks.prepare.mutateAsync.mockResolvedValue({
+      ...preparedContext,
+      quality_control: control,
+    });
+    mocks.contextCandidates.workspace.data = {
+      workspace_id: "workspace-1",
+      candidates: [reviewCandidate(control, "workspace", {
+        evaluation_id: "newer-evaluation",
+      })],
+    };
+    renderMemory();
+
+    const panel = await screen.findByRole("region", {
+      name: "Workspace Context review required",
+    });
+    expect(within(panel).getByRole("alert")).toHaveTextContent(
+      "candidate or pointer generation is no longer current",
+    );
+    expect(within(panel).queryByRole("button", {
+      name: "Activate reviewed candidate",
+    })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy Workspace Context" })).toBeDisabled();
+    expect(mocks.activateCandidate.mutateAsync).not.toHaveBeenCalled();
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
   });
 

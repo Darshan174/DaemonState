@@ -2091,6 +2091,462 @@ class RepoEvent(Base):
     )
 
 
+class ContextObservationBundle(Base):
+    """Immutable evidence snapshot used to compile one context candidate."""
+
+    __tablename__ = "context_observation_bundles"
+    __table_args__ = (
+        Index(
+            "ix_context_observation_bundles_workspace_kind_created",
+            "workspace_id",
+            "context_kind",
+            "created_at",
+        ),
+        Index(
+            "ix_context_observation_bundles_scope_created",
+            "workspace_id",
+            "context_kind",
+            "scope_key_sha256",
+            "access_scope_sha256",
+            "delivery_profile_sha256",
+            "created_at",
+        ),
+        Index(
+            "ix_context_observation_bundles_checkpoint",
+            "checkpoint_id",
+        ),
+        Index(
+            "ix_context_observation_bundles_boundary_event",
+            "boundary_event_id",
+        ),
+        Index(
+            "uq_context_observation_bundles_idempotency_key",
+            "idempotency_key",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    context_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_key_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    access_scope_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    delivery_profile_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    checkpoint_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("work_checkpoints.id"), nullable=True
+    )
+    boundary_event_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("session_events.id"), nullable=True
+    )
+    repository_identity_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    repository_snapshot_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    schema_version: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default="context_observation.v1",
+        server_default="context_observation.v1",
+    )
+    observation_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default=text("'{}'")
+    )
+    observation_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    workspace: Mapped["Workspace"] = orm_relationship()
+    checkpoint: Mapped["WorkCheckpoint | None"] = orm_relationship()
+    boundary_event: Mapped["SessionEvent | None"] = orm_relationship()
+    candidates: Mapped[list["ContextArtifactCandidate"]] = orm_relationship(
+        back_populates="observation_bundle"
+    )
+
+
+class ContextArtifactCandidate(Base):
+    """Append-only context artifact awaiting policy evaluation and activation."""
+
+    __tablename__ = "context_artifact_candidates"
+    __table_args__ = (
+        Index(
+            "ix_context_artifact_candidates_workspace_kind_created",
+            "workspace_id",
+            "context_kind",
+            "created_at",
+        ),
+        Index(
+            "ix_context_artifact_candidates_scope_created",
+            "workspace_id",
+            "context_kind",
+            "scope_key_sha256",
+            "access_scope_sha256",
+            "delivery_profile_sha256",
+            "created_at",
+        ),
+        Index(
+            "ix_context_artifact_candidates_observation",
+            "observation_bundle_id",
+        ),
+        Index("ix_context_artifact_candidates_context_pack", "context_pack_id"),
+        Index("ix_context_artifact_candidates_checkpoint", "checkpoint_id"),
+        Index("ix_context_artifact_candidates_semantic", "semantic_sha256"),
+        Index(
+            "uq_context_artifact_candidates_idempotency_key",
+            "idempotency_key",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    observation_bundle_id: Mapped[UUID] = mapped_column(
+        ForeignKey("context_observation_bundles.id"), nullable=False
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    context_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_key_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    access_scope_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    delivery_profile_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    context_pack_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("context_packs.id"), nullable=True
+    )
+    checkpoint_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("work_checkpoints.id"), nullable=True
+    )
+    artifact_schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    generator_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    compiler_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    renderer_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    artifact_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default=text("'{}'")
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    artifact_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    semantic_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    observation_bundle: Mapped["ContextObservationBundle"] = orm_relationship(
+        back_populates="candidates"
+    )
+    workspace: Mapped["Workspace"] = orm_relationship()
+    context_pack: Mapped["ContextPack | None"] = orm_relationship()
+    checkpoint: Mapped["WorkCheckpoint | None"] = orm_relationship()
+    claims: Mapped[list["ContextArtifactClaim"]] = orm_relationship(
+        back_populates="candidate"
+    )
+    evaluations: Mapped[list["ContextCandidateEvaluation"]] = orm_relationship(
+        back_populates="candidate",
+        foreign_keys="ContextCandidateEvaluation.candidate_id",
+    )
+
+
+class ContextArtifactClaim(Base):
+    """Typed included or excluded claim normalized from a context candidate."""
+
+    __tablename__ = "context_artifact_claims"
+    __table_args__ = (
+        Index(
+            "uq_context_artifact_claims_candidate_key",
+            "candidate_id",
+            "claim_key",
+            unique=True,
+        ),
+        Index(
+            "ix_context_artifact_claims_candidate_section_ordinal",
+            "candidate_id",
+            "section",
+            "ordinal",
+        ),
+        Index(
+            "ix_context_artifact_claims_candidate_selection",
+            "candidate_id",
+            "selection_decision",
+        ),
+        Index("ix_context_artifact_claims_primary_claim", "primary_claim_id"),
+        Index(
+            "ix_context_artifact_claims_primary_evidence_span",
+            "primary_evidence_span_id",
+        ),
+        Index(
+            "ix_context_artifact_claims_primary_source_document",
+            "primary_source_document_id",
+        ),
+        Index(
+            "ix_context_artifact_claims_primary_session_event",
+            "primary_session_event_id",
+        ),
+        Index(
+            "ix_context_artifact_claims_primary_checkpoint_item",
+            "primary_checkpoint_item_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("context_artifact_candidates.id"), nullable=False
+    )
+    claim_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    section: Mapped[str] = mapped_column(String(120), nullable=False)
+    claim_kind: Mapped[str] = mapped_column(String(120), nullable=False)
+    ordinal: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    statement_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    authority: Mapped[str] = mapped_column(String(50), nullable=False)
+    truth_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    criticality: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="normal", server_default="normal"
+    )
+    selection_decision: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="included", server_default="included"
+    )
+    exclusion_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    exclusion_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_refs_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default=text("'[]'")
+    )
+    evidence_refs_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    repository_snapshot_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    session_boundary_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    primary_claim_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("claims.id"), nullable=True
+    )
+    primary_evidence_span_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("evidence_spans.id"), nullable=True
+    )
+    primary_source_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("source_documents.id"), nullable=True
+    )
+    primary_session_event_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("session_events.id"), nullable=True
+    )
+    primary_checkpoint_item_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("checkpoint_items.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    candidate: Mapped["ContextArtifactCandidate"] = orm_relationship(
+        back_populates="claims"
+    )
+    primary_claim: Mapped["Claim | None"] = orm_relationship()
+    primary_evidence_span: Mapped["EvidenceSpan | None"] = orm_relationship()
+    primary_source_document: Mapped["SourceDocument | None"] = orm_relationship()
+    primary_session_event: Mapped["SessionEvent | None"] = orm_relationship()
+    primary_checkpoint_item: Mapped["CheckpointItem | None"] = orm_relationship()
+
+
+class ContextCandidateEvaluation(Base):
+    """Append-only policy decision for a candidate against one active baseline."""
+
+    __tablename__ = "context_candidate_evaluations"
+    __table_args__ = (
+        Index(
+            "ix_context_candidate_evaluations_candidate_created",
+            "candidate_id",
+            "created_at",
+        ),
+        Index(
+            "ix_context_candidate_evaluations_baseline",
+            "baseline_candidate_id",
+        ),
+        Index(
+            "ix_context_candidate_evaluations_decision_created",
+            "decision",
+            "created_at",
+        ),
+        Index(
+            "uq_context_candidate_evaluations_idempotency_key",
+            "idempotency_key",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("context_artifact_candidates.id"), nullable=False
+    )
+    baseline_candidate_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("context_artifact_candidates.id"), nullable=True
+    )
+    baseline_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    policy_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    diff_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default=text("'{}'")
+    )
+    hard_failures_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default=text("'[]'")
+    )
+    warnings_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default=text("'[]'")
+    )
+    metrics_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default=text("'{}'")
+    )
+    evaluation_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    candidate: Mapped["ContextArtifactCandidate"] = orm_relationship(
+        back_populates="evaluations",
+        foreign_keys=[candidate_id],
+    )
+    baseline_candidate: Mapped["ContextArtifactCandidate | None"] = orm_relationship(
+        foreign_keys=[baseline_candidate_id]
+    )
+
+
+class ActiveContextPointer(Base):
+    """The only mutable context-quality record: one active candidate per scope."""
+
+    __tablename__ = "active_context_pointers"
+    __table_args__ = (
+        Index(
+            "uq_active_context_pointers_scope",
+            "workspace_id",
+            "context_kind",
+            "scope_key_sha256",
+            "access_scope_sha256",
+            "delivery_profile_sha256",
+            unique=True,
+        ),
+        Index(
+            "ix_active_context_pointers_workspace_kind",
+            "workspace_id",
+            "context_kind",
+        ),
+        Index(
+            "ix_active_context_pointers_active_candidate",
+            "active_candidate_id",
+        ),
+        Index(
+            "ix_active_context_pointers_active_evaluation",
+            "active_evaluation_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    context_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_key_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    access_scope_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    delivery_profile_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    active_candidate_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("context_artifact_candidates.id"), nullable=True
+    )
+    active_evaluation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("context_candidate_evaluations.id"), nullable=True
+    )
+    generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    workspace: Mapped["Workspace"] = orm_relationship()
+    active_candidate: Mapped["ContextArtifactCandidate | None"] = orm_relationship()
+    active_evaluation: Mapped["ContextCandidateEvaluation | None"] = orm_relationship()
+    activation_events: Mapped[list["ContextActivationEvent"]] = orm_relationship(
+        back_populates="pointer"
+    )
+
+
+class ContextActivationEvent(Base):
+    """Immutable activation, rollback, quarantine, or deactivation audit event."""
+
+    __tablename__ = "context_activation_events"
+    __table_args__ = (
+        Index(
+            "ix_context_activation_events_pointer_created",
+            "pointer_id",
+            "created_at",
+        ),
+        Index(
+            "ix_context_activation_events_workspace_kind_created",
+            "workspace_id",
+            "context_kind",
+            "created_at",
+        ),
+        Index("ix_context_activation_events_from_candidate", "from_candidate_id"),
+        Index("ix_context_activation_events_to_candidate", "to_candidate_id"),
+        Index("ix_context_activation_events_evaluation", "evaluation_id"),
+        Index(
+            "uq_context_activation_events_idempotency_key",
+            "idempotency_key",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    pointer_id: Mapped[UUID] = mapped_column(
+        ForeignKey("active_context_pointers.id"), nullable=False
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    context_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    from_candidate_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("context_artifact_candidates.id"), nullable=True
+    )
+    to_candidate_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("context_artifact_candidates.id"), nullable=True
+    )
+    evaluation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("context_candidate_evaluations.id"), nullable=True
+    )
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor: Mapped[str] = mapped_column(String(255), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    pointer: Mapped["ActiveContextPointer"] = orm_relationship(
+        back_populates="activation_events"
+    )
+    workspace: Mapped["Workspace"] = orm_relationship()
+    from_candidate: Mapped["ContextArtifactCandidate | None"] = orm_relationship(
+        foreign_keys=[from_candidate_id]
+    )
+    to_candidate: Mapped["ContextArtifactCandidate | None"] = orm_relationship(
+        foreign_keys=[to_candidate_id]
+    )
+    evaluation: Mapped["ContextCandidateEvaluation | None"] = orm_relationship()
+
+
 def _canonical_hash(parts: object) -> str:
     return hashlib.sha256(
         json.dumps(parts, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")

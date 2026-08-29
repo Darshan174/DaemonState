@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  contextQualityActivationCopyReady,
   ledgerSections,
   sessionContextAdvisories,
+  sessionContextArtifactShapeValid,
+  sessionContextOperationState,
   sessionContextQualityMessage,
   sessionContextReadinessLabel,
   sessionContextSemanticCopyReady,
@@ -66,9 +69,9 @@ describe("session context quality messaging", () => {
     });
 
     expect(sessionContextSemanticCopyReady(handoff)).toBe(true);
-    expect(sessionContextReadinessLabel(handoff)).toBe("Ready · Compacted");
+    expect(sessionContextReadinessLabel(handoff)).toBe("Background available");
     expect(sessionContextAdvisories(handoff)).toEqual([
-      "Generated context is 214 tokens above its optimization target; copying remains available.",
+      "Background is 214 tokens above its optimization target; copying remains available.",
     ]);
   });
 
@@ -79,9 +82,7 @@ describe("session context quality messaging", () => {
     });
 
     expect(sessionContextSemanticCopyReady(handoff)).toBe(true);
-    expect(sessionContextReadinessLabel(handoff)).toBe(
-      "Copy-ready · Over destination limit",
-    );
+    expect(sessionContextReadinessLabel(handoff)).toBe("Background available");
     expect(sessionContextAdvisories(handoff)[0]).toContain(
       "91 tokens above the selected destination limit; manual copying remains available",
     );
@@ -108,15 +109,15 @@ describe("session context quality messaging", () => {
     handoff.quality_report.evidence_access = evidence;
 
     expect(sessionContextSemanticCopyReady(handoff)).toBe(true);
-    expect(sessionContextReadinessLabel(handoff)).toBe("Discovery brief ready");
+    expect(sessionContextReadinessLabel(handoff)).toBe("Background available");
     expect(sessionContextAdvisories(handoff)).toContain(
       "Repository snapshot unavailable: recorded session directory is not a Git repository.",
     );
   });
 
   it.each([
-    ["direction_required", "Context ready · Direction required", "does not authorize"],
-    ["intent_resolution_required", "Context ready · Intent required", "actionable objective"],
+    ["direction_required", "Background available", "does not authorize"],
+    ["intent_resolution_required", "Background available", "actionable objective"],
   ])(
     "keeps %s context copyable while exposing the stop state",
     (status, label, advisoryText) => {
@@ -181,7 +182,7 @@ describe("session context quality messaging", () => {
 
     expect(sessionContextSemanticCopyReady(handoff)).toBe(false);
     expect(sessionContextReadinessLabel(handoff)).toMatch(
-      /Needs clarification|Required evidence unavailable/,
+      /Background available · (Review required|Required evidence unavailable)/,
     );
   });
 
@@ -192,7 +193,7 @@ describe("session context quality messaging", () => {
         semantic_readiness: { copy_ready: false },
         evidence_access: { status: "not_required", blocks_copy: false },
       },
-      label: "Needs clarification",
+      label: "Background available · Review required",
     },
     {
       blocker: "evidence",
@@ -200,7 +201,7 @@ describe("session context quality messaging", () => {
         semantic_readiness: { copy_ready: true },
         evidence_access: { status: "unavailable", blocks_copy: true },
       },
-      label: "Required evidence unavailable",
+      label: "Background available · Required evidence unavailable",
     },
   ])("still fails closed for a $blocker blocker", ({ dimensions, label }) => {
     const handoff = readyHandoff({
@@ -213,19 +214,184 @@ describe("session context quality messaging", () => {
     expect(sessionContextSemanticCopyReady(handoff)).toBe(false);
     expect(sessionContextReadinessLabel(handoff)).toBe(label);
   });
+
+  it.each([
+    ["review", { status: "review_required" }],
+    ["rejected", { status: "rejected" }],
+    ["quarantined", { status: "quarantined" }],
+    ["inactive pointer", { active_candidate_id: "candidate-2" }],
+    ["copy denial", { copy_allowed: false }],
+    ["unknown schema", { schema_version: "context_quality_activation.v2" }],
+    ["missing candidate identity", { candidate_id: "" }],
+    ["missing active identity", { active_candidate_id: "" }],
+    ["missing observation hash", { observation_sha256: "" }],
+  ])("fails closed for a %s quality-control candidate", (_name, override) => {
+    const handoff = readyHandoff({
+      efficiency_target: { within_target: true },
+      destination_limit: { status: "unknown" },
+    });
+    Object.assign(handoff.quality_control, override);
+
+    expect(handoff.quality_report.copy_ready).toBe(true);
+    expect(sessionContextSemanticCopyReady(handoff)).toBe(false);
+    expect(sessionContextReadinessLabel(handoff)).toBe(
+      "Background available · Review required",
+    );
+  });
+
+  it("binds activation to the exact rendered artifact hash", () => {
+    const handoff = readyHandoff({
+      efficiency_target: { within_target: true },
+      destination_limit: { status: "unknown" },
+    });
+
+    expect(contextQualityActivationCopyReady(
+      handoff.quality_control,
+      handoff.sha256,
+    )).toBe(true);
+    handoff.quality_control.artifact_sha256 = "different-artifact";
+    expect(sessionContextSemanticCopyReady(handoff)).toBe(false);
+  });
+
+  it("keeps receiver-pending evidence previewable without exposing normal copy", () => {
+    const handoff = readyHandoff({
+      efficiency_target: { within_target: true },
+      destination_limit: { status: "unknown" },
+    });
+    handoff.quality_report.status = "materialization_required";
+    handoff.quality_report.copy_ready = false;
+    handoff.readiness.status = "materialization_required";
+    handoff.readiness_dimensions.evidence_access = {
+      status: "materialization_required",
+      blocks_copy: true,
+      receiver_materialization_required_ids: ["attachment-1"],
+    };
+    handoff.readiness_dimensions.receiver_readiness = {
+      status: "materialization_required",
+      required_attachment_ids: ["attachment-1"],
+    };
+    handoff.operation_capabilities.clipboard_copy = {
+      allowed: false,
+      status: "materialization_required",
+      blocking_issue_codes: [
+        "required_evidence_receiver_materialization_required",
+      ],
+    };
+
+    const operation = sessionContextOperationState(handoff);
+
+    expect(sessionContextArtifactShapeValid(handoff)).toBe(true);
+    expect(operation).toMatchObject({
+      status: "evidence_pending",
+      label: "Background available · Evidence pending",
+      tone: "attention",
+      previewAllowed: true,
+      clipboardCopyAllowed: false,
+    });
+    expect(sessionContextSemanticCopyReady(handoff)).toBe(false);
+    expect(sessionContextQualityMessage(handoff, "Selected Session Context")).toContain(
+      "available for preview, but required evidence is not ready for the receiver",
+    );
+    expect(sessionContextReadinessLabel(handoff)).not.toMatch(/^Ready\b/);
+  });
+
+  it.each([
+    ["ready_to_send", "Ready to send"],
+    ["delivered", "Delivered"],
+  ])("reports the receiver %s lifecycle independently from preview", (status, label) => {
+    const handoff = readyHandoff({
+      efficiency_target: { within_target: true },
+      destination_limit: { status: "unknown" },
+    });
+    handoff.readiness_dimensions.receiver_readiness = {
+      status,
+      required_attachment_ids: ["attachment-1"],
+    };
+
+    expect(sessionContextOperationState(handoff)).toMatchObject({
+      status,
+      label,
+      tone: "success",
+      previewAllowed: true,
+      clipboardCopyAllowed: true,
+    });
+  });
+
+  it.each([
+    ["operation capabilities", (handoff) => delete handoff.operation_capabilities, "unavailable"],
+    ["quality activation", (handoff) => delete handoff.quality_control, "review_required"],
+  ])("fails canonical operation permissions closed without %s", (_name, mutate, status) => {
+    const handoff = readyHandoff({
+      efficiency_target: { within_target: true },
+      destination_limit: { status: "unknown" },
+    });
+    mutate(handoff);
+
+    expect(sessionContextOperationState(handoff)).toMatchObject({
+      status,
+      previewAllowed: status !== "unavailable",
+      clipboardCopyAllowed: false,
+    });
+  });
+
+  it("accepts the legacy handoff contract only through the migration fallback", () => {
+    const handoff = readyHandoff({
+      efficiency_target: { within_target: true },
+      destination_limit: { status: "unknown" },
+    });
+    handoff.schema_version = "session_handoff.v1";
+    delete handoff.compatibility;
+    delete handoff.operation_capabilities;
+    delete handoff.quality_control;
+
+    expect(sessionContextArtifactShapeValid(handoff)).toBe(true);
+    expect(sessionContextOperationState(handoff)).toMatchObject({
+      status: "background_available",
+      previewAllowed: true,
+      clipboardCopyAllowed: true,
+    });
+  });
 });
 
 function readyHandoff(budgetFit) {
+  const artifactSha256 = "b".repeat(64);
   const dimensions = {
     semantic_readiness: { copy_ready: true },
     evidence_access: { status: "not_required", blocks_copy: false },
     budget_fit: budgetFit,
   };
   return {
+    schema_version: "session_background.v1",
+    compatibility: { legacy_schema_version: "session_handoff.v1" },
+    scope: "session",
+    provider: "codex",
+    session_id: "session-1",
+    checkpoint_id: "checkpoint-1",
+    boundary: { event_id: "event-1", sequence_number: 1 },
     content: "# Continuation Brief v2",
+    sha256: artifactSha256,
+    quality_control: {
+      schema_version: "context_quality_activation.v1",
+      status: "active",
+      copy_allowed: true,
+      candidate_id: "candidate-1",
+      active_candidate_id: "candidate-1",
+      observation_sha256: "a".repeat(64),
+      artifact_sha256: artifactSha256,
+      semantic_sha256: "c".repeat(64),
+      evaluation_id: "evaluation-1",
+      pointer_generation: 1,
+      decision: "promote",
+      policy_version: "context_quality_policy.v1",
+    },
     render_variant: "compact_v2",
     readiness: { status: "execution_ready" },
     readiness_dimensions: dimensions,
+    operation_capabilities: {
+      preview: { allowed: true, status: "ready" },
+      clipboard_copy: { allowed: true, status: "ready" },
+      automatic_execution: { allowed: false, status: "not_applicable" },
+    },
     token_accounting: {
       ...budgetFit,
       blocks_automatic_delivery: budgetFit?.destination_limit?.status === "too_large",

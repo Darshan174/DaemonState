@@ -145,6 +145,98 @@ def test_explicit_contextual_direction_resumes_the_preserved_goal(direction: str
 
 
 @pytest.mark.parametrize(
+    "follow_up",
+    (
+        "both for session and workspace context",
+        "What about the workspace context?",
+    ),
+)
+def test_scope_follow_up_amends_the_concrete_active_goal(follow_up: str) -> None:
+    request = "Make the OpenCode integration follow the Codex context logic."
+    state = resolve_conversation_state([
+        event(1, "user", request),
+        event(2, "user", follow_up),
+    ])
+
+    assert state.active_goal is not None
+    assert state.active_goal.root_request_verbatim == request
+    assert [item.request_verbatim for item in state.active_goal.fragments] == [
+        request,
+        follow_up,
+    ]
+    assert state.transitions[-1].act == "amend"
+
+
+@pytest.mark.parametrize(
+    "follow_up",
+    (
+        "same issue, BUT i think it is because the account uses free models",
+        "same issue. so u cant fix this",
+    ),
+)
+def test_referential_failure_preserves_the_concrete_active_goal(follow_up: str) -> None:
+    request = "Fix the OpenCode session integration failure."
+    state = resolve_conversation_state([
+        event(1, "user", request),
+        event(2, "assistant", "The issue is fixed."),
+        event(3, "user", follow_up),
+    ])
+
+    assert state.active_goal is not None
+    assert state.active_goal.composite_request_verbatim == request
+    assert state.transitions[-1].act == "failure_feedback"
+    assert state.lifecycle == "direction_required"
+
+
+def test_status_inquiry_preserves_the_concrete_active_goal() -> None:
+    request = "Fix the OpenCode session integration failure."
+    state = resolve_conversation_state([
+        event(1, "user", request),
+        event(2, "assistant", "I changed the provider adapter."),
+        event(3, "user", "so the opencode issue is fixed? answer short and to the point"),
+    ])
+
+    assert state.active_goal is not None
+    assert state.active_goal.composite_request_verbatim == request
+    assert state.transitions[-1].act == "status_inquiry"
+    assert state.lifecycle == "active"
+
+
+def test_generic_fix_issues_direction_rebinds_after_failure() -> None:
+    request = "Fix the OpenCode session integration failures."
+    direction = "GO AHEAD AND FIX THE DAMN ISSUES"
+    state = resolve_conversation_state([
+        event(1, "user", request),
+        event(2, "assistant", "The issue is fixed."),
+        event(3, "user", "same issue"),
+        event(4, "user", direction),
+    ])
+
+    assert state.active_goal is not None
+    assert state.active_goal.root_request_verbatim == request
+    assert state.active_goal.fragments[-1].request_verbatim == direction
+    assert state.transitions[-1].act == "amend"
+    assert state.lifecycle == "active"
+
+
+@pytest.mark.parametrize(
+    "orphan",
+    (
+        "same issue",
+        "so the opencode issue is fixed?",
+        "GO AHEAD AND FIX THE DAMN ISSUES",
+    ),
+)
+def test_context_dependent_turn_without_a_goal_fails_closed(orphan: str) -> None:
+    state = resolve_conversation_state([event(1, "user", orphan)])
+
+    assert state.active_goal is None
+    assert state.transitions[-1].act == "unresolved_reference"
+    assert state.transitions[-1].blocks_copy is True
+    assert state.lifecycle == "unresolved"
+
+
+@pytest.mark.parametrize(
     ("user_text", "directive"),
     (
         ("You didn't fix it, now fix the compiler.", "fix the compiler."),

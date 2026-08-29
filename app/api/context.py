@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from datetime import datetime
@@ -25,6 +26,7 @@ from app.models import (
 )
 from sqlalchemy import select
 from app.services.context_compiler import (
+    COMPILER_VERSION,
     ContextBudgetExceededError,
     ContextCompiler,
     ContextPersistenceError,
@@ -32,6 +34,18 @@ from app.services.context_compiler import (
     InvalidGoalError,
     InvalidRepoPathError,
 )
+from app.schemas.context_quality import ContextKind, canonical_sha256
+from app.schemas.workspace_foundation import WorkspaceFoundationArtifact
+from app.services.context_quality import (
+    ContextActivationConflict,
+    ContextEvidenceStale,
+    access_scope_sha256,
+    collect_source_document_ids,
+    context_scope_key_sha256,
+    delivery_profile_sha256,
+    reconcile_context_candidate,
+)
+from app.services.context_quality_adapters import workspace_context_claims
 from app.services.founder_oversight import (
     FounderOversightNotFoundError,
     FounderOversightService,
@@ -56,6 +70,9 @@ from app.services.session_checkpoints import (
 from app.services.session_summary import derive_session_topic
 from app.services.workspace_scope import metadata_dict
 from app.services.workspace_foundation import RepositoryObservationValidationError
+from app.services.workspace_foundation_renderer import (
+    WORKSPACE_FOUNDATION_RENDERER_VERSION,
+)
 
 router = APIRouter()
 logger = logging.getLogger("daemonstate.context")
@@ -200,6 +217,7 @@ class ContextPrepareResponse(BaseModel):
     selected_context: list[dict[str, Any]]
     excluded_context: list[dict[str, Any]]
     focus: dict[str, Any]
+    quality_control: dict[str, Any] | None = None
 
 
 class OpenLoopActionRequest(BaseModel):
@@ -467,6 +485,7 @@ async def prepare_context(
     access_scope: AccessScope = Depends(get_access_scope),
 ) -> ContextPrepareResponse:
     restored_checkpoint = None
+    quality_control: dict[str, Any] | None = None
     if payload.checkpoint_source_document_id and payload.checkpoint_id:
         checkpoint_document = await session.scalar(select(SourceDocument).where(
             SourceDocument.id == payload.checkpoint_source_document_id,
@@ -558,7 +577,159 @@ async def prepare_context(
             restored_checkpoint=restored_checkpoint,
             access_scope=access_scope,
         )
+        if payload.mode == "project_snapshot":
+            if payload.workspace_id is None:
+                raise InvalidGoalError(
+                    "workspace_id is required for an activatable Workspace Context"
+                )
+            foundation_payload = result.manifest.get("workspace_foundation")
+            if not isinstance(foundation_payload, dict):
+                raise ContextPersistenceError(
+                    "project snapshot did not produce a Workspace foundation"
+                )
+            foundation = WorkspaceFoundationArtifact.model_validate(
+                foundation_payload
+            )
+            repository = dict(foundation_payload.get("repository_state") or {})
+            repo_state = dict(result.manifest.get("repo_state") or {})
+            repository_identity = str(
+                repo_state.get("repo_path") or repository.get("repository_name") or ""
+            ).strip()
+            verification_policy = dict(
+                foundation_payload.get("verification_policy") or {}
+            )
+            verification_runs = list(
+                foundation_payload.get("verification_runs") or []
+            )
+            required_commands = list(
+                verification_policy.get("required_commands") or []
+            )
+            passed_run_keys = {
+                (
+                    str(item.get("command") or "").strip(),
+                    str(item.get("working_directory") or ".").strip(),
+                )
+                for item in verification_runs
+                if item.get("result") == "passed"
+                and item.get("snapshot") == repository.get("snapshot_fingerprint")
+            }
+            verification_complete = bool(
+                verification_policy.get("discovery_complete") is True
+                and all(
+                    (
+                        str((item.get("key") or {}).get("command") or "").strip(),
+                        str(
+                            (item.get("key") or {}).get("working_directory") or "."
+                        ).strip(),
+                    )
+                    in passed_run_keys
+                    for item in required_commands
+                )
+            )
+            quality_report = dict(foundation_payload.get("quality_report") or {})
+            response_artifact = {
+                "context_pack_id": result.context_pack_id,
+                "schema_version": result.schema_version,
+                "manifest": result.manifest,
+                "health_score": result.health_score,
+                "selected_context": result.selected_items,
+                "excluded_context": result.excluded_items,
+            }
+            activation = await reconcile_context_candidate(
+                session,
+                workspace_id=payload.workspace_id,
+                context_kind=ContextKind.WORKSPACE,
+                scope_key_sha256=context_scope_key_sha256(
+                    workspace_id=payload.workspace_id,
+                    context_kind=ContextKind.WORKSPACE,
+                    repository_identity=repository_identity or "workspace_only",
+                ),
+                access_scope_sha256_value=access_scope_sha256(access_scope),
+                delivery_profile_sha256_value=delivery_profile_sha256(
+                    artifact_schema_version=str(foundation.schema_version),
+                    renderer_version=WORKSPACE_FOUNDATION_RENDERER_VERSION,
+                    target_model=payload.target_model,
+                    token_budget=payload.token_budget,
+                ),
+                observation={
+                    "schema_version": "workspace_context_observation.v1",
+                    "workspace_id": str(payload.workspace_id),
+                    "context_pack_id": result.context_pack_id,
+                    "input_fingerprint": result.manifest.get("input_fingerprint"),
+                    "lockfile": result.manifest.get("lockfile") or {},
+                    "repository_identity": repository_identity or None,
+                    "repository_snapshot_sha256": repository.get(
+                        "snapshot_fingerprint"
+                    ),
+                    "foundation_semantic_sha256": foundation.semantic_sha256,
+                    "foundation_artifact_sha256": foundation.artifact_sha256,
+                    "rendered_markdown_sha256": (
+                        result.manifest.get("rendering") or {}
+                    ).get("markdown_sha256"),
+                },
+                artifact=response_artifact,
+                content=result.markdown,
+                claims=workspace_context_claims(foundation_payload),
+                evaluation_metadata={
+                    "objective_independent": foundation.objective_independent,
+                    "copy_ready": quality_report.get("copy_ready") is True,
+                    "hash_valid": hashlib.sha256(
+                        result.markdown.encode("utf-8")
+                    ).hexdigest()
+                    == (result.manifest.get("rendering") or {}).get(
+                        "markdown_sha256"
+                    ),
+                    "snapshot_current": (
+                        repository.get("snapshot_fingerprint")
+                        == repo_state.get("snapshot_fingerprint")
+                    ),
+                    "permissions_current": access_scope.allows_workspace(
+                        payload.workspace_id
+                    ),
+                    "durable_fact_count": len(
+                        foundation_payload.get("durable_knowledge") or []
+                    )
+                    + len(foundation_payload.get("durable_facts") or []),
+                    "verification_complete": verification_complete,
+                    "semantic_coverage_score": quality_report.get(
+                        "semantic_coverage_score", 0.0
+                    ),
+                },
+                artifact_schema_version=str(foundation.schema_version),
+                compiler_version=str(
+                    foundation_payload.get("compiler_version") or COMPILER_VERSION
+                ),
+                renderer_version=WORKSPACE_FOUNDATION_RENDERER_VERSION,
+                policy_name="workspace_foundation",
+                context_pack_id=UUID(str(result.context_pack_id)),
+                repository_identity_sha256=(
+                    canonical_sha256(repository_identity.casefold())
+                    if repository_identity
+                    else None
+                ),
+                repository_snapshot_sha256=repository.get(
+                    "snapshot_fingerprint"
+                ),
+                evidence_source_document_ids=collect_source_document_ids(
+                    foundation_payload,
+                    response_artifact,
+                ),
+                access_scope=access_scope,
+                actor=access_scope.principal_id,
+            )
+            quality_control = activation.model_dump(mode="json")
         await session.commit()
+    except (ContextActivationConflict, ContextEvidenceStale) as exc:
+        await session.rollback()
+        code = "context_activation_conflict"
+        raise HTTPException(
+            status_code=409,
+            detail=_context_prepare_error_detail(
+                request,
+                code=code,
+                message=str(exc),
+            ),
+        ) from exc
     except ContextBudgetExceededError as exc:
         await session.rollback()
         code = "context_budget_too_small"
@@ -693,4 +864,5 @@ async def prepare_context(
         selected_context=result.selected_items,
         excluded_context=result.excluded_items,
         focus=dict(result.manifest.get("focus") or {}),
+        quality_control=quality_control,
     )

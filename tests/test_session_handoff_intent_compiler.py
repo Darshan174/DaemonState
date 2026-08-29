@@ -199,6 +199,7 @@ def _contract(
     superseded: bool = False,
     trusted_attachment_descriptors: tuple[TrustedRequestImageDescriptor, ...] = (),
     allow_local_artifacts: bool = False,
+    allow_unresolved_dependency_preview: bool = False,
 ) -> tuple[dict[str, object], dict[str, object]]:
     data, comparison = _checkpoint_data(
         request,
@@ -217,6 +218,7 @@ def _contract(
         allow_local_artifacts=allow_local_artifacts,
         checkpoint_data=data,
         repository_comparison=comparison,
+        allow_unresolved_dependency_preview=allow_unresolved_dependency_preview,
     )
     return contract, data
 
@@ -3041,6 +3043,110 @@ def test_image_domain_code_lead_does_not_invent_an_attachment_dependency(
 
 
 @pytest.mark.parametrize(
+    ("request_text", "kind", "issue_code"),
+    [
+        (
+            "Review this screenshot and explain the failure.",
+            "image",
+            "required_image_dependency_manifest_missing",
+        ),
+        (
+            "fix this now, it keeps flickering. do u see the issue in the screenshot?",
+            "image",
+            "required_image_dependency_manifest_missing",
+        ),
+        (
+            "AND THIS ASWELL\n\n"
+            "I SEE U TRY TO OPEN OPENCODE AND SELECT NEW SESSION, BUT I "
+            "PURPOSFULLY CHANGE THE WINDOW TO CHROME SINCE IM WORKING\n"
+            '<image name=[Image #1] path="/tmp/current-window.png"></image>',
+            "image",
+            "required_image_dependency_manifest_missing",
+        ),
+        (
+            "Follow the Instructions in this file: "
+            "/Users/example/.agent-runs/kimi-task.md",
+            "file",
+            "required_file_dependency_manifest_missing",
+        ),
+        (
+            "follow the Instructions in this file: "
+            "/Users/example/.agent-runs/glm-task.md",
+            "file",
+            "required_file_dependency_manifest_missing",
+        ),
+        (
+            "Use [the prior chat](chatgpt-conversation://conversation-1) "
+            "and implement its conclusions.",
+            "conversation",
+            "required_conversation_dependency_manifest_missing",
+        ),
+        (
+            "push changes of work done only in this session",
+            "change_set",
+            "session_change_ownership_unproven",
+        ),
+        (
+            "push changes made in this session only",
+            "change_set",
+            "session_change_ownership_unproven",
+        ),
+        (
+            "push changes of only this session",
+            "change_set",
+            "session_change_ownership_unproven",
+        ),
+        (
+            "push only this session's changes",
+            "change_set",
+            "session_change_ownership_unproven",
+        ),
+    ],
+)
+def test_explicit_reference_without_manifest_is_a_typed_copy_blocker(
+    request_text: str,
+    kind: str,
+    issue_code: str,
+) -> None:
+    contract, _data = _contract(
+        request_text,
+        allow_unresolved_dependency_preview=True,
+    )
+
+    assert len(contract["unresolved_dependencies"]) == 1
+    dependency = contract["unresolved_dependencies"][0]
+    assert dependency["kind"] == kind
+    assert dependency["status"] == "unresolved"
+    assert dependency["resolution"] == "required_manifest_missing"
+    assert dependency["blocks_copy"] is True
+    assert dependency["blocking_issue_code"] == issue_code
+    assert contract["current_goal"]["self_contained"] is False
+    assert contract["quality_report"]["copy_ready"] is False
+    assert issue_code in {
+        item["code"] for item in contract["quality_report"]["blocking_issues"]
+    }
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "Review image handling code.",
+        "Check screenshot parsing behavior.",
+        "Compare image codecs in the repository.",
+        "Review app/services/checkpoints.py and fix the bug.",
+        "Push all current changes.",
+        "Commit the verified fix.",
+    ],
+)
+def test_code_domain_terms_do_not_invent_unresolved_dependencies(
+    request_text: str,
+) -> None:
+    contract, _data = _contract(request_text)
+
+    assert contract["unresolved_dependencies"] == []
+
+
+@pytest.mark.parametrize(
     "lead",
     [
         "Review this screenshot and explain the failure.",
@@ -3429,3 +3535,118 @@ def test_blocked_quality_downgrades_visible_readiness() -> None:
     assert contract["quality_report"]["status"] == "blocked"
     assert contract["readiness"]["status"] == "discovery_required"
     assert "quality warnings or blockers" in contract["readiness"]["next_action"]
+
+
+def _set_active_objective_antecedent(
+    data: dict[str, object],
+    objective: str,
+) -> None:
+    goal_payload = data["sections"]["goal"][0]["payload"]
+    goal_payload["conversation_state"] = {
+        "schema_version": "conversation_state.v1",
+        "active_goal": {
+            "root_event_id": "prior-goal-event",
+            "root_request_verbatim": objective,
+            "fragments": [],
+            "composite_request_verbatim": objective,
+            "source_event_ids": ["prior-goal-event"],
+        },
+        "lifecycle": "active",
+        "transitions": [],
+        "decisions": [],
+        "pending_interaction": None,
+        "unresolved_references": [],
+        "state_sha256": "a" * 64,
+    }
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "did u fix it?",
+        "[Request interrupted by user for tool use]",
+    ],
+)
+def test_unbound_non_objective_candidate_blocks_contract_copy(candidate: str) -> None:
+    data, comparison = _checkpoint_data(candidate)
+
+    contract = build_session_handoff_contract(
+        SimpleNamespace(),
+        request_verbatim=candidate,
+        checkpoint_data=data,
+        repository_comparison=comparison,
+    )
+
+    assert contract["objective_resolution"]["status"] == "unresolved"
+    assert contract["objective_resolution"]["blocks_copy"] is True
+    assert contract["quality_report"]["status"] == "blocked"
+    assert contract["quality_report"]["copy_ready"] is False
+    objective_check = next(
+        item
+        for item in contract["quality_report"]["checks"]
+        if item["code"] == "objective_resolved"
+    )
+    assert objective_check["status"] == "fail"
+    assert contract["readiness"]["status"] == "objective_resolution_required"
+
+
+def test_unique_deictic_antecedent_becomes_rendered_resolved_objective() -> None:
+    candidate = "fix it"
+    prior_objective = "Correct delivery so it targets the active chat composer."
+    data, comparison = _checkpoint_data(candidate)
+    _set_active_objective_antecedent(data, prior_objective)
+
+    contract = build_session_handoff_contract(
+        SimpleNamespace(),
+        request_verbatim=candidate,
+        checkpoint_data=data,
+        repository_comparison=comparison,
+    )
+
+    assert contract["objective_resolution"]["classification"] == "deictic"
+    assert contract["objective_resolution"]["status"] == "resolved"
+    assert contract["current_goal"]["text"] == (
+        "Fix the antecedent objective:\n\n" + prior_objective
+    )
+    content = render_compact_session_handoff(
+        SimpleNamespace(),
+        request_verbatim=candidate,
+        contract=contract,
+        checkpoint_data=data,
+    )
+    assert "Fix the antecedent objective" in content
+    assert prior_objective in content
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "[Request interrupted by user for tool use]",
+        (
+            "This session is being continued from a previous conversation that ran "
+            "out of context. The summary below covers the earlier portion."
+        ),
+    ],
+)
+def test_restored_non_objective_antecedent_remains_read_only(
+    candidate: str,
+) -> None:
+    prior_objective = "Review why the Session Context objective was incomplete."
+    data, comparison = _checkpoint_data(candidate)
+    _set_active_objective_antecedent(data, prior_objective)
+
+    contract = build_session_handoff_contract(
+        SimpleNamespace(),
+        request_verbatim=candidate,
+        checkpoint_data=data,
+        repository_comparison=comparison,
+    )
+
+    assert contract["objective_resolution"]["status"] == "resolved"
+    assert contract["objective_resolution"]["blocks_copy"] is False
+    assert contract["objective_resolution"]["blocks_execution"] is True
+    assert contract["current_goal"]["text"] == prior_objective
+    assert contract["execution_policy"]["permission_mode"] == "read_only"
+    assert contract["execution_policy"]["may_edit"] is False
+    assert contract["readiness"]["status"] == "fresh_user_lead_required"
+    assert "fresh instruction" in contract["readiness"]["next_action"]

@@ -1,0 +1,492 @@
+{
+  "schema_version": "context_quality_frozen_gold.v2",
+  "baseline_sha256": "53cbcea9401024b7e2f7628cbc49c44e61ee09296b3ea6850959515807d6817a",
+  "adjudicated_at": "2026-08-24T00:00:00+05:30",
+  "provenance": {
+    "method": "event_log_adjudication",
+    "reviewer_count": 1,
+    "blinded": false,
+    "candidate_artifacts_consulted": false,
+    "candidate_resolver_output_consulted": false,
+    "source_material": [
+      "Frozen work_checkpoint identity and boundary_event_id",
+      "Raw session_events content, provider_event_id, payload_json, and assistant completion/status evidence at or before each boundary",
+      "Raw attachment identities and hashes referenced by the adjudicated active objective"
+    ],
+    "limitations": [
+      "The final labels are from one raw-event reviewer and have no inter-rater agreement measurement.",
+      "This was not fully blinded: the reviewer knew this was the DaemonState context-quality corpus and was given frozen case boundaries and disputed resolution questions, while remaining blind to candidate artifacts, resolver output, benchmark code, tests, and the prior gold labels.",
+      "An earlier draft was contaminated by a post-adjudication candidate-output audit and was discarded; every final v2 label was replaced or confirmed in a fresh raw-session-event-only pass.",
+      "Deterministic intent phrases can still miss valid paraphrases or reward keyword-shaped text.",
+      "Empty relevant-file lists mean unlabelled, not proof that no file is relevant."
+    ]
+  },
+  "privacy": {
+    "full_raw_event_text_committed": false,
+    "description": "The manifest commits reviewer-synthesized canonical objectives, raw-event-adjudicated intent concepts and provider message IDs, immutable database SessionEvent UUIDs, event content hashes, and required attachment hashes. Provider IDs are the only candidate authority-binding namespace; database UUIDs remain provenance evidence and are never compared to provider IDs. Full raw local conversations remain outside git."
+  },
+  "session_contexts": [
+    {
+      "case_id": "34bcf2d694",
+      "checkpoint_id": "723c8a15-3356-4525-bffa-0570788266de",
+      "objective_status": "resolved",
+      "objective_text": "push changes made in this session only",
+      "objective_sha256": "e1eacde16f2f15fb851e295a1204139785257ab1f393772ee7bbee4435a42226",
+      "acceptable_objective_sha256s": [
+        "e1eacde16f2f15fb851e295a1204139785257ab1f393772ee7bbee4435a42226"
+      ],
+      "required_intent_concepts": [
+        {"name": "action", "any_of": ["push"]},
+        {"name": "object", "any_of": ["changes", "work"]},
+        {"name": "session_scope", "any_of": ["this session", "session only"]}
+      ],
+      "forbidden_objective_sha256s": [],
+      "objective_authority": {
+        "binding_required": true,
+        "required_provider_event_ids": [
+          "msg_01a01be4-52d6-7141-9aa5-85fbbc4c2fb3"
+        ],
+        "allowed_provider_event_ids": [
+          "msg_01a0198c-312c-7551-bae4-eb2d03123e00",
+          "msg_01a01be4-52d6-7141-9aa5-85fbbc4c2fb3"
+        ]
+      },
+      "required_attachment_count": 0,
+      "required_attachment_sha256s": [],
+      "required_relevant_files": [
+        "frontend/index.html",
+        "frontend/src/pages/Landing.jsx",
+        "frontend/src/pages/Landing.test.jsx"
+      ],
+      "forbidden_relevant_files": [
+        "app/services/session_library.py",
+        "app/services/session_summary.py",
+        "frontend/src/pages/sessionContinuity.js"
+      ],
+      "evidence": {
+        "boundary_event_id": "f4bb57fa-09eb-44d4-a17d-c70bfa48b480",
+        "objective_event_ids": [
+          "3c04ec4f-9162-4461-9010-8b4d0fe636e3",
+          "5fa4c9bd-f32a-4618-bf68-1c23c0e67499"
+        ],
+        "objective_provider_event_ids": [
+          "msg_01a0198c-312c-7551-bae4-eb2d03123e00",
+          "msg_01a01be4-52d6-7141-9aa5-85fbbc4c2fb3"
+        ],
+        "attachment_event_ids": [],
+        "source_event_content_sha256s": [
+          "20d459b4942d24afb68bdf86ba1eb6351c9330abf8f360986d0bc52dd6eeb952",
+          "eef2b294f0efbbfe8682461f7b000954312035bf5b3cf4d2febcab356af4d445",
+          "a80ec833a6a4974415d579d0987cdba9b15794d1d86e4cb2feca7214e2c8bf45"
+        ],
+        "adjudication_note": "The final push-only leaf is required authority. The original session-scoped landing request is allowed antecedent context because it bounds what 'this session' means; it is not independently required to resolve the final leaf. Tool and boundary events identify the three session-owned pushed files."
+      }
+    },
+    {
+      "case_id": "3682a763b2",
+      "checkpoint_id": "fa6daaaa-92ae-49fc-85f8-8ebf65df673e",
+      "objective_status": "resolved",
+      "objective_text": "Verify that the Codex-style continuation flow works end to end in OpenCode for both Session Context and Workspace Context.",
+      "objective_sha256": "59adc1ba968421f4fee77a5b110c653c5a868b1d71a5e510142a863792e2735d",
+      "acceptable_objective_sha256s": [
+        "59adc1ba968421f4fee77a5b110c653c5a868b1d71a5e510142a863792e2735d"
+      ],
+      "required_intent_concepts": [
+        {"name": "verification", "any_of": ["verify", "test", "does it really work", "really works", "works end to end"]},
+        {"name": "codex_basis", "any_of": ["codex"]},
+        {"name": "opencode_target", "any_of": ["opencode"]},
+        {"name": "session_context_scope", "any_of": ["session context"]},
+        {"name": "workspace_context_scope", "any_of": ["workspace context"]}
+      ],
+      "forbidden_objective_sha256s": [],
+      "objective_authority": {
+        "binding_required": true,
+        "required_provider_event_ids": [
+          "msg_01a01bd3-3553-7130-92c7-93b990510bfd",
+          "msg_01a01be4-cfb8-7973-8ce2-63b20271840c"
+        ],
+        "allowed_provider_event_ids": [
+          "msg_01a01ba3-7226-7e10-9e57-2517a12b8604",
+          "msg_01a01ba4-4670-78d1-afae-34c5bad7dcf3",
+          "msg_01a01bd3-3553-7130-92c7-93b990510bfd",
+          "msg_01a01be4-cfb8-7973-8ce2-63b20271840c"
+        ]
+      },
+      "required_attachment_count": 2,
+      "required_attachment_sha256s": [
+        "f735e6bd3315aba02a12651551510eb70ed7075cf947164beae686ea3149bfdf",
+        "9bd9bf0cd47200c30ee94a2f963788a07afefb0c5b62507431fa43e35fc16296"
+      ],
+      "required_relevant_files": [],
+      "forbidden_relevant_files": [],
+      "evidence": {
+        "boundary_event_id": "f926138b-ae96-4d74-a258-1326555f49eb",
+        "objective_event_ids": [
+          "2ea04b44-c68c-423c-8b65-4bfff3ae6473",
+          "911e55b1-b5f7-4c08-b5a2-7d1471bfd977",
+          "99fdece9-5650-43b4-a505-1d982006f140",
+          "7f2f8513-f1f0-488a-acdd-0f7df9c386dd"
+        ],
+        "objective_provider_event_ids": [
+          "msg_01a01ba3-7226-7e10-9e57-2517a12b8604",
+          "msg_01a01ba4-4670-78d1-afae-34c5bad7dcf3",
+          "msg_01a01bd3-3553-7130-92c7-93b990510bfd",
+          "msg_01a01be4-cfb8-7973-8ce2-63b20271840c"
+        ],
+        "attachment_event_ids": [
+          "99fdece9-5650-43b4-a505-1d982006f140"
+        ],
+        "source_event_content_sha256s": [
+          "e8a63647c44b686fa036f809868cd745cf686a1a41fb2a14b931753cf4041e39",
+          "1e9415c42699476f0b095778c60c9067b869f9343a8d62b49dc8dae9f7d7ecda",
+          "f2a15976f6c4cea26ab00cbbb9f9a67ae2e6f972d9c85febcf0bd2451b2ead98",
+          "c7317c30b3218b373af362f0c72cb127f98d6ceaa31f382608c356fd06cc199c"
+        ],
+        "adjudication_note": "The active verification leaf and final real-attempt follow-up are required. The earlier implementation request and its refinement are allowed antecedent context, while the two screenshots attached to the active verification leaf remain exact required dependencies."
+      }
+    },
+    {
+      "case_id": "a8b9026a94",
+      "checkpoint_id": "38ee1650-33bb-4123-a777-63360d8c05d3",
+      "objective_status": "resolved",
+      "objective_text": "push changes made in this session only",
+      "objective_sha256": "e1eacde16f2f15fb851e295a1204139785257ab1f393772ee7bbee4435a42226",
+      "acceptable_objective_sha256s": [
+        "e1eacde16f2f15fb851e295a1204139785257ab1f393772ee7bbee4435a42226"
+      ],
+      "required_intent_concepts": [
+        {"name": "action", "any_of": ["push"]},
+        {"name": "object", "any_of": ["changes", "work"]},
+        {"name": "session_scope", "any_of": ["this session", "session only"]}
+      ],
+      "forbidden_objective_sha256s": [],
+      "objective_authority": {
+        "binding_required": true,
+        "required_provider_event_ids": [
+          "msg_01a01bd0-bd3b-7bf3-a45a-2c6a169f4fcc"
+        ],
+        "allowed_provider_event_ids": [
+          "msg_01a01bb7-6317-7640-b9df-561eb029ea69",
+          "msg_01a01bb9-fdd0-7893-a781-74844f7fea59",
+          "msg_01a01bbe-0bc2-73c2-91a8-407c5470678e",
+          "msg_01a01bc3-d8c7-7e62-a854-7dc4a5cfdf34",
+          "msg_01a01bca-ec76-7483-bd95-6bef73dcf317",
+          "msg_01a01bd0-bd3b-7bf3-a45a-2c6a169f4fcc"
+        ]
+      },
+      "required_attachment_count": 0,
+      "required_attachment_sha256s": [],
+      "required_relevant_files": [
+        "frontend/src/pages/Landing.jsx"
+      ],
+      "forbidden_relevant_files": [
+        "app/services/session_library.py",
+        "app/services/session_summary.py",
+        "frontend/src/pages/sessionContinuity.js"
+      ],
+      "evidence": {
+        "boundary_event_id": "cb43eed1-5d97-42d1-9e3c-cd6083af27bd",
+        "objective_event_ids": [
+          "5ff9c11f-e450-4651-ada5-2584e0d3f448",
+          "242f21dc-70cf-412d-98a5-9675829e5a69",
+          "7a6e9c17-e211-44a4-8135-18b38b4c107f",
+          "a5c00209-1a73-47d1-a033-c7896dd6abda",
+          "40d98868-d05b-49da-b7d8-d336d53adb1f",
+          "c10f3730-d808-44e2-8c76-fd9fc999c54e"
+        ],
+        "objective_provider_event_ids": [
+          "msg_01a01bb7-6317-7640-b9df-561eb029ea69",
+          "msg_01a01bb9-fdd0-7893-a781-74844f7fea59",
+          "msg_01a01bbe-0bc2-73c2-91a8-407c5470678e",
+          "msg_01a01bc3-d8c7-7e62-a854-7dc4a5cfdf34",
+          "msg_01a01bca-ec76-7483-bd95-6bef73dcf317",
+          "msg_01a01bd0-bd3b-7bf3-a45a-2c6a169f4fcc"
+        ],
+        "attachment_event_ids": [],
+        "source_event_content_sha256s": [
+          "bbddebc066ee5d265b7d7444fb93d3638b2457de059298e6173a124a5060cf24",
+          "49fa76f2999a51b23452cac0571edc1ca46a5cefc8b68ea0f5be28181d2161e8",
+          "c69d4f68f3a4b0e7d711ee861557a8b29a66f0927fc7af6dc8e11e2916a0f9d4",
+          "772f8c73d458d5b00ae93852a412ec18c7b6b40ed41943e8e79574e35d70eb09",
+          "e6cfbac638917c96b8554182934e645e39876aae5af6f4ccf0647a01bdd384f5",
+          "91b4bf21d324f01e3a76c11b02f88488024ce072fcfb4e3392c4e8298a685faa"
+        ],
+        "adjudication_note": "The final push-only leaf is required authority. Earlier landing-page requests are a bounded allowed envelope for the meaning of 'this session', but their historical screenshots are not required to execute the active push leaf. The boundary command result proves Landing.jsx is in the session-scoped change set."
+      }
+    },
+    {
+      "case_id": "4904543c1b",
+      "checkpoint_id": "a2eaa5e3-a84f-436e-929b-1276d5cd89eb",
+      "objective_status": "resolved",
+      "objective_text": "Explain why OpenCode still fails while Cursor works, without attempting a fix.",
+      "objective_sha256": "167e708d5dc4e5c88a9b74b2e6cfc733751dc29509536dafe11f6fab58010c51",
+      "acceptable_objective_sha256s": [
+        "167e708d5dc4e5c88a9b74b2e6cfc733751dc29509536dafe11f6fab58010c51"
+      ],
+      "required_intent_concepts": [
+        {"name": "explanation", "any_of": ["why", "explain", "diagnose"]},
+        {"name": "failing_provider", "any_of": ["opencode"]},
+        {"name": "working_comparison", "any_of": ["cursor"]}
+      ],
+      "forbidden_objective_sha256s": [],
+      "objective_authority": {
+        "binding_required": true,
+        "required_provider_event_ids": [
+          "msg_01a01b0b-8c5c-7aa0-9bdb-5d6f1c847ba3"
+        ],
+        "allowed_provider_event_ids": [
+          "msg_01a01b0b-8c5c-7aa0-9bdb-5d6f1c847ba3"
+        ]
+      },
+      "required_attachment_count": 1,
+      "required_attachment_sha256s": [
+        "e524652ad9db6a1553d63d6889d5ca87f5b9bcf3a9711d3e7320491a691d25c9"
+      ],
+      "required_relevant_files": [],
+      "forbidden_relevant_files": [],
+      "evidence": {
+        "boundary_event_id": "5b2e831f-4871-490a-8e45-727bf823c653",
+        "objective_event_ids": [
+          "f08f5267-e89e-49c3-8695-c1332dfa5910"
+        ],
+        "objective_provider_event_ids": [
+          "msg_01a01b0b-8c5c-7aa0-9bdb-5d6f1c847ba3"
+        ],
+        "attachment_event_ids": [
+          "f08f5267-e89e-49c3-8695-c1332dfa5910"
+        ],
+        "source_event_content_sha256s": [
+          "97db38a1b8fc43d9951c13cf4cf5a5ad1ba88a6b70cc1b2296476aea60cadc90"
+        ],
+        "adjudication_note": "The latest request asks for an explanation of the Cursor/OpenCode discrepancy and directly includes one screenshot."
+      }
+    },
+    {
+      "case_id": "cfacd30870",
+      "checkpoint_id": "493eb16d-c819-4730-9dff-defbace6ee76",
+      "objective_status": "resolved",
+      "objective_text": "Fix and live-verify the recurring OpenCode empty-composer handoff failure shown in the latest screenshot.",
+      "objective_sha256": "92dff74f40116001b2a6fff3e03edf7c4255bee5158afdcf76329c751e7fd102",
+      "acceptable_objective_sha256s": [
+        "92dff74f40116001b2a6fff3e03edf7c4255bee5158afdcf76329c751e7fd102"
+      ],
+      "required_intent_concepts": [
+        {"name": "repair", "any_of": ["fix", "fixed", "addressing"]},
+        {"name": "provider", "any_of": ["opencode"]},
+        {"name": "failure", "any_of": ["issue", "failure", "empty composer", "handoff"]}
+      ],
+      "forbidden_objective_sha256s": [],
+      "objective_authority": {
+        "binding_required": true,
+        "required_provider_event_ids": [
+          "msg_01a01ac5-4748-7a92-aeb3-974c968e0e04",
+          "msg_01a01ad0-3127-7f33-81fe-0c90e1a3fb38"
+        ],
+        "allowed_provider_event_ids": [
+          "msg_01a01a51-8097-77f3-8153-001c46695c55",
+          "msg_01a01ac5-4748-7a92-aeb3-974c968e0e04",
+          "msg_01a01ac5-ee31-7c12-b31a-ce38ee03a304",
+          "msg_01a01ad0-3127-7f33-81fe-0c90e1a3fb38"
+        ]
+      },
+      "required_attachment_count": 1,
+      "required_attachment_sha256s": [
+        "79fc3b0fa50b0583794e09fdc9e1f1c5013a11c12041ecf865ef36f600498040"
+      ],
+      "required_relevant_files": [],
+      "forbidden_relevant_files": [],
+      "evidence": {
+        "boundary_event_id": "18618d23-e6f9-4a65-b44c-dd73989f0e8e",
+        "objective_event_ids": [
+          "3c507e06-fb0d-494b-be64-381bcc163a59",
+          "8826b8e7-2064-4402-b874-9a86753938c9",
+          "b50b644d-5ea4-47ee-8cd8-1fa76716c0a2",
+          "afa9700a-b60b-48ac-9f77-739ed906a851"
+        ],
+        "objective_provider_event_ids": [
+          "msg_01a01a51-8097-77f3-8153-001c46695c55",
+          "msg_01a01ac5-4748-7a92-aeb3-974c968e0e04",
+          "msg_01a01ac5-ee31-7c12-b31a-ce38ee03a304",
+          "msg_01a01ad0-3127-7f33-81fe-0c90e1a3fb38"
+        ],
+        "attachment_event_ids": [
+          "b50b644d-5ea4-47ee-8cd8-1fa76716c0a2"
+        ],
+        "source_event_content_sha256s": [
+          "6643fb98529ec8cb85d34e895e123664a2c53762ceeead2f61801a1c50c82308",
+          "c8309608f454b35592b24d1da2356d590877dfbed81d5fe0ebe6bf57c96bc753",
+          "851c51398f4359d9b15a0812edf21efabd3dc85442701178cc5d1fc0972d6bb8",
+          "4fcd31cd690b1f0849dc104de60dac794622bc6eb27b5f3c9068454a39a529d1"
+        ],
+        "adjudication_note": "The reproduced-failure question and final correction/status continuation are the minimal required chain. The earlier subscription-versus-paste diagnosis and the screenshot-only corrective event are allowed antecedent/evidence context; the screenshot hash remains an exact active-leaf dependency."
+      }
+    },
+    {
+      "case_id": "66929aee60",
+      "checkpoint_id": "ac81621c-9d57-49b5-90a6-6cf92db9cc91",
+      "objective_status": "resolved",
+      "objective_text": "Diagnose and fix the recurring OpenCode empty-composer handoff failure shown in the latest screenshot.",
+      "objective_sha256": "0b6f0b1395834c0685a02a243baa7a54ce015ef6b2efd89fcb659089046577ee",
+      "acceptable_objective_sha256s": [
+        "0b6f0b1395834c0685a02a243baa7a54ce015ef6b2efd89fcb659089046577ee"
+      ],
+      "required_intent_concepts": [
+        {"name": "repair", "any_of": ["fix", "fixed", "diagnose"]},
+        {"name": "provider", "any_of": ["opencode"]},
+        {"name": "failure", "any_of": ["issue", "failure", "empty composer", "handoff"]}
+      ],
+      "forbidden_objective_sha256s": [],
+      "objective_authority": {
+        "binding_required": true,
+        "required_provider_event_ids": [
+          "msg_01a01ac5-4748-7a92-aeb3-974c968e0e04"
+        ],
+        "allowed_provider_event_ids": [
+          "msg_01a01a51-8097-77f3-8153-001c46695c55",
+          "msg_01a01ac5-4748-7a92-aeb3-974c968e0e04",
+          "msg_01a01ac5-ee31-7c12-b31a-ce38ee03a304"
+        ]
+      },
+      "required_attachment_count": 1,
+      "required_attachment_sha256s": [
+        "79fc3b0fa50b0583794e09fdc9e1f1c5013a11c12041ecf865ef36f600498040"
+      ],
+      "required_relevant_files": [],
+      "forbidden_relevant_files": [],
+      "evidence": {
+        "boundary_event_id": "291650f0-8019-4e18-8d56-c0f12f9f8e5b",
+        "objective_event_ids": [
+          "3c507e06-fb0d-494b-be64-381bcc163a59",
+          "8826b8e7-2064-4402-b874-9a86753938c9",
+          "b50b644d-5ea4-47ee-8cd8-1fa76716c0a2"
+        ],
+        "objective_provider_event_ids": [
+          "msg_01a01a51-8097-77f3-8153-001c46695c55",
+          "msg_01a01ac5-4748-7a92-aeb3-974c968e0e04",
+          "msg_01a01ac5-ee31-7c12-b31a-ce38ee03a304"
+        ],
+        "attachment_event_ids": [
+          "b50b644d-5ea4-47ee-8cd8-1fa76716c0a2"
+        ],
+        "source_event_content_sha256s": [
+          "6643fb98529ec8cb85d34e895e123664a2c53762ceeead2f61801a1c50c82308",
+          "c8309608f454b35592b24d1da2356d590877dfbed81d5fe0ebe6bf57c96bc753",
+          "851c51398f4359d9b15a0812edf21efabd3dc85442701178cc5d1fc0972d6bb8"
+        ],
+        "adjudication_note": "The reproduced-failure question is the minimal required leaf. The earlier subscription-versus-paste diagnosis and screenshot-only correction are bounded allowed context; the screenshot is exact required evidence but not independent objective authority."
+      }
+    },
+    {
+      "case_id": "87405f4687",
+      "checkpoint_id": "5eed28f2-1a8b-47d2-8689-cea19094f15c",
+      "objective_status": "resolved",
+      "objective_text": "Explain whether the recurring OpenCode failure is caused by subscription or free-model availability, and distinguish it from the DaemonState paste failure.",
+      "objective_sha256": "ca9376198aad01fd35061fd46d90a555e68625ed7ac43e5b6858a93e51468692",
+      "acceptable_objective_sha256s": [
+        "ca9376198aad01fd35061fd46d90a555e68625ed7ac43e5b6858a93e51468692"
+      ],
+      "required_intent_concepts": [
+        {"name": "provider", "any_of": ["opencode"]},
+        {"name": "subscription_hypothesis", "any_of": ["subscription", "balance", "quota"]},
+        {"name": "free_model_hypothesis", "any_of": ["free models", "free model"]}
+      ],
+      "forbidden_objective_sha256s": [],
+      "objective_authority": {
+        "binding_required": true,
+        "required_provider_event_ids": [
+          "msg_01a01a51-8097-77f3-8153-001c46695c55"
+        ],
+        "allowed_provider_event_ids": [
+          "msg_01a01990-c073-7ba2-b67a-e40faa57fe3c",
+          "msg_01a01a51-8097-77f3-8153-001c46695c55"
+        ]
+      },
+      "required_attachment_count": 2,
+      "required_attachment_sha256s": [
+        "7ceded2b9ce108cfaa540f14beafba10b5963e88fe6cafcede34d8acf9ef208d",
+        "1313b111cd69d8ed1ed5fe58cef384ae5c6c87ad3415e2b546c6a24242daf6f6"
+      ],
+      "required_relevant_files": [],
+      "forbidden_relevant_files": [],
+      "evidence": {
+        "boundary_event_id": "a7ef2ab0-385b-48ef-8f70-8277bf25a12f",
+        "objective_event_ids": [
+          "735756f3-304e-4bba-a20a-ba3edc82fcef",
+          "3c507e06-fb0d-494b-be64-381bcc163a59"
+        ],
+        "objective_provider_event_ids": [
+          "msg_01a01990-c073-7ba2-b67a-e40faa57fe3c",
+          "msg_01a01a51-8097-77f3-8153-001c46695c55"
+        ],
+        "attachment_event_ids": [
+          "3c507e06-fb0d-494b-be64-381bcc163a59"
+        ],
+        "source_event_content_sha256s": [
+          "d7b0ffb1c4262e93c538fef229f848fe250c8636ec72d647e88ac387f95a4a9b",
+          "6643fb98529ec8cb85d34e895e123664a2c53762ceeead2f61801a1c50c82308"
+        ],
+        "adjudication_note": "The latest request is the minimal required leaf and supplies two exact screenshot dependencies. The earlier paste/focus branch is allowed antecedent context needed to distinguish the model-balance error from DaemonState's pre-paste failure, but it is not independently required authority."
+      }
+    },
+    {
+      "case_id": "968ab8a38e",
+      "checkpoint_id": "06f177df-8fd3-4b96-830e-e02f5ed30d3b",
+      "objective_status": "resolved",
+      "objective_text": "Finish fixing the remaining OpenCode issues from session 01a015e2-7993-78a3-a631-4eaa17955280.",
+      "objective_sha256": "f5e19ef2457bf9b0971605f244ecde34a50379185b1a50340481fe915005bc47",
+      "acceptable_objective_sha256s": [
+        "f5e19ef2457bf9b0971605f244ecde34a50379185b1a50340481fe915005bc47"
+      ],
+      "required_intent_concepts": [
+        {"name": "repair", "any_of": ["fix", "finish", "complete"]},
+        {"name": "opencode_issues", "any_of": ["opencode"]},
+        {"name": "referenced_session", "any_of": ["01a015e2-7993-78a3-a631-4eaa17955280"]}
+      ],
+      "forbidden_objective_sha256s": [],
+      "objective_authority": {
+        "binding_required": true,
+        "required_provider_event_ids": [
+          "msg_01a0190f-7ddd-7fd3-acb0-088c577d17ba",
+          "msg_01a01978-fdb9-7ab2-9fec-fe14c0fe937b"
+        ],
+        "required_provider_event_id_groups": [[
+          "msg_01a018cd-bd91-7172-b586-0bed91de9619",
+          "msg_01a018cd-eb8a-77e0-99d9-2bede8ec1ae1"
+        ]],
+        "allowed_provider_event_ids": [
+          "msg_01a018cd-bd91-7172-b586-0bed91de9619",
+          "msg_01a018cd-eb8a-77e0-99d9-2bede8ec1ae1",
+          "msg_01a0190f-7ddd-7fd3-acb0-088c577d17ba",
+          "msg_01a01978-fdb9-7ab2-9fec-fe14c0fe937b"
+        ]
+      },
+      "required_attachment_count": 0,
+      "required_attachment_sha256s": [],
+      "required_relevant_files": [],
+      "forbidden_relevant_files": [],
+      "evidence": {
+        "boundary_event_id": "13213598-6f33-4c29-8397-8cd4a3155d1b",
+        "objective_event_ids": [
+          "010acfa9-f308-4853-b7c7-2ed0580c53d0",
+          "2514faaf-d9b8-4aa9-98cd-788baf001784",
+          "c450f79d-6491-4809-bae9-8553cf591968",
+          "d06d5c7c-de82-4fe4-ac92-ab02be8903b6"
+        ],
+        "objective_provider_event_ids": [
+          "msg_01a018cd-bd91-7172-b586-0bed91de9619",
+          "msg_01a018cd-eb8a-77e0-99d9-2bede8ec1ae1",
+          "msg_01a0190f-7ddd-7fd3-acb0-088c577d17ba",
+          "msg_01a01978-fdb9-7ab2-9fec-fe14c0fe937b"
+        ],
+        "attachment_event_ids": [],
+        "source_event_content_sha256s": [
+          "fdac4348f4f24fa85daa8a9758da37353780d0e70a32f41c3cc62e5dacb5e984",
+          "049d746beb71ebdbc88094ed7892f83aa4315926637ceace9a8f6ddb7661b672",
+          "4df8602b08d7a72c13d54bad150a7065fca213c5a122ba0b318153a46c271899",
+          "7da90830fea72ba68e70fd8e420f77d63b211586c21040a6a7cec971c65a42cf"
+        ],
+        "adjudication_note": "Raw-only re-adjudication found the seq78 stale-helper/card branch completed at seq1000 and the seq1006 cross-session mismatch completed at seq1796. Seq1802 returns to the issues in the referenced session and seq1992 authorizes finishing them. Seq1986 reports a remaining real OpenCode click as assistant-status evidence, not direct-user objective authority, so it is deliberately excluded from the required objective concepts. Seq153 and seq167 are exact duplicate transports of one user request, so either satisfies the required canonical-root authority group. The historical screenshots are not required at this boundary."
+      }
+    }
+  ]
+}

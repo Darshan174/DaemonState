@@ -7,6 +7,7 @@ from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    ActiveContextPointer,
     AgentRun,
     Claim,
     ClaimRevision,
@@ -18,6 +19,11 @@ from app.models import (
     ContinuationExecution,
     ContinuationOutcome,
     ContinuationRequirement,
+    ContextActivationEvent,
+    ContextArtifactCandidate,
+    ContextArtifactClaim,
+    ContextCandidateEvaluation,
+    ContextObservationBundle,
     ContextPack,
     ContextPackItem,
     Entity,
@@ -145,6 +151,9 @@ async def delete_workspace_graph(session: AsyncSession, workspace_id: UUID) -> W
     )
     file_ids = select(CodeFile.id).where(CodeFile.workspace_id == workspace_id)
     symbol_ids = select(CodeSymbol.id).where(CodeSymbol.code_file_id.in_(file_ids))
+    context_candidate_ids = select(ContextArtifactCandidate.id).where(
+        ContextArtifactCandidate.workspace_id == workspace_id
+    )
 
     await session.execute(delete(WorkspaceGoal).where(WorkspaceGoal.workspace_id == workspace_id))
     await session.execute(delete(PromptSnippet).where(PromptSnippet.workspace_id == workspace_id))
@@ -152,6 +161,26 @@ async def delete_workspace_graph(session: AsyncSession, workspace_id: UUID) -> W
     await session.execute(delete(VerifiedPlaybook).where(VerifiedPlaybook.workspace_id == workspace_id))
     await session.execute(delete(ContinuationStageRequest).where(
         ContinuationStageRequest.workspace_id == workspace_id
+    ))
+    # Context-quality records retain FKs into packs, claims, evidence, and
+    # checkpoints. Remove their audit graph first, from leaves to roots.
+    await session.execute(delete(ContextActivationEvent).where(
+        ContextActivationEvent.workspace_id == workspace_id
+    ))
+    await session.execute(delete(ActiveContextPointer).where(
+        ActiveContextPointer.workspace_id == workspace_id
+    ))
+    await session.execute(delete(ContextCandidateEvaluation).where(
+        ContextCandidateEvaluation.candidate_id.in_(context_candidate_ids)
+    ))
+    await session.execute(delete(ContextArtifactClaim).where(
+        ContextArtifactClaim.candidate_id.in_(context_candidate_ids)
+    ))
+    await session.execute(delete(ContextArtifactCandidate).where(
+        ContextArtifactCandidate.workspace_id == workspace_id
+    ))
+    await session.execute(delete(ContextObservationBundle).where(
+        ContextObservationBundle.workspace_id == workspace_id
     ))
     await session.execute(delete(RequirementEvidence).where(
         RequirementEvidence.continuation_execution_id.in_(execution_ids)

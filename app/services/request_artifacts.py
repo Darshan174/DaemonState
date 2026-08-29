@@ -59,6 +59,8 @@ class TrustedRequestImageDescriptor:
     binding_error: str | None = None
     visual_inspection: Mapping[str, Any] | None = None
     visual_inspection_attested: bool = False
+    source_event_id: str | None = None
+    dependency_role: str | None = None
 
 
 _VISUAL_INSPECTION_OUTPUT_FIELDS = (

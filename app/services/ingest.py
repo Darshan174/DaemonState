@@ -55,6 +55,40 @@ from app.processing.source_extractors import (
 from app.time import utc_now
 
 
+_PROJECTION_REPLACEMENT_STOPWORDS = {
+    "a", "an", "and", "for", "from", "in", "of", "on", "the", "to", "use", "with",
+}
+
+
+def _projection_replacement_similarity(
+    previous: Component,
+    candidate: Component,
+) -> float:
+    """Conservatively recognize an explicit same-subject replacement.
+
+    This is used only when a new revision emits exactly one candidate of the
+    same fact type. It prevents a changed value such as SQLite -> PostgreSQL
+    from leaving two active decisions while refusing to treat an unrelated or
+    empty extraction as evidence of removal.
+    """
+
+    def tokens(component: Component) -> set[str]:
+        return {
+            token
+            for token in re.findall(
+                r"[a-z0-9_]+",
+                f"{component.name} {component.value}".casefold(),
+            )
+            if len(token) > 1 and token not in _PROJECTION_REPLACEMENT_STOPWORDS
+        }
+
+    before = tokens(previous)
+    after = tokens(candidate)
+    if not before or not after:
+        return 0.0
+    return len(before & after) / max(1, min(len(before), len(after)))
+
+
 TERMINAL_COMPONENT_STATUSES = frozenset({
     "deprecated",
     "rejected",
@@ -84,6 +118,7 @@ class IngestionService:
             "created": 0,
             "reused": 0,
             "superseded": 0,
+            "not_reobserved": 0,
             "relationships_superseded": 0,
             "relationships_rejected_missing_evidence": 0,
         }
@@ -103,6 +138,7 @@ class IngestionService:
             "created": 0,
             "reused": 0,
             "superseded": 0,
+            "not_reobserved": 0,
             "relationships_superseded": 0,
             "relationships_rejected_missing_evidence": 0,
         }
@@ -626,7 +662,14 @@ class IngestionService:
         doc: SourceDocument,
         current_components: list[Component],
     ) -> None:
-        """Retire derived rows no longer produced by the current source revision."""
+        """Retire only evidence-backed replacements, never extractor omissions.
+
+        Failure to rediscover a prior component is an observation about this
+        extraction run, not proof that the underlying fact stopped being true.
+        Omitted rows therefore remain unchanged and are reported as
+        ``not_reobserved``. A row is superseded only when the current revision
+        emits a component with the same stable fact identity.
+        """
         active_statuses = ("active", "needs_review", "proposed", "stale")
         source_rows = list(await self.session.scalars(
             select(SourceDocument.id).where(
@@ -655,28 +698,45 @@ class IngestionService:
 
         now = utc_now()
         obsolete_ids: set[UUID] = set()
+        not_reobserved = 0
         for component in obsolete:
             replacement = replacements.get((component.fact_type, component.identity_key))
-            if replacement is None and len(replacements_by_fact_type.get(component.fact_type, [])) == 1:
-                replacement = replacements_by_fact_type[component.fact_type][0]
+            fact_type_candidates = replacements_by_fact_type.get(component.fact_type, [])
+            if (
+                replacement is None
+                and len(fact_type_candidates) == 1
+                and _projection_replacement_similarity(
+                    component,
+                    fact_type_candidates[0],
+                ) >= 0.45
+            ):
+                replacement = fact_type_candidates[0]
+            if replacement is None:
+                not_reobserved += 1
+                continue
             component.status = "superseded"
             component.valid_to = now
             component.superseded_by_id = replacement.id if replacement else None
             obsolete_ids.add(component.id)
 
-        relationships = list(await self.session.scalars(
-            select(Relationship).where(
-                or_(
-                    Relationship.source_component_id.in_(obsolete_ids),
-                    Relationship.target_component_id.in_(obsolete_ids),
-                ),
-                Relationship.status != "superseded",
-            )
-        ))
+        relationships = (
+            list(await self.session.scalars(
+                select(Relationship).where(
+                    or_(
+                        Relationship.source_component_id.in_(obsolete_ids),
+                        Relationship.target_component_id.in_(obsolete_ids),
+                    ),
+                    Relationship.status != "superseded",
+                )
+            ))
+            if obsolete_ids
+            else []
+        )
         for relationship in relationships:
             relationship.status = "superseded"
 
-        self.last_projection_report["superseded"] += len(obsolete)
+        self.last_projection_report["superseded"] += len(obsolete_ids)
+        self.last_projection_report["not_reobserved"] += not_reobserved
         self.last_projection_report["relationships_superseded"] += len(relationships)
         await self.session.flush()
 

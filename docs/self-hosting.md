@@ -16,7 +16,7 @@ Install Git, Docker Engine or Docker Desktop, and a current Docker Compose v2
 with `up --wait` support. Then:
 
 ```bash
-git clone https://github.com/Darshan174/DaemonState.git daemonstate
+git clone https://github.com/Darshan174/DaemonState-Private.git daemonstate
 cd daemonstate
 bash scripts/self-host.sh
 ```
@@ -72,7 +72,7 @@ This profile is the full local-product path for a machine that has the coding
 agent CLIs and their session histories:
 
 ```bash
-git clone https://github.com/Darshan174/DaemonState.git daemonstate
+git clone https://github.com/Darshan174/DaemonState-Private.git daemonstate
 cd daemonstate
 bash scripts/doctor.sh --bare-metal
 bash scripts/setup.sh

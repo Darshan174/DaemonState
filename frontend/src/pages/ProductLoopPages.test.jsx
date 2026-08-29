@@ -15,6 +15,24 @@ import { copyReadySessionContextContent } from "./sessionContinuity";
 function sha256Text(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
+
+function activeQualityControl(artifactSha256, overrides = {}) {
+  return {
+    schema_version: "context_quality_activation.v1",
+    status: "active",
+    copy_allowed: true,
+    candidate_id: "context-candidate-1",
+    active_candidate_id: "context-candidate-1",
+    observation_sha256: "a".repeat(64),
+    artifact_sha256: artifactSha256,
+    semantic_sha256: "b".repeat(64),
+    evaluation_id: "context-evaluation-1",
+    pointer_generation: 1,
+    decision: "promote",
+    policy_version: "context_quality_policy.v1",
+    ...overrides,
+  };
+}
 const mocks = vi.hoisted(() => ({
   workspace: {
     activeWorkspaceId: "workspace-1",
@@ -4073,6 +4091,7 @@ function checkpointFixture() {
 }
 
 function sessionHandoff(content, overrides = {}) {
+  const contentSha256 = overrides.sha256 || sha256Text(content);
   return {
     schema_version: "session_handoff.v1",
     scope: "session",
@@ -4084,7 +4103,8 @@ function sessionHandoff(content, overrides = {}) {
       sequence_number: 42,
     },
     content,
-    sha256: sha256Text(content),
+    sha256: contentSha256,
+    quality_control: activeQualityControl(contentSha256),
     quality_report: {
       status: "ready",
       copy_ready: true,

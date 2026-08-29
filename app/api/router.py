@@ -8,6 +8,7 @@ from app.api import (
     connectors,
     continuations,
     context,
+    context_quality,
     context_digest,
     demo,
     desktop_overlay,
@@ -36,6 +37,7 @@ api_router.include_router(graph.router, prefix="", tags=["graph"])
 api_router.include_router(context_digest.router, prefix="", tags=["context"])
 api_router.include_router(memory.router, prefix="", tags=["memory"])
 api_router.include_router(context.router, prefix="", tags=["context"])
+api_router.include_router(context_quality.router, prefix="", tags=["context-quality"])
 api_router.include_router(workspace_goals.router, prefix="", tags=["workspaces"])
 api_router.include_router(workspaces.router, prefix="", tags=["workspaces"])
 api_router.include_router(query.router, prefix="", tags=["query"])

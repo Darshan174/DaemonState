@@ -1,0 +1,161 @@
+{
+  "schema_version": "context_quality_gold_run_report.v1",
+  "generated_at": "2026-08-24T19:03:51+05:30",
+  "command": ".venv/bin/python scripts/benchmark_context_quality.py --baseline docs/experiments/context-quality-engine-baseline-2026-08-20.json --gold docs/experiments/context-quality-engine-frozen-gold-2026-08-24.json --mode all --compact",
+  "read_only": true,
+  "baseline": {
+    "path": "docs/experiments/context-quality-engine-baseline-2026-08-20.json",
+    "sha256": "53cbcea9401024b7e2f7628cbc49c44e61ee09296b3ea6850959515807d6817a"
+  },
+  "frozen_gold": {
+    "path": "docs/experiments/context-quality-engine-frozen-gold-2026-08-24.json",
+    "sha256": "8f86ee7342153be9cb31b19b697b4931c03cd202c6b23f31e7ec2032e5a67485",
+    "case_count": 8,
+    "candidate_derived_expectations": false,
+    "method": "event_log_adjudication",
+    "reviewer_count": 1,
+    "blinded": false
+  },
+  "source_validation": {
+    "case_scoped_unique_source_event_records_verified": 34,
+    "unique_source_events": 30,
+    "required_attachment_hashes_verified_in_raw_payloads": 7,
+    "unique_required_attachment_hashes": 6,
+    "all_events_belong_to_the_frozen_checkpoint_session": true,
+    "all_events_at_or_before_the_frozen_boundary": true,
+    "attachment_gold_complete_at_every_boundary": true
+  },
+  "sessions": {
+    "assessment_kind": "background_projection_safety",
+    "promotion_scope": "background_projection_only",
+    "count": 8,
+    "baseline_mean_score": 35.25,
+    "candidate_mean_score": 28.62,
+    "candidate_mean_score_before_hard_caps": 85.125,
+    "mean_score_delta": -6.62,
+    "promoted": 1,
+    "review": 0,
+    "rejected": 7,
+    "objective_authority_verified": 8,
+    "objective_text_contract_matched": 8,
+    "exact_attachment_manifest_matches": 8,
+    "required_attachment_hashes_recovered": 7,
+    "failure_counts": {
+      "REQUIRED_ATTACHMENT_BYTES_UNAVAILABLE": 5,
+      "REQUIRED_DEPENDENCY_MISSING": 2
+    },
+    "cases": [
+      {
+        "case_id": "34bcf2d694",
+        "checkpoint_id": "723c8a15-3356-4525-bffa-0570788266de",
+        "baseline_score": 49,
+        "candidate_score": 19,
+        "verdict": "reject",
+        "hard_failures": [
+          "REQUIRED_DEPENDENCY_MISSING"
+        ]
+      },
+      {
+        "case_id": "3682a763b2",
+        "checkpoint_id": "fa6daaaa-92ae-49fc-85f8-8ebf65df673e",
+        "baseline_score": 19,
+        "candidate_score": 19,
+        "verdict": "reject",
+        "hard_failures": [
+          "REQUIRED_ATTACHMENT_BYTES_UNAVAILABLE"
+        ]
+      },
+      {
+        "case_id": "a8b9026a94",
+        "checkpoint_id": "38ee1650-33bb-4123-a777-63360d8c05d3",
+        "baseline_score": 49,
+        "candidate_score": 19,
+        "verdict": "reject",
+        "hard_failures": [
+          "REQUIRED_DEPENDENCY_MISSING"
+        ]
+      },
+      {
+        "case_id": "4904543c1b",
+        "checkpoint_id": "a2eaa5e3-a84f-436e-929b-1276d5cd89eb",
+        "baseline_score": 49,
+        "candidate_score": 19,
+        "verdict": "reject",
+        "hard_failures": [
+          "REQUIRED_ATTACHMENT_BYTES_UNAVAILABLE"
+        ]
+      },
+      {
+        "case_id": "cfacd30870",
+        "checkpoint_id": "493eb16d-c819-4730-9dff-defbace6ee76",
+        "baseline_score": 29,
+        "candidate_score": 19,
+        "verdict": "reject",
+        "hard_failures": [
+          "REQUIRED_ATTACHMENT_BYTES_UNAVAILABLE"
+        ]
+      },
+      {
+        "case_id": "66929aee60",
+        "checkpoint_id": "ac81621c-9d57-49b5-90a6-6cf92db9cc91",
+        "baseline_score": 29,
+        "candidate_score": 19,
+        "verdict": "reject",
+        "hard_failures": [
+          "REQUIRED_ATTACHMENT_BYTES_UNAVAILABLE"
+        ]
+      },
+      {
+        "case_id": "87405f4687",
+        "checkpoint_id": "5eed28f2-1a8b-47d2-8689-cea19094f15c",
+        "baseline_score": 29,
+        "candidate_score": 19,
+        "verdict": "reject",
+        "hard_failures": [
+          "REQUIRED_ATTACHMENT_BYTES_UNAVAILABLE"
+        ]
+      },
+      {
+        "case_id": "968ab8a38e",
+        "checkpoint_id": "06f177df-8fd3-4b96-830e-e02f5ed30d3b",
+        "baseline_score": 29,
+        "candidate_score": 96,
+        "verdict": "promote",
+        "hard_failures": []
+      }
+    ]
+  },
+  "workspace": {
+    "baseline_recorded_score": 59,
+    "baseline_recomputed_score": 59.0,
+    "candidate_score": 59.0,
+    "candidate_verdict": "review",
+    "candidate_findings": [
+      "DURABLE_PROVENANCE_EMPTY",
+      "REQUIRED_VERIFICATION_MISSING"
+    ],
+    "copy_allowed": false,
+    "repository_drift": {
+      "drifted": true,
+      "baseline_head": "3ab7d1f65d6d85771c0f328983f91f43d0a385fb",
+      "candidate_head": "5d2a28ba02f1609a8b735cb9a90e122eed6b645e",
+      "baseline_changed_path_count": 39,
+      "candidate_changed_path_count": 70,
+      "changed_fields": [
+        "snapshot_fingerprint",
+        "head_commit",
+        "changed_path_count"
+      ]
+    }
+  },
+  "limitations": [
+    "Final gold was produced by one non-fully-blinded raw-event reviewer; there is no inter-rater agreement estimate.",
+    "An earlier candidate-contaminated draft was discarded; the final manifest records the replacement raw-only adjudication and does not claim the abandoned third local model run as evidence.",
+    "Deterministic all-of intent concepts can reject a faithful paraphrase or reward keyword-shaped text.",
+    "Assistant status evidence is kept separate from direct-user objective authority; case 968's real-click verification gap is therefore not forced into the direct-user objective text.",
+    "Five cases recover exact required attachment identities but cannot access source bytes in this replay environment; this is reported separately from manifest omission.",
+    "Two push-only cases retain a non-attachment REQUIRED_DEPENDENCY_MISSING policy failure tied to change-ownership readiness.",
+    "Relevant-file labels remain sparse; empty lists mean unlabelled rather than proof that no file is relevant.",
+    "Workspace comparison crosses repository snapshots and is not a compiler-only causal comparison."
+  ]
+}

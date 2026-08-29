@@ -1,0 +1,355 @@
+{
+  "schema_version": "context_quality_post_report.v1",
+  "status": "superseded_invalid_measurement",
+  "measurement_valid": false,
+  "superseded_at": "2026-08-24T00:00:00+05:30",
+  "superseded_by": "docs/experiments/context-quality-engine-gold-run-2026-08-24.json",
+  "invalid_reason": "Session expectations were populated from the same runtime request and attachment resolvers being graded. The recorded 75.5 score and 6/8 promotion count are retained only as historical evidence of that circular measurement.",
+  "baseline_schema_version": "context_quality_benchmark.v1",
+  "benchmark_schema_version": "context_quality_post_benchmark.v1",
+  "baseline_sha256": "53cbcea9401024b7e2f7628cbc49c44e61ee09296b3ea6850959515807d6817a",
+  "workspace_id": "1b8fcd91-c3e4-4570-9174-68c00e1dbac0",
+  "privacy": {
+    "raw_session_text_included": false,
+    "local_attachment_paths_included": false,
+    "description": "This report contains only immutable identifiers, hashes, scores, verdicts, failure codes, and repository snapshot metadata."
+  },
+  "execution": {
+    "command": ".venv/bin/python scripts/benchmark_context_quality.py --mode all --compact",
+    "read_only": true,
+    "checkpoint_selection": "frozen_exact_ids",
+    "latest_selection_forbidden": true,
+    "workspace_candidate_persisted": false
+  },
+  "sessions": {
+    "rubric_version": "background_context_rubric.v1",
+    "summary": {
+      "count": 8,
+      "baseline_mean_score": 35.25,
+      "post_mean_score": 75.5,
+      "mean_score_delta": 40.25,
+      "baseline_promoted": 0,
+      "post_promoted": 6,
+      "baseline_rejected": 8,
+      "post_rejected": 2,
+      "post_review": 0,
+      "intentional_dependency_rejects": 2
+    },
+    "cases": [
+      {
+        "case_id": "34bcf2d694",
+        "checkpoint_id": "723c8a15-3356-4525-bffa-0570788266de",
+        "checkpoint_payload_sha256": "531ee47cf65fe430da54f2e5622b4d470226a487ef4eb228f0b7ebe76a2f874a",
+        "baseline": {
+          "rendered_sha256": "0cbf4dcd800823ae1917fda5d6670582b96dfd4d11363c66ec2413257d8317cf",
+          "rendered_bytes": 8232,
+          "score": 49,
+          "verdict": "reject",
+          "hard_failures": [
+            "GENERATED_ACCEPTANCE_CRITERIA_PRESENT",
+            "INFERRED_ACTION_PRESENT",
+            "TARGET_INFERENCE_CONTAMINATED_BY_SESSION_ONLY_PUSH"
+          ]
+        },
+        "post": {
+          "semantic_schema_version": "session_context.v2",
+          "renderer_version": "session_context_background.v1",
+          "rendered_sha256": "edf5fddf08e7613537367c076dc5888c60d2a62dc8d5c8d88b1d264cade37656",
+          "rendered_bytes": 4697,
+          "score": 97,
+          "verdict": "promote",
+          "hard_failures": [],
+          "warnings": []
+        }
+      },
+      {
+        "case_id": "3682a763b2",
+        "checkpoint_id": "fa6daaaa-92ae-49fc-85f8-8ebf65df673e",
+        "checkpoint_payload_sha256": "508a8f4dc60b4b13a841ef99a3e7f083c67db93a2fa06ea3ac8613fcd334c508",
+        "baseline": {
+          "rendered_sha256": "6408a6e60a841a09fc08415abf8298f3492abf7d6948826da663927053cb17a7",
+          "rendered_bytes": 3252,
+          "score": 19,
+          "verdict": "reject",
+          "hard_failures": [
+            "GENERATED_ACCEPTANCE_CRITERIA_PRESENT",
+            "INFERRED_ACTION_PRESENT",
+            "REQUIRED_ATTACHMENT_DEPENDENCY_OMITTED"
+          ]
+        },
+        "post": {
+          "semantic_schema_version": "session_context.v2",
+          "renderer_version": "session_context_background.v1",
+          "rendered_sha256": "03cf5b6b6920b0ef7eb56e8ead9af8914c85f76572baeba85e1d6301ca0f0f49",
+          "rendered_bytes": 5104,
+          "score": 19,
+          "score_before_hard_cap": 76,
+          "verdict": "reject",
+          "hard_failures": [
+            "REQUIRED_ATTACHMENT_DEPENDENCY_OMITTED",
+            "REQUIRED_DEPENDENCY_MISSING"
+          ],
+          "warnings": [],
+          "intentional_fail_closed_result": true
+        }
+      },
+      {
+        "case_id": "a8b9026a94",
+        "checkpoint_id": "38ee1650-33bb-4123-a777-63360d8c05d3",
+        "checkpoint_payload_sha256": "cfe06179042cc2127d4fc001c6085f2a3e1dc6fcb3ca73f41e8cd09c8f2b8c13",
+        "baseline": {
+          "rendered_sha256": "8aaac17126fb43bde72cb954e305a365709574f94c20176a4a4340d54dbb870d",
+          "rendered_bytes": 5100,
+          "score": 49,
+          "verdict": "reject",
+          "hard_failures": [
+            "GENERATED_ACCEPTANCE_CRITERIA_PRESENT",
+            "INFERRED_ACTION_PRESENT",
+            "TARGET_INFERENCE_CONTAMINATED_BY_SESSION_ONLY_PUSH"
+          ]
+        },
+        "post": {
+          "semantic_schema_version": "session_context.v2",
+          "renderer_version": "session_context_background.v1",
+          "rendered_sha256": "3cb6ec4cc4551c178e858b798aea230ce1399fb2fd7467f6e9741bd954f76a7f",
+          "rendered_bytes": 3468,
+          "score": 93,
+          "verdict": "promote",
+          "hard_failures": [],
+          "warnings": []
+        }
+      },
+      {
+        "case_id": "4904543c1b",
+        "checkpoint_id": "a2eaa5e3-a84f-436e-929b-1276d5cd89eb",
+        "checkpoint_payload_sha256": "f0c40aad05f4cd00360f323895d214164041d5e54b8012d098da1408c40274a3",
+        "baseline": {
+          "rendered_sha256": "c61956b9ccc354b47c3ac7653318bc9adb2ffcee0fdbb9390b76da8ebd374cb2",
+          "rendered_bytes": 3020,
+          "score": 49,
+          "verdict": "reject",
+          "hard_failures": [
+            "GENERATED_ACCEPTANCE_CRITERIA_PRESENT",
+            "INFERRED_ACTION_PRESENT"
+          ]
+        },
+        "post": {
+          "semantic_schema_version": "session_context.v2",
+          "renderer_version": "session_context_background.v1",
+          "rendered_sha256": "e865b2e6a901028643c7aad07001c11fc90232d1bd09e5234ee33d1241858c78",
+          "rendered_bytes": 4420,
+          "score": 93,
+          "verdict": "promote",
+          "hard_failures": [],
+          "warnings": []
+        }
+      },
+      {
+        "case_id": "cfacd30870",
+        "checkpoint_id": "493eb16d-c819-4730-9dff-defbace6ee76",
+        "checkpoint_payload_sha256": "738d3b2e0576d825424988f219a1c63be42a834d568a4b2ba88636e5a7e4c6dc",
+        "baseline": {
+          "rendered_sha256": "ef13aa1cf951977d345f1a4947d929b87ba2195696fb488081aa5a3fdd564676",
+          "rendered_bytes": 3979,
+          "score": 29,
+          "verdict": "reject",
+          "hard_failures": [
+            "GENERATED_ACCEPTANCE_CRITERIA_PRESENT",
+            "INFERRED_ACTION_PRESENT",
+            "UNRESOLVED_OR_WRONG_ACTIVE_OBJECTIVE"
+          ]
+        },
+        "post": {
+          "semantic_schema_version": "session_context.v2",
+          "renderer_version": "session_context_background.v1",
+          "rendered_sha256": "d688fe5dc314c2f5616fb02a855211683df42e2c61c87ee050723dde26118ad7",
+          "rendered_bytes": 4267,
+          "score": 97,
+          "verdict": "promote",
+          "hard_failures": [],
+          "warnings": []
+        }
+      },
+      {
+        "case_id": "66929aee60",
+        "checkpoint_id": "ac81621c-9d57-49b5-90a6-6cf92db9cc91",
+        "checkpoint_payload_sha256": "320e759ddc30ce14107551d00144e94863091f5c8ee128c1596783d29a8e02ca",
+        "baseline": {
+          "rendered_sha256": "a35b4a35022f37ebfa4282f0820bca71f5ef7231f1396d9fea376948ab39fd02",
+          "rendered_bytes": 2612,
+          "score": 29,
+          "verdict": "reject",
+          "hard_failures": [
+            "GENERATED_ACCEPTANCE_CRITERIA_PRESENT",
+            "INFERRED_ACTION_PRESENT",
+            "UNRESOLVED_OR_WRONG_ACTIVE_OBJECTIVE"
+          ]
+        },
+        "post": {
+          "semantic_schema_version": "session_context.v2",
+          "renderer_version": "session_context_background.v1",
+          "rendered_sha256": "18642f8b5c6b7c8f632a321f09431693ce7e0dc188a0ada0d08db32c2e90ed0e",
+          "rendered_bytes": 4196,
+          "score": 93,
+          "verdict": "promote",
+          "hard_failures": [],
+          "warnings": []
+        }
+      },
+      {
+        "case_id": "87405f4687",
+        "checkpoint_id": "5eed28f2-1a8b-47d2-8689-cea19094f15c",
+        "checkpoint_payload_sha256": "7130242c53f7dadd38b11cc11835c331546918d2080bb15d4550dbcc15ff474b",
+        "baseline": {
+          "rendered_sha256": "0d14e67decd996b1bd66e92bd140764fe691da185ccd00558ecdb9f602636a4a",
+          "rendered_bytes": 3605,
+          "score": 29,
+          "verdict": "reject",
+          "hard_failures": [
+            "GENERATED_ACCEPTANCE_CRITERIA_PRESENT",
+            "INFERRED_ACTION_PRESENT",
+            "UNRESOLVED_OR_WRONG_ACTIVE_OBJECTIVE"
+          ]
+        },
+        "post": {
+          "semantic_schema_version": "session_context.v2",
+          "renderer_version": "session_context_background.v1",
+          "rendered_sha256": "daec483e2ae7d2ec455596b979b506efc8fa44d94cfc49fad47635b63066514d",
+          "rendered_bytes": 3362,
+          "score": 93,
+          "verdict": "promote",
+          "hard_failures": [],
+          "warnings": []
+        }
+      },
+      {
+        "case_id": "968ab8a38e",
+        "checkpoint_id": "06f177df-8fd3-4b96-830e-e02f5ed30d3b",
+        "checkpoint_payload_sha256": "fe55d5711fd8b5c31455fcfcf93af08252e1a00904799b64bf8089ffdec752a4",
+        "baseline": {
+          "rendered_sha256": "2eb10bcb805a4c83f2ed1a1fc170256763f2fae092d20c7d8aff21f7aeebc433",
+          "rendered_bytes": 3685,
+          "score": 29,
+          "verdict": "reject",
+          "hard_failures": [
+            "GENERATED_ACCEPTANCE_CRITERIA_PRESENT",
+            "INFERRED_ACTION_PRESENT",
+            "UNRESOLVED_OR_WRONG_ACTIVE_OBJECTIVE"
+          ]
+        },
+        "post": {
+          "semantic_schema_version": "session_context.v2",
+          "renderer_version": "session_context_background.v1",
+          "rendered_sha256": "89b9a5b8dda1d41c092dcf725eeb0d8354d054a5f874354e9259da22a4e1bbd4",
+          "rendered_bytes": 5452,
+          "score": 19,
+          "score_before_hard_cap": 78,
+          "verdict": "reject",
+          "hard_failures": [
+            "REQUIRED_ATTACHMENT_DEPENDENCY_OMITTED",
+            "REQUIRED_DEPENDENCY_MISSING"
+          ],
+          "warnings": [],
+          "intentional_fail_closed_result": true
+        }
+      }
+    ]
+  },
+  "workspace": {
+    "rubric_version": "workspace_background_rubric.v1",
+    "baseline": {
+      "context_pack_id": "e3ccd7f1-6d42-42a5-b6f4-f9ad56103791",
+      "markdown_sha256": "4b1bd12ff02a86791bcc12dfeb064dc064f5fd74a2cb40d5d9e66e3b95690a73",
+      "score": 59,
+      "verdict": "review",
+      "legacy_copy_allowed": true,
+      "controller_enforced": false,
+      "controller_decision": "review",
+      "findings": [
+        "AUTO_PROMOTION_UNJUSTIFIED",
+        "DURABLE_PROVENANCE_EMPTY",
+        "REQUIRED_VERIFICATION_MISSING"
+      ],
+      "repository_snapshot": {
+        "snapshot_fingerprint": "94710a934e69a5c0c6d3c5d58bbaa93b1e5edecdbb388b11ba82250386208e68",
+        "branch": "codex/fix-continuation-handoffs",
+        "head_commit": "3ab7d1f65d6d85771c0f328983f91f43d0a385fb",
+        "dirty": true,
+        "changed_path_count": 39
+      }
+    },
+    "post": {
+      "persisted": false,
+      "markdown_sha256": "7c019d696edc7c66029f68533d0ea9d6267551e09071d11563ae6d3e2c9c6d31",
+      "markdown_chars": 26147,
+      "score": 59,
+      "verdict": "review",
+      "copy_allowed": false,
+      "controller_enforced": true,
+      "controller_decision": "review",
+      "policy_hard_failures": [],
+      "warnings": [
+        "CURRENT_VERIFICATION_INCOMPLETE",
+        "DURABLE_PROJECT_KNOWLEDGE_EMPTY",
+        "SEMANTIC_COVERAGE_BELOW_PROMOTION_TARGET"
+      ],
+      "findings": [
+        "DURABLE_PROVENANCE_EMPTY",
+        "REQUIRED_VERIFICATION_MISSING"
+      ],
+      "repository_snapshot": {
+        "snapshot_fingerprint": "0fc38f6b57bd21b11bc065cc9158a39ec3c28e8aefdb058ee7c9b177ef52b64b",
+        "branch": "codex/fix-continuation-handoffs",
+        "head_commit": "844db45d724d19267ff6fe45700be140cf46c7e6",
+        "dirty": true,
+        "changed_path_count": 41
+      }
+    },
+    "comparison": {
+      "score_delta": 0,
+      "delivery_control_change": "legacy copy_allowed=true -> controller copy_allowed=false/review",
+      "resolved_findings": [
+        "AUTO_PROMOTION_UNJUSTIFIED"
+      ],
+      "remaining_findings": [
+        "DURABLE_PROVENANCE_EMPTY",
+        "REQUIRED_VERIFICATION_MISSING"
+      ],
+      "repository_drift": {
+        "drifted": true,
+        "changed_fields": [
+          "snapshot_fingerprint",
+          "head_commit",
+          "changed_path_count"
+        ],
+        "interpretation": "Repository drift is separated from compiler quality. The Workspace score comparison is not presented as a compiler-only causal result."
+      }
+    }
+  },
+  "validation": {
+    "backend_tests": {
+      "passed": 552,
+      "failed": 0,
+      "source": "final integration validation run"
+    },
+    "final_checkpoint_controller_security_tests": {
+      "passed": 269,
+      "failed": 0,
+      "source": "post-adversarial hardening validation"
+    },
+    "frontend_tests": {
+      "passed": 472,
+      "failed": 0,
+      "production_build_passed": true
+    },
+    "benchmark": {
+      "exit_code": 0,
+      "read_only": true,
+      "checkpoint_count": 8
+    },
+    "focused_benchmark_tests": {
+      "passed": 7,
+      "failed": 0
+    }
+  }
+}

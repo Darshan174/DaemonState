@@ -14,8 +14,10 @@ import {
 } from "lucide-react";
 
 import {
+  useActivateContextCandidate,
   useCaptureCheckpoint,
   useCheckpointHandoff,
+  useContextQualityCandidates,
   useLatestCheckpoint,
   useSessionLibrary,
 } from "../api/hooks";
@@ -31,12 +33,13 @@ import {
 } from "../context-map/api";
 import { cleanDisplayText, formatTimeAgo } from "../context-map/digest";
 import {
+  contextQualityActivationCopyReady,
   copyReadySessionContextContent,
   requireMatchingContentSha256,
   sessionContextAdvisories,
+  sessionContextArtifactShapeValid,
+  sessionContextOperationState,
   sessionContextQualityMessage,
-  sessionContextReadinessLabel,
-  sessionContextSemanticCopyReady,
 } from "./sessionContinuity";
 import {
   MINIMUM_SESSION_CONTEXT_COMPACTIONS,
@@ -192,6 +195,13 @@ export default function ExecutePage() {
   const workspaceCompilePromiseRef = useRef(null);
   const closePreview = useCallback(() => setPreviewOpen(false), []);
   const [workspaceCopyState, setWorkspaceCopyState] = useState("idle");
+  const [workspaceReview, setWorkspaceReview] = useState(null);
+  const workspaceCandidatesQuery = useContextQualityCandidates(
+    workspace.activeWorkspaceId,
+    "workspace",
+    { enabled: Boolean(workspaceReview) },
+  );
+  const activateWorkspaceCandidate = useActivateContextCandidate();
 
   useEffect(() => {
     if (storedExecuteWorkspaceRef.current === workspace.activeWorkspaceId) {
@@ -245,6 +255,7 @@ export default function ExecutePage() {
     setPreparedContextAnchorKey(null);
     setPreviewError(null);
     setWorkspaceCopyState("idle");
+    setWorkspaceReview(null);
   }, [workspaceContextKey]);
 
   const firstLoad = (
@@ -264,6 +275,23 @@ export default function ExecutePage() {
     )
   );
   const workspacePreviewRetryable = workspaceContextErrorIsRetryable(previewError);
+  const workspaceReviewCandidate = reviewableContextQualityCandidate(
+    workspaceCandidatesQuery.data,
+    workspaceReview,
+  );
+
+  const recordWorkspaceFailure = useCallback((error, fallback) => {
+    const review = contextQualityReviewFromError(error, "workspace");
+    if (review) {
+      setWorkspaceReview(review);
+      setPreviewError(
+        "Workspace Context requires explicit review before it can be activated or copied.",
+      );
+      return;
+    }
+    setWorkspaceReview(null);
+    setPreviewError(error?.message || fallback);
+  }, []);
 
   const compileWorkspaceContext = useCallback(async ({ force = false } = {}) => {
     if (!workspace.activeWorkspaceId) {
@@ -329,7 +357,7 @@ export default function ExecutePage() {
     try {
       await compileWorkspaceContext();
     } catch (error) {
-      setPreviewError(error?.message || "Could not generate Workspace Context.");
+      recordWorkspaceFailure(error, "Could not generate Workspace Context.");
     }
   };
 
@@ -340,7 +368,7 @@ export default function ExecutePage() {
     try {
       await compileWorkspaceContext({ force: true });
     } catch (error) {
-      setPreviewError(error?.message || "Could not generate Workspace Context.");
+      recordWorkspaceFailure(error, "Could not generate Workspace Context.");
     }
   };
 
@@ -356,8 +384,34 @@ export default function ExecutePage() {
       return true;
     } catch (error) {
       setWorkspaceCopyState("error");
-      setPreviewError(error?.message || "Workspace Context could not be copied.");
+      recordWorkspaceFailure(error, "Workspace Context could not be copied.");
       return false;
+    }
+  };
+
+  const activateWorkspaceReview = async ({ candidate, reason }) => {
+    if (!workspaceReviewCandidate || candidate !== workspaceReviewCandidate) return;
+    setPreviewError(null);
+    try {
+      await activateWorkspaceCandidate.mutateAsync({
+        workspaceId: workspace.activeWorkspaceId,
+        candidateId: candidate.candidate_id,
+        evaluationId: candidate.evaluation_id,
+        expectedGeneration: candidate.pointer_generation,
+        reason,
+      });
+      // Activation changes only the pointer. It is never clipboard material.
+      // Compile again and run the normal validation path before copy is enabled.
+      setWorkspaceReview(null);
+      setPreparedContext(null);
+      setPreparedContextAnchorKey(null);
+      await compileWorkspaceContext({ force: true });
+      setWorkspaceCopyState("idle");
+    } catch (error) {
+      recordWorkspaceFailure(
+        error,
+        "Workspace Context could not be activated and refreshed.",
+      );
     }
   };
 
@@ -377,7 +431,7 @@ export default function ExecutePage() {
     setPreviewError(null);
     compileWorkspaceContext().catch((error) => {
       if (active && activeWorkspaceContextKeyRef.current === workspaceContextKey) {
-        setPreviewError(error?.message || "Could not generate Workspace Context.");
+        recordWorkspaceFailure(error, "Could not generate Workspace Context.");
       }
     });
     return () => {
@@ -390,6 +444,7 @@ export default function ExecutePage() {
     workspace.activeWorkspaceId,
     workspaceContextKey,
     workspaceSelectionLoading,
+    recordWorkspaceFailure,
   ]);
 
   if (!workspace.workspacesQuery.isLoading && !workspace.activeWorkspaceId) {
@@ -444,6 +499,11 @@ export default function ExecutePage() {
           workspaceError={previewError}
           workspaceRetryable={workspacePreviewRetryable}
           workspaceDialogOpen={previewOpen}
+          workspaceReview={workspaceReview}
+          workspaceReviewCandidate={workspaceReviewCandidate}
+          workspaceCandidatesQuery={workspaceCandidatesQuery}
+          workspaceReviewActivating={activateWorkspaceCandidate.isPending}
+          onActivateWorkspaceReview={activateWorkspaceReview}
           onPreviewWorkspace={generatePreview}
           onCopyWorkspace={copyWorkspaceContext}
           workspaceId={workspace.activeWorkspaceId}
@@ -463,6 +523,11 @@ export default function ExecutePage() {
           onRetry={retryPreview}
           onCopy={copyWorkspaceContext}
           copyState={workspaceCopyState}
+          review={workspaceReview}
+          reviewCandidate={workspaceReviewCandidate}
+          candidatesQuery={workspaceCandidatesQuery}
+          reviewActivating={activateWorkspaceCandidate.isPending}
+          onActivateReview={activateWorkspaceReview}
           onClose={closePreview}
           returnFocusRef={previewReturnFocusRef}
         />,
@@ -695,6 +760,11 @@ function ContextProductsPanel({
   workspaceError,
   workspaceRetryable,
   workspaceDialogOpen,
+  workspaceReview,
+  workspaceReviewCandidate,
+  workspaceCandidatesQuery,
+  workspaceReviewActivating,
+  onActivateWorkspaceReview,
   onPreviewWorkspace,
   onCopyWorkspace,
   workspaceId,
@@ -798,6 +868,17 @@ function ContextProductsPanel({
           unavailableMessage="Select a workspace to compile its repository and durable context."
           className="mt-5 min-h-[360px]"
         />
+        {workspaceReview ? (
+          <ContextQualityReviewPanel
+            contextName="Workspace Context"
+            review={workspaceReview}
+            candidate={workspaceReviewCandidate}
+            candidatesQuery={workspaceCandidatesQuery}
+            activating={workspaceReviewActivating}
+            onActivate={onActivateWorkspaceReview}
+            className="mt-4"
+          />
+        ) : null}
         {workspaceError ? (
           <p
             role={workspaceDialogOpen ? undefined : "alert"}
@@ -853,6 +934,7 @@ function SelectedSessionContextCard({
   const [error, setError] = useState(null);
   const [retryable, setRetryable] = useState(true);
   const [copyState, setCopyState] = useState("idle");
+  const [review, setReview] = useState(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const previewReturnFocusRef = useRef(null);
   const loadPromiseRef = useRef(null);
@@ -870,6 +952,16 @@ function SelectedSessionContextCard({
   ]);
   const activeIdentityKeyRef = useRef(identityKey);
   const autoPreviewKeyRef = useRef(null);
+  const candidatesQuery = useContextQualityCandidates(
+    workspaceId,
+    "session",
+    { enabled: Boolean(review) },
+  );
+  const activateCandidate = useActivateContextCandidate();
+  const reviewCandidate = reviewableContextQualityCandidate(
+    candidatesQuery.data,
+    review,
+  );
   activeIdentityKeyRef.current = identityKey;
   const closePreview = useCallback(() => setPreviewOpen(false), []);
 
@@ -879,6 +971,7 @@ function SelectedSessionContextCard({
     setError(null);
     setRetryable(true);
     setCopyState("idle");
+    setReview(null);
     setPreviewOpen(false);
     loadPromiseRef.current = null;
     autoPreviewKeyRef.current = null;
@@ -895,10 +988,20 @@ function SelectedSessionContextCard({
   }, [verifiedRepoPathsKey]);
 
   const recordFailure = useCallback((reason, fallback) => {
+    const qualityReview = contextQualityReviewFromError(reason, "session");
+    if (qualityReview) {
+      setReview(qualityReview);
+      setError(
+        `${title} Session Context requires explicit review before it can be activated or copied.`,
+      );
+      setRetryable(false);
+      return;
+    }
+    setReview(null);
     const failure = sessionContextFailure(reason, fallback);
     setError(failure.message);
     setRetryable(failure.retryable);
-  }, []);
+  }, [title]);
 
   const loadContext = useCallback(async ({
     forceCapture = false,
@@ -1140,6 +1243,35 @@ function SelectedSessionContextCard({
     }
   };
 
+  const activateReview = async ({ candidate, reason }) => {
+    if (!reviewCandidate || candidate !== reviewCandidate) return;
+    setError(null);
+    try {
+      await activateCandidate.mutateAsync({
+        workspaceId,
+        candidateId: candidate.candidate_id,
+        evaluationId: candidate.evaluation_id,
+        expectedGeneration: candidate.pointer_generation,
+        reason,
+      });
+      // The activation response is pointer metadata, never Session Context.
+      // Capture and validate a fresh public artifact before copy is enabled.
+      setReview(null);
+      setContext(null);
+      setContextCheckpoint(null);
+      const refreshed = await loadContext({ forceCapture: true });
+      if (!refreshed?.handoff) {
+        throw new Error("The activated Session Context could not be refreshed.");
+      }
+      setCopyState("idle");
+    } catch (reason) {
+      recordFailure(
+        reason,
+        `${title} Session Context could not be activated and refreshed.`,
+      );
+    }
+  };
+
   const preparing = Boolean(
     contextEligible
     && (!repositorySelectionRequired || selectedRepoPath)
@@ -1155,10 +1287,15 @@ function SelectedSessionContextCard({
       )
     )
   );
-  const copyReady = contextEligible && (
-    !context || sessionContextSemanticCopyReady(context)
+  const contextOperation = context
+    ? sessionContextOperationState(context)
+    : null;
+  const copyReady = Boolean(
+    contextEligible
+    && context
+    && contextOperation?.clipboardCopyAllowed,
   );
-  const readinessLabel = context ? sessionContextReadinessLabel(context) : undefined;
+  const readinessLabel = contextOperation?.label;
   const contextAdvisories = context ? sessionContextAdvisories(context) : [];
   const columnClass = total === 1
     ? "xl:col-start-2"
@@ -1262,10 +1399,23 @@ function SelectedSessionContextCard({
           compact
           allowAncestorWatermark
           identityLabel={`${sessionProviderLabel(provider)} · ${title}`}
-          copyReady={context ? sessionContextSemanticCopyReady(context) : undefined}
+          copyReady={contextOperation?.clipboardCopyAllowed}
           statusLabel={readinessLabel}
+          statusTone={contextOperation?.tone}
           className="mt-5 min-h-[210px]"
         />
+
+        {review ? (
+          <ContextQualityReviewPanel
+            contextName={contextName}
+            review={review}
+            candidate={reviewCandidate}
+            candidatesQuery={candidatesQuery}
+            activating={activateCandidate.isPending}
+            onActivate={activateReview}
+            className="relative z-20 mt-4"
+          />
+        ) : null}
 
         <div className="relative z-20 mt-auto grid gap-3 pt-4 sm:grid-cols-2">
           <button
@@ -1296,6 +1446,7 @@ function SelectedSessionContextCard({
             contextName={contextName}
             copyState={copyState}
             onClick={copyContext}
+            operationState={contextOperation}
             disabled={
               !contextEligible
               || (repositorySelectionRequired && !selectedRepoPath)
@@ -1313,7 +1464,7 @@ function SelectedSessionContextCard({
           >
             {error}
           </p>
-        ) : context && !copyReady ? (
+        ) : contextOperation?.tone === "attention" ? (
           <p className="relative z-20 mt-3 text-xs leading-5 text-attention">
             {sessionContextQualityMessage(context, contextName)}
           </p>
@@ -1338,6 +1489,11 @@ function SelectedSessionContextCard({
           contextName={contextName}
           previewTitle={`${title} Session Context Preview`}
           eyebrow={`Selected task child · ${sessionProviderLabel(provider)}`}
+          review={review}
+          reviewCandidate={reviewCandidate}
+          candidatesQuery={candidatesQuery}
+          reviewActivating={activateCandidate.isPending}
+          onActivateReview={activateReview}
         />,
         document.body,
       ) : null}
@@ -1377,9 +1533,13 @@ function PromptPreview({
   identityLabel = "",
   copyReady,
   statusLabel,
+  statusTone,
   className = "",
 }) {
   const blocked = Boolean(content && copyReady === false);
+  const resolvedStatusTone = statusTone || (
+    blocked ? "attention" : content ? "success" : "neutral"
+  );
   return (
     <section
       aria-label={label}
@@ -1396,12 +1556,16 @@ function PromptPreview({
           </span>
         </div>
         <span className={`inline-flex items-center gap-1.5 text-xs font-semibold ${
-          blocked ? "text-amber-300" : "text-white/60"
+          resolvedStatusTone === "attention"
+            ? "text-amber-300"
+            : resolvedStatusTone === "success"
+              ? "text-[#d9ff68]"
+              : "text-white/60"
         }`}>
           <span className={`h-1.5 w-1.5 rounded-full ${
-            blocked
+            resolvedStatusTone === "attention"
               ? "bg-amber-400"
-              : content
+              : resolvedStatusTone === "success"
                 ? "bg-[#d9ff68]"
                 : loading
                   ? "animate-pulse bg-white/60"
@@ -1466,31 +1630,90 @@ function copyActionLabel(state, contextName) {
 }
 
 
+function contextCopyPresentation(copyState, contextName, operationState) {
+  const artifactLabel = contextName === "Workspace Context" ? "workspace" : "session";
+  if (operationState && !operationState.clipboardCopyAllowed) {
+    const blockedPresentation = {
+      evidence_pending: {
+        ariaLabel: `Required evidence pending for ${contextName}`,
+        visibleLabel: "Evidence pending",
+      },
+      ready_to_send: {
+        ariaLabel: `${contextName} is ready to send through verified delivery`,
+        visibleLabel: "Ready to send",
+      },
+      delivered: {
+        ariaLabel: `${contextName} delivery acknowledged`,
+        visibleLabel: "Delivered",
+      },
+      degraded: {
+        ariaLabel: `Degraded text only for ${contextName}`,
+        visibleLabel: "Degraded text only",
+      },
+      evidence_unavailable: {
+        ariaLabel: `Required evidence unavailable for ${contextName}`,
+        visibleLabel: "Evidence unavailable",
+      },
+      review_required: {
+        ariaLabel: `${contextName} requires review before copy`,
+        visibleLabel: "Review required",
+      },
+      unavailable: {
+        ariaLabel: `${contextName} background unavailable`,
+        visibleLabel: "Unavailable",
+      },
+      background_available: {
+        ariaLabel: `${contextName} is preview only`,
+        visibleLabel: "Background only",
+      },
+    }[operationState.status];
+    return blockedPresentation || {
+      ariaLabel: `${contextName} cannot be copied`,
+      visibleLabel: "Copy unavailable",
+    };
+  }
+  return {
+    ariaLabel: copyActionLabel(copyState, contextName),
+    visibleLabel: copyState === "copying"
+      ? "Copying…"
+      : copyState === "copied"
+        ? "Copied"
+        : copyState === "error"
+          ? "Try copy again"
+          : operationState
+            ? "Copy background"
+            : `Copy ${artifactLabel}`,
+  };
+}
+
+
 function ContextCopyButton({
   contextName,
   copyState,
   onClick,
   disabled,
+  operationState,
 }) {
-  const artifactLabel = contextName === "Workspace Context" ? "workspace" : "session";
-  const visibleLabel = copyState === "copying"
-    ? "Copying…"
-    : copyState === "copied"
-      ? "Copied"
-      : copyState === "error"
-        ? "Try copy again"
-        : `Copy ${artifactLabel}`;
+  const presentation = contextCopyPresentation(
+    copyState,
+    contextName,
+    operationState,
+  );
+  const operationBlocked = Boolean(
+    operationState && !operationState.clipboardCopyAllowed,
+  );
+  const operationAttention = operationState?.tone === "attention";
 
   return (
     <button
       type="button"
-      aria-label={copyActionLabel(copyState, contextName)}
+      aria-label={presentation.ariaLabel}
       onClick={onClick}
-      disabled={disabled || copyState === "copying"}
-      className="btn-primary min-h-11 px-4 text-xs"
+      disabled={disabled || operationBlocked || copyState === "copying"}
+      className={`${operationBlocked ? "btn-secondary" : "btn-primary"} ${operationAttention ? "text-attention" : ""} min-h-11 px-4 text-xs`}
     >
       <Clipboard className="h-3.5 w-3.5" aria-hidden="true" />
-      {visibleLabel}
+      {presentation.visibleLabel}
       <span className="sr-only" aria-live="polite">
         {copyState === "copied"
           ? `${contextName} copied`
@@ -1503,6 +1726,158 @@ function ContextCopyButton({
 }
 
 
+function ContextQualityReviewPanel({
+  contextName,
+  review,
+  candidate,
+  candidatesQuery,
+  activating = false,
+  onActivate,
+  className = "",
+}) {
+  const [reason, setReason] = useState("");
+  useEffect(() => setReason(""), [review?.candidateId]);
+
+  const loading = Boolean(
+    candidatesQuery?.isLoading || candidatesQuery?.isFetching,
+  );
+  const warnings = Array.isArray(candidate?.warnings) ? candidate.warnings : [];
+  const diff = candidate?.diff && typeof candidate.diff === "object"
+    ? candidate.diff
+    : {};
+  const details = Array.isArray(diff.details) ? diff.details : [];
+  const diffCounts = [
+    ["added", "added"],
+    ["modified", "modified"],
+    ["weakened", "weakened"],
+    ["not_observed", "not observed"],
+    ["exclusion_changed", "exclusion changed"],
+  ].map(([key, label]) => ({
+    key,
+    label,
+    count: Array.isArray(diff[key]) ? diff[key].length : 0,
+  })).filter((item) => item.count > 0);
+  const reviewReason = reason.trim();
+  const canActivate = Boolean(
+    candidate
+    && reviewReason.length >= 3
+    && !activating,
+  );
+
+  return (
+    <section
+      role="region"
+      aria-label={`${contextName} review required`}
+      className={`rounded-xl border border-attention/40 bg-attention/10 p-4 ${className}`}
+    >
+      <div className="flex items-start gap-3">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-attention" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <h3 className="text-xs font-black uppercase tracking-[0.1em] text-ink">
+            Review required
+          </h3>
+          <p className="mt-1 text-xs leading-5 text-ink-muted">
+            This candidate is not active and cannot be copied. Review its warnings
+            and claim changes, record why it is acceptable, then activate it.
+          </p>
+        </div>
+      </div>
+
+      {loading ? (
+        <p role="status" className="mt-3 text-xs font-semibold text-ink-muted">
+          Loading the frozen candidate evaluation…
+        </p>
+      ) : candidatesQuery?.isError ? (
+        <p role="alert" className="mt-3 text-xs font-semibold text-attention">
+          The candidate evaluation could not be loaded. Activation remains disabled.
+        </p>
+      ) : !candidate ? (
+        <p role="alert" className="mt-3 text-xs font-semibold text-attention">
+          This candidate or pointer generation is no longer current. Recompile before reviewing it.
+        </p>
+      ) : (
+        <>
+          <dl className="mt-3 grid gap-2 rounded-lg border border-line/80 bg-surface/70 p-3 text-[10px] sm:grid-cols-2">
+            <div className="min-w-0">
+              <dt className="font-black uppercase tracking-[0.09em] text-ink-subtle">Candidate</dt>
+              <dd className="mt-0.5 truncate font-mono font-semibold text-ink" title={candidate.candidate_id}>
+                {candidate.candidate_id}
+              </dd>
+            </div>
+            <div>
+              <dt className="font-black uppercase tracking-[0.09em] text-ink-subtle">Pointer generation</dt>
+              <dd className="mt-0.5 font-mono font-semibold text-ink">{candidate.pointer_generation}</dd>
+            </div>
+          </dl>
+
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-[0.09em] text-ink-subtle">Warnings</p>
+              {warnings.length ? (
+                <ul className="mt-1.5 space-y-1 text-[11px] leading-4 text-ink">
+                  {warnings.slice(0, 5).map((warning) => (
+                    <li key={warning}>• {humanizeQualityCode(warning)}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-1.5 text-[11px] text-ink-muted">No warning details were returned.</p>
+              )}
+            </div>
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-[0.09em] text-ink-subtle">Claim diff</p>
+              {details.length ? (
+                <ul className="mt-1.5 space-y-1 text-[11px] leading-4 text-ink">
+                  {details.slice(0, 5).map((detail, index) => (
+                    <li key={`${detail.claim_id || "claim"}-${index}`} className="break-words">
+                      • {rawText(detail.claim_id) || "Claim"}: {humanizeStatus(detail.change)}
+                    </li>
+                  ))}
+                </ul>
+              ) : diffCounts.length ? (
+                <p className="mt-1.5 text-[11px] leading-4 text-ink">
+                  {diffCounts.map((item) => `${item.count} ${item.label}`).join(" · ")}
+                </p>
+              ) : (
+                <p className="mt-1.5 text-[11px] text-ink-muted">No claim changes were reported.</p>
+              )}
+            </div>
+          </div>
+
+          <label className="mt-3 block">
+            <span className="text-[10px] font-black uppercase tracking-[0.09em] text-ink-subtle">
+              Review reason
+            </span>
+            <textarea
+              aria-label={`Review reason for ${contextName}`}
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              rows={2}
+              maxLength={2000}
+              placeholder="Explain why the warnings are acceptable for this frozen candidate."
+              className="mt-1.5 w-full resize-y rounded-lg border border-line bg-surface px-3 py-2 text-xs leading-5 text-ink outline-none focus:border-[#9dbc47] focus:ring-2 focus:ring-[#9dbc47]/25"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => onActivate?.({ candidate, reason: reviewReason })}
+            disabled={!canActivate}
+            className="btn-secondary mt-3 min-h-10 px-4 text-xs"
+          >
+            {activating
+              ? <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              : null}
+            {activating ? "Activating and refreshing…" : "Activate reviewed candidate"}
+          </button>
+          <p className="mt-2 text-[10px] leading-4 text-ink-muted">
+            Copy stays disabled until a fresh compile returns this candidate as active and passes the normal integrity checks.
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
+
 function ContextPreviewDialog({
   result,
   loading,
@@ -1511,6 +1886,11 @@ function ContextPreviewDialog({
   onRetry,
   onCopy,
   copyState,
+  review,
+  reviewCandidate,
+  candidatesQuery,
+  reviewActivating,
+  onActivateReview,
   onClose,
   returnFocusRef,
 }) {
@@ -1624,6 +2004,17 @@ function ContextPreviewDialog({
                 Try again
               </button>
             ) : null}
+            {review ? (
+              <ContextQualityReviewPanel
+                contextName="Workspace Context"
+                review={review}
+                candidate={reviewCandidate}
+                candidatesQuery={candidatesQuery}
+                activating={reviewActivating}
+                onActivate={onActivateReview}
+                className="mx-auto mt-6 max-w-2xl text-left"
+              />
+            ) : null}
           </div>
         ) : result ? (
           <>
@@ -1722,10 +2113,21 @@ function SessionContextPreviewDialog({
   contextName = "Session Context",
   previewTitle = "Session Context Preview",
   eyebrow = "Task child · same harness",
+  review,
+  reviewCandidate,
+  candidatesQuery,
+  reviewActivating,
+  onActivateReview,
 }) {
   const closeRef = useRef(null);
   const dialogRef = useRef(null);
-  const copyReady = sessionContextSemanticCopyReady(result);
+  const operationState = sessionContextOperationState(result);
+  const copyReady = operationState.clipboardCopyAllowed;
+  const copyPresentation = contextCopyPresentation(
+    copyState,
+    contextName,
+    operationState,
+  );
   const advisories = sessionContextAdvisories(result);
 
   useEffect(() => {
@@ -1777,7 +2179,7 @@ function SessionContextPreviewDialog({
               {previewTitle}
             </h2>
             <p className="mt-1 text-xs leading-5 text-ink-muted">
-              The latest individual session's child working memory. Its Workspace Context parent is a separate artifact; failed attempts and transient blockers stay here.
+              A previewable background artifact for this individual session. Its Workspace Context parent is separate; receiver delivery and copy readiness are reported independently.
             </p>
           </div>
           <button
@@ -1810,6 +2212,17 @@ function SessionContextPreviewDialog({
                 Refresh selected session tip
               </button>
             ) : null}
+            {review ? (
+              <ContextQualityReviewPanel
+                contextName={contextName}
+                review={review}
+                candidate={reviewCandidate}
+                candidatesQuery={candidatesQuery}
+                activating={reviewActivating}
+                onActivate={onActivateReview}
+                className="mx-auto mt-6 max-w-2xl text-left"
+              />
+            ) : null}
           </div>
         ) : result ? (
           <>
@@ -1827,7 +2240,7 @@ function SessionContextPreviewDialog({
                 ).toLocaleString()} tokens`}
               />
             </div>
-            {!copyReady ? (
+            {operationState.tone === "attention" ? (
               <div role="status" className="border-b border-attention/30 bg-attention/10 px-5 py-3 text-xs font-medium leading-5 text-ink sm:px-6">
                 {sessionContextQualityMessage(result, contextName)}
               </div>
@@ -1838,15 +2251,33 @@ function SessionContextPreviewDialog({
             ) : null}
             <div className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
               <div className="flex items-center justify-between gap-3">
-                <p className="text-xs font-semibold text-ink">{contextName}</p>
+                <div>
+                  <p className="text-xs font-semibold text-ink">{contextName}</p>
+                  <p className={`mt-1 text-[10px] font-semibold ${
+                    operationState.tone === "attention"
+                      ? "text-attention"
+                      : operationState.tone === "success"
+                        ? "text-[#668720] dark:text-[#d9ff68]"
+                        : "text-ink-muted"
+                  }`}>
+                    {operationState.label}
+                  </p>
+                </div>
                 <button
                   type="button"
+                  aria-label={copyPresentation.ariaLabel}
                   onClick={onCopy}
                   disabled={!copyReady || copyState === "copying"}
-                  className="inline-flex min-h-9 items-center gap-2 rounded-lg px-3 text-[10px] font-semibold text-ink-muted hover:bg-surface-muted hover:text-ink"
+                  className={`inline-flex min-h-9 items-center gap-2 rounded-lg px-3 text-[10px] font-semibold ${
+                    copyReady
+                      ? "text-ink-muted hover:bg-surface-muted hover:text-ink"
+                      : operationState.tone === "attention"
+                        ? "bg-attention/10 text-attention"
+                        : "bg-surface-muted text-ink-muted"
+                  }`}
                 >
                   <Clipboard className="h-3.5 w-3.5" aria-hidden="true" />
-                  {copyActionLabel(copyState, contextName)}
+                  {copyPresentation.visibleLabel}
                 </button>
               </div>
               <pre
@@ -2766,6 +3197,101 @@ function humanizeStatus(value) {
 }
 
 
+function humanizeQualityCode(value) {
+  return humanizeStatus(rawText(value).toLowerCase());
+}
+
+
+function contextQualityReviewMetadata(control, expectedArtifactSha256, contextKind) {
+  if (!control || typeof control !== "object" || Array.isArray(control)) return null;
+  const candidateId = rawText(control.candidate_id);
+  const activeCandidateId = rawText(control.active_candidate_id);
+  const observationSha256 = rawText(control.observation_sha256);
+  const artifactSha256 = rawText(control.artifact_sha256);
+  const semanticSha256 = rawText(control.semantic_sha256);
+  const evaluationId = rawText(control.evaluation_id);
+  const policyVersion = rawText(control.policy_version);
+  if (
+    control.schema_version !== "context_quality_activation.v1"
+    || control.status !== "review_required"
+    || control.copy_allowed !== false
+    || control.decision !== "review"
+    || !candidateId
+    || (activeCandidateId && activeCandidateId === candidateId)
+    || !observationSha256
+    || !artifactSha256
+    || artifactSha256 !== rawText(expectedArtifactSha256)
+    || !semanticSha256
+    || !evaluationId
+    || !policyVersion
+    || !Number.isInteger(control.pointer_generation)
+    || control.pointer_generation < 0
+    || !["session", "workspace"].includes(contextKind)
+  ) {
+    return null;
+  }
+  return {
+    contextKind,
+    candidateId,
+    activeCandidateId: activeCandidateId || null,
+    observationSha256,
+    artifactSha256,
+    semanticSha256,
+    evaluationId,
+    pointerGeneration: control.pointer_generation,
+    policyVersion,
+  };
+}
+
+
+function contextQualityReviewRequiredError(review) {
+  const error = new Error(
+    `${review.contextKind === "workspace" ? "Workspace" : "Session"} Context requires explicit review before activation.`,
+  );
+  error.code = "context_quality_review_required";
+  error.contextQualityReview = review;
+  error.retryable = false;
+  return error;
+}
+
+
+function contextQualityReviewFromError(error, expectedKind) {
+  if (
+    rawText(error?.code) !== "context_quality_review_required"
+    || error?.contextQualityReview?.contextKind !== expectedKind
+  ) return null;
+  return error.contextQualityReview;
+}
+
+
+function reviewableContextQualityCandidate(payload, review) {
+  if (!review || !Array.isArray(payload?.candidates)) return null;
+  const candidate = payload.candidates.find(
+    (item) => rawText(item?.candidate_id) === review.candidateId,
+  );
+  if (
+    !candidate
+    || candidate.context_kind !== review.contextKind
+    || candidate.decision !== "review"
+    || candidate.active !== false
+    || candidate.copy_allowed !== false
+    || candidate.permissions_current !== true
+    || rawText(candidate.artifact_sha256) !== review.artifactSha256
+    || rawText(candidate.observation_sha256) !== review.observationSha256
+    || rawText(candidate.semantic_sha256) !== review.semanticSha256
+    || rawText(candidate.evaluation_id) !== review.evaluationId
+    || candidate.pointer_generation !== review.pointerGeneration
+    || !Array.isArray(candidate.hard_failures)
+    || candidate.hard_failures.length > 0
+    || !Array.isArray(candidate.warnings)
+    || !candidate.diff
+    || typeof candidate.diff !== "object"
+    || Array.isArray(candidate.diff)
+  ) return null;
+  return candidate;
+}
+
+
 function sessionProviderLabel(value) {
   const provider = normalizeProvider(value);
   if (provider === "codex") return "Codex";
@@ -2782,6 +3308,7 @@ function workspaceContextErrorIsRetryable(error) {
     "compiled context belongs to a different workspace",
     "compiled context belongs to a different repository",
     "compiler returned an incomplete workspace context",
+    "requires explicit review",
   ].some((terminalMessage) => message.includes(terminalMessage));
 }
 
@@ -2795,6 +3322,10 @@ async function workspaceContextContent(result) {
     || !workspaceContext.content.trim()
     || typeof workspaceContext.sha256 !== "string"
     || !workspaceContext.sha256.trim()
+    || !contextQualityActivationCopyReady(
+      workspaceContext.quality_control,
+      workspaceContext.sha256,
+    )
   ) {
     throw new Error("The compiler returned an incomplete Workspace Context.");
   }
@@ -2833,18 +3364,7 @@ async function workspaceContextContent(result) {
 
 
 function validateSessionContext(result, expected = {}) {
-  if (
-    result?.schema_version !== "session_handoff.v1"
-    || result.scope !== "session"
-    || typeof result.content !== "string"
-    || !result.content.trim()
-    || typeof result.sha256 !== "string"
-    || !result.sha256.trim()
-    || !result.checkpoint_id
-    || typeof result.quality_report !== "object"
-    || result.quality_report === null
-    || typeof result.quality_report.copy_ready !== "boolean"
-  ) {
+  if (!sessionContextArtifactShapeValid(result)) {
     throw new Error("The checkpoint service returned an incomplete Session Context.");
   }
   if (
@@ -2870,6 +3390,19 @@ function validateSessionContext(result, expected = {}) {
     && result.boundary?.sequence_number !== expected.boundarySequence
   ) {
     throw new Error("The Session Context belongs to a different session boundary.");
+  }
+  const review = contextQualityReviewMetadata(
+    result.quality_control,
+    result.sha256,
+    "session",
+  );
+  if (review) throw contextQualityReviewRequiredError(review);
+  if (
+    result.schema_version === "session_handoff.v1"
+    && result.quality_control
+    && !contextQualityActivationCopyReady(result.quality_control, result.sha256)
+  ) {
+    throw new Error("The checkpoint service returned an incomplete Session Context.");
   }
   return result;
 }
@@ -3124,6 +3657,18 @@ function validateWorkspaceContext(result, expectedIdentity = {}) {
   ) {
     throw new Error("The compiled context belongs to a different repository.");
   }
+  const review = contextQualityReviewMetadata(
+    result.quality_control,
+    manifest.rendering.markdown_sha256,
+    "workspace",
+  );
+  if (review) throw contextQualityReviewRequiredError(review);
+  if (!contextQualityActivationCopyReady(
+    result.quality_control,
+    manifest.rendering.markdown_sha256,
+  )) {
+    throw new Error("The compiler returned an incomplete Workspace Context.");
+  }
   return {
     ...result,
     workspace_context: {
@@ -3135,6 +3680,7 @@ function validateWorkspaceContext(result, expectedIdentity = {}) {
       estimated_tokens: Number(manifest.rendering.estimated_tokens),
       repository: manifest.repo_state,
       quality_report: foundation.quality_report,
+      quality_control: result.quality_control,
       foundation,
     },
   };

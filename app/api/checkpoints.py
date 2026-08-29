@@ -18,7 +18,6 @@ from app.services.checkpoint_verifier import compare_checkpoint_repository, veri
 from app.services.checkpoints import (
     MAX_CONTINUATION_LEAD_CHARS,
     SessionContextMaterializationRequiredError,
-    build_session_handoff_artifact,
     capture_checkpoint,
     checkpoint_to_dict,
     checkpoints_to_dicts,
@@ -31,6 +30,17 @@ from app.services.checkpoints import (
     resolve_session_handoff_supporting_context,
     validate_continuation_lead,
 )
+from app.schemas.context_quality import ContextClaimEnvelope, ContextKind, canonical_sha256
+from app.services.context_quality import (
+    ContextActivationConflict,
+    ContextEvidenceStale,
+    access_scope_sha256,
+    apply_quality_control,
+    collect_source_document_ids,
+    context_scope_key_sha256,
+    delivery_profile_sha256,
+    reconcile_context_candidate,
+)
 from app.services.harness_launcher import HarnessLaunchError, launch_harness_session
 from app.services.project_scope import normalize_local_path, workspace_references
 from app.services.session_library import latest_scoped_root_session_tip
@@ -39,10 +49,80 @@ from app.services.session_context_policy import (
     require_session_context_compactions,
     session_context_eligibility,
 )
+from app.services.session_context import (
+    SESSION_BACKGROUND_SCHEMA_VERSION,
+    SESSION_CONTEXT_COMPILER_VERSION,
+    SESSION_CONTEXT_RENDERER_VERSION,
+    build_session_context_artifact,
+)
 from app.services.session_scope import normalize_session_key, session_provider_values
 
 
 router = APIRouter()
+
+
+async def _session_context_evidence_source_document_ids(
+    session: AsyncSession,
+    checkpoint: WorkCheckpoint,
+    supporting_context: list[dict[str, str]],
+) -> tuple[UUID, ...]:
+    """Return every exact source revision whose data can reach public Context."""
+
+    source_ids = {
+        checkpoint.source_document_id,
+        *collect_source_document_ids(supporting_context),
+    }
+    session_event_ids: set[UUID] = set()
+    for item in checkpoint.items:
+        for evidence in item.evidence:
+            if not evidence.supports:
+                continue
+            if evidence.source_document_id is not None:
+                source_ids.add(evidence.source_document_id)
+            if evidence.session_event_id is not None:
+                session_event_ids.add(evidence.session_event_id)
+    if session_event_ids:
+        source_ids.update(await session.scalars(
+            select(SessionEvent.source_document_id).where(
+                SessionEvent.workspace_id == checkpoint.workspace_id,
+                SessionEvent.id.in_(session_event_ids),
+            )
+        ))
+    return tuple(sorted(source_ids, key=str))
+
+
+def _apply_session_background_activation_capabilities(
+    artifact: dict,
+    *,
+    candidate_copy_allowed: bool,
+) -> None:
+    """Keep preview available when candidate activation blocks delivery operations."""
+
+    if candidate_copy_allowed:
+        return
+    capabilities = artifact.get("operation_capabilities")
+    if not isinstance(capabilities, dict):
+        return
+    preview = capabilities.get("preview")
+    if isinstance(preview, dict):
+        preview.update({"allowed": True, "status": "available"})
+    clipboard = capabilities.get("clipboard_copy")
+    if isinstance(clipboard, dict):
+        clipboard["allowed"] = False
+        clipboard["status"] = "blocked"
+        issue_codes = clipboard.setdefault("blocking_issue_codes", [])
+        if "context_candidate_not_active" not in issue_codes:
+            issue_codes.append("context_candidate_not_active")
+    delivery = artifact.get("delivery")
+    if isinstance(delivery, dict):
+        delivery["preview_ready"] = True
+        delivery["clipboard_copy_ready"] = False
+    readiness = artifact.get("readiness")
+    if isinstance(readiness, dict):
+        readiness.update({
+            "status": "blocked",
+            "label": "Preview available · Context review required",
+        })
 
 
 class CheckpointCaptureRequest(BaseModel):
@@ -425,6 +505,13 @@ async def create_session_handoff(
         request_verbatim=request_verbatim,
         access_scope=access_scope,
     )
+    evidence_source_document_ids = (
+        await _session_context_evidence_source_document_ids(
+            session,
+            checkpoint,
+            supporting_context,
+        )
+    )
     attachment_descriptors = (
         await resolve_session_handoff_attachment_descriptors(
             session,
@@ -456,7 +543,7 @@ async def create_session_handoff(
         selected_repo_path=body.repo_path,
     )
     try:
-        artifact = build_session_handoff_artifact(
+        artifact = build_session_context_artifact(
             checkpoint,
             request_verbatim=request_verbatim,
             supporting_context=supporting_context,
@@ -465,7 +552,6 @@ async def create_session_handoff(
             checkpoint_data=data,
             repository_comparison=repository_comparison,
             continuation_lead=body.continuation_lead,
-            delivery_mode="direct_copy",
             target_model=body.target_model,
             token_budget=body.token_budget,
         )
@@ -476,13 +562,129 @@ async def create_session_handoff(
         ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if body.handoff_origin == "current_active":
-        await _require_current_active_session_tip(
+    repository = artifact.get("repository") or {}
+    repository_root = str(repository.get("root") or "").strip()
+    repository_snapshot_sha256 = str(
+        repository.get("status_fingerprint")
+        or repository.get("snapshot_fingerprint")
+        or ""
+    ).strip()
+    if len(repository_snapshot_sha256) != 64:
+        repository_snapshot_sha256 = None
+    claim_manifest = tuple(
+        ContextClaimEnvelope.model_validate(item)
+        for item in artifact.get("claim_manifest") or []
+    )
+    quality_evaluation = artifact.get("quality_evaluation") or {}
+    currentness = artifact.get("currentness") or {}
+    boundary = artifact.get("boundary") or {}
+    try:
+        activation = await reconcile_context_candidate(
             session,
             workspace_id=body.workspace_id,
-            checkpoint=checkpoint,
+            context_kind=ContextKind.SESSION,
+            scope_key_sha256=context_scope_key_sha256(
+                workspace_id=body.workspace_id,
+                context_kind=ContextKind.SESSION,
+                provider=checkpoint.provider,
+                session_id=checkpoint.session_id,
+            ),
+            access_scope_sha256_value=access_scope_sha256(access_scope),
+            delivery_profile_sha256_value=delivery_profile_sha256(
+                artifact_schema_version=SESSION_BACKGROUND_SCHEMA_VERSION,
+                renderer_version=SESSION_CONTEXT_RENDERER_VERSION,
+                target_model=body.target_model,
+                token_budget=body.token_budget,
+            ),
+            observation={
+                "schema_version": "session_background_observation.v1",
+                "workspace_id": str(body.workspace_id),
+                "provider": checkpoint.provider,
+                "session_id": checkpoint.session_id,
+                "checkpoint_id": str(checkpoint.id),
+                "checkpoint_payload_sha256": checkpoint.payload_sha256,
+                "boundary_event_id": str(checkpoint.boundary_event_id),
+                "boundary_sequence_number": boundary.get("sequence_number"),
+                "source_document_id": str(checkpoint.source_document_id),
+                "repository_root": repository_root or None,
+                "repository_comparison_sha256": canonical_sha256(
+                    repository_comparison or {}
+                ),
+                "repository_snapshot_sha256": repository_snapshot_sha256,
+                "required_attachment_hashes": sorted(
+                    str(item.get("sha256") or item.get("content_hash") or "")
+                    for item in artifact.get("attachment_dependencies") or []
+                    if item.get("required") is True
+                ),
+                "supporting_context_hashes": sorted(
+                    str(item.get("sha256") or "")
+                    for item in artifact.get("supporting_context") or []
+                ),
+            },
+            artifact=artifact,
+            content=str(artifact["content"]),
+            claims=claim_manifest,
+            evaluation_metadata={
+                "context_role": "background_only",
+                # Candidate activation evaluates semantic/source integrity. Receiver
+                # delivery is an operation capability and must not suppress preview.
+                "copy_ready": (
+                    ((artifact.get("readiness_dimensions") or {}).get(
+                        "semantic_readiness"
+                    ) or {}).get("copy_ready")
+                    is True
+                ),
+                "hash_valid": (
+                    hashlib.sha256(str(artifact["content"]).encode("utf-8")).hexdigest()
+                    == artifact.get("sha256")
+                ),
+                "snapshot_current": not bool(
+                    boundary.get("has_newer_events") is True
+                    or currentness.get("state") == "superseded"
+                ),
+                "permissions_current": access_scope.allows_workspace(body.workspace_id),
+                "required_dependencies_complete": (
+                    "REQUIRED_DEPENDENCY_MISSING"
+                    not in quality_evaluation.get("hard_failures", [])
+                ),
+            },
+            artifact_schema_version=SESSION_BACKGROUND_SCHEMA_VERSION,
+            compiler_version=SESSION_CONTEXT_COMPILER_VERSION,
+            renderer_version=SESSION_CONTEXT_RENDERER_VERSION,
+            policy_name="session_background",
+            checkpoint_id=checkpoint.id,
+            boundary_event_id=checkpoint.boundary_event_id,
+            repository_identity_sha256=(
+                canonical_sha256(repository_root.casefold())
+                if repository_root
+                else None
+            ),
+            repository_snapshot_sha256=repository_snapshot_sha256,
+            evidence_source_document_ids=evidence_source_document_ids,
             access_scope=access_scope,
+            actor=access_scope.principal_id,
         )
+        apply_quality_control(artifact, activation)
+        _apply_session_background_activation_capabilities(
+            artifact,
+            candidate_copy_allowed=activation.copy_allowed,
+        )
+        if body.handoff_origin == "current_active":
+            # Recheck the mutable session tip after evaluation and immediately
+            # before the active pointer transaction commits.
+            await _require_current_active_session_tip(
+                session,
+                workspace_id=body.workspace_id,
+                checkpoint=checkpoint,
+                access_scope=access_scope,
+            )
+        await session.commit()
+    except (ContextActivationConflict, ContextEvidenceStale) as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception:
+        await session.rollback()
+        raise
     return artifact
 
 

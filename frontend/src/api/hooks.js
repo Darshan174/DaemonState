@@ -2056,6 +2056,55 @@ export function useCheckpointHandoff() {
   });
 }
 
+export function useContextQualityCandidates(
+  workspaceId,
+  contextKind,
+  { enabled = true, limit = 20 } = {},
+) {
+  return useQuery({
+    queryKey: ["context-quality", "candidates", workspaceId, contextKind, limit],
+    enabled: Boolean(
+      enabled
+      && workspaceId
+      && ["session", "workspace"].includes(contextKind),
+    ),
+    retry: false,
+    staleTime: 0,
+    queryFn: () => {
+      const params = new URLSearchParams({
+        workspace_id: workspaceId,
+        context_kind: contextKind,
+        limit: String(limit),
+      });
+      return api.get(`/context-quality/candidates?${params.toString()}`);
+    },
+  });
+}
+
+export function useActivateContextCandidate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      workspaceId,
+      candidateId,
+      evaluationId,
+      expectedGeneration,
+      reason,
+    }) => api.post(
+      `/context-quality/candidates/${encodeURIComponent(candidateId)}/activate`,
+      {
+        workspace_id: workspaceId,
+        evaluation_id: evaluationId,
+        expected_generation: expectedGeneration,
+        reason,
+      },
+    ),
+    onSuccess: (_result, variables) => qc.invalidateQueries({
+      queryKey: ["context-quality", "candidates", variables.workspaceId],
+    }),
+  });
+}
+
 export function useSyncSessionLibrary() {
   const qc = useQueryClient();
   return useMutation({

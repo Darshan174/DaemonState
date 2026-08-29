@@ -15,6 +15,10 @@ from app.services.session_summary import (
     is_user_failure_feedback,
     normalize_substantive_user_request,
 )
+from app.services.objective_resolution import (
+    ObjectiveClassification,
+    classify_objective,
+)
 
 
 _CANCEL_RE = re.compile(
@@ -52,7 +56,10 @@ _CONTEXTUAL_ACTION_RE = re.compile(
     r"^\s*(?:please\s+)?try\s+(?:it|this|that)\s+again[.!?…]*\s*$|"
     r"^\s*(?:please\s+)?explain\s+why[.!?…]*\s*$|"
     r"^\s*(?:please\s+)?engineer\s+(?:it|this|that)\s+and\s+"
-    r"fix\s+(?:it|this|that)[.!?…]*\s*$",
+    r"fix\s+(?:it|this|that)[.!?…]*\s*$|"
+    r"^\s*(?:please\s+)?(?:go\s+ahead\s+(?:and\s+)?)?fix\s+"
+    r"(?:the\s+)?(?:(?:damn|fucking)\s+)?(?:issues?|problems?)"
+    r"[.!?…]*\s*$",
     re.IGNORECASE,
 )
 _TASK_RESET_RE = re.compile(
@@ -71,7 +78,24 @@ _TASK_FOLLOWUP_RE = re.compile(
     r"^\s*(?:please\s+)?(?:this|that|it|the\s+same|(?:these|those)\s+changes?|"
     r"the\s+(?:fix|result|work|task))\b|"
     r"^\s*(?:please\s+)?(?:do|apply|use|fix|change|update|remove|rename|replace|"
-    r"redo|rework|finish|complete)\s+(?:this|that|it|the\s+(?:same|fix|work|change|result|task))\b",
+    r"redo|rework|finish|complete)\s+(?:this|that|it|the\s+(?:same|fix|work|change|result|task))\b|"
+    r"^\s*(?:same|still)\s+(?:issue|problem|bug)\b|"
+    r"^\s*(?:both|all|each)\s+(?:for|in|across|on)\b|"
+    r"^\s*what\s+about\b",
+    re.IGNORECASE,
+)
+_STATUS_INQUIRY_RE = re.compile(
+    r"^\s*(?=[^?\n]{0,240}\b(?:complete|done|fixed|ready|resolved|working)\b)"
+    r"(?:so\s+)?(?:"
+    r"(?:is|are|was|were|did|does|has|have)\b|"
+    r"(?:the|this|that|it)\s+[^?\n]{1,120}\b"
+    r"(?:is|are|was|were|did|does|has|have)\b"
+    r")[^?\n]*\?(?:[^\n]*)$",
+    re.IGNORECASE,
+)
+_REFERENTIAL_FAILURE_RE = re.compile(
+    r"^\s*(?:same|still)\s+(?:issue|problem|bug)\b|"
+    r"^\s*so\s+(?:you|u)\s+can(?:not|['’]?t)\s+fix\s+(?:this|it|that)\b",
     re.IGNORECASE,
 )
 _DELIVERY_FOLLOWUP_RE = re.compile(
@@ -221,6 +245,21 @@ def request_extends_active_task(request: str, *, active_requests: Iterable[str])
     return False
 
 
+def request_requires_active_task_context(request: str) -> bool:
+    """Return whether a turn is meaningful only when bound to prior task state."""
+
+    text = str(request or "").strip()
+    if not text:
+        return False
+    return bool(
+        _TASK_FOLLOWUP_RE.search(text)
+        or _DELIVERY_FOLLOWUP_RE.search(text)
+        or _CONTEXTUAL_ACTION_RE.fullmatch(text)
+        or _STATUS_INQUIRY_RE.fullmatch(text)
+        or _REFERENTIAL_FAILURE_RE.search(text)
+    )
+
+
 def normalize_dialogue_user_request(value: str | None) -> str | None:
     """Normalize a task turn without rejecting policy vocabulary used as its subject."""
 
@@ -288,6 +327,7 @@ def resolve_conversation_state(
         event_id = _event_id(event)
         sequence = _event_sequence(event)
         active_root_id = root_fragment.event_id if root_fragment is not None else None
+        objective_classification = classify_objective(user_text)
         feedback_directive = extract_user_failure_feedback_directive(
             user_text,
             # An actionable tail supplies evidence that the prefix refers to
@@ -298,7 +338,26 @@ def resolve_conversation_state(
         )
         transition: TurnTransition
 
-        if _CANCEL_RE.fullmatch(user_text):
+        if objective_classification in {
+            ObjectiveClassification.INTERRUPTION_MARKER,
+            ObjectiveClassification.COMPLETION_MARKER,
+            ObjectiveClassification.PROVIDER_COMPACTION_WRAPPER,
+        }:
+            transition = _transition(
+                event_id,
+                sequence,
+                user_text,
+                objective_classification.value,
+                active_root_id,
+                pending,
+                None,
+                "non-objective status or transport text does not replace the active task",
+                1.0,
+                blocks_copy=root_fragment is None,
+            )
+            if root_fragment is None:
+                lifecycle = "unresolved"
+        elif _CANCEL_RE.fullmatch(user_text):
             transition = _transition(
                 event_id, sequence, user_text, "cancel", active_root_id, pending,
                 "The user cancelled the active task.", "explicit cancellation", 1.0,
@@ -480,6 +539,56 @@ def resolve_conversation_state(
             )
             lifecycle = "unresolved" if contextual_without_root else "active"
             pending = None
+        elif _STATUS_INQUIRY_RE.fullmatch(user_text):
+            has_root = root_fragment is not None
+            transition = _transition(
+                event_id,
+                sequence,
+                user_text,
+                "status_inquiry" if has_root else "unresolved_reference",
+                active_root_id,
+                pending,
+                (
+                    "User requested the status of the preserved active task; "
+                    "the task itself is unchanged."
+                    if has_root
+                    else None
+                ),
+                (
+                    "status inquiry preserves the active task"
+                    if has_root
+                    else "status inquiry has no active task to identify"
+                ),
+                0.98 if has_root else 0.0,
+                blocks_copy=not has_root,
+            )
+            lifecycle = "active" if has_root else "unresolved"
+            pending = None
+        elif _REFERENTIAL_FAILURE_RE.search(user_text):
+            has_root = root_fragment is not None
+            transition = _transition(
+                event_id,
+                sequence,
+                user_text,
+                "failure_feedback" if has_root else "unresolved_reference",
+                active_root_id,
+                pending,
+                (
+                    "User reports that the same failure remains; the preserved "
+                    "active goal is unchanged."
+                    if has_root
+                    else None
+                ),
+                (
+                    "referential failure feedback preserves the active task"
+                    if has_root
+                    else "referential failure feedback has no active task to identify"
+                ),
+                0.98 if has_root else 0.0,
+                blocks_copy=not has_root,
+            )
+            lifecycle = "direction_required" if has_root else "unresolved"
+            pending = None
         elif is_user_failure_feedback(
             user_text,
             active_task=root_fragment is not None,
@@ -533,6 +642,21 @@ def resolve_conversation_state(
                     )
                 )
                 lifecycle = "active"
+            pending = None
+        elif objective_classification is ObjectiveClassification.DEICTIC:
+            transition = _transition(
+                event_id,
+                sequence,
+                user_text,
+                "unresolved_reference",
+                active_root_id,
+                pending,
+                None,
+                "context-dependent objective has no safely bindable antecedent",
+                0.0,
+                blocks_copy=True,
+            )
+            lifecycle = "direction_required" if root_fragment is not None else "unresolved"
             pending = None
         else:
             normalized = normalize_dialogue_user_request(user_text)

@@ -2,7 +2,18 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
-from app.models import AgentRun, ContextPack, ContinuationExecution, Workspace
+from app.models import (
+    ActiveContextPointer,
+    AgentRun,
+    ContextActivationEvent,
+    ContextArtifactCandidate,
+    ContextArtifactClaim,
+    ContextCandidateEvaluation,
+    ContextObservationBundle,
+    ContextPack,
+    ContinuationExecution,
+    Workspace,
+)
 from app.models_continuation_stage import ContinuationStageRequest
 
 
@@ -143,6 +154,158 @@ async def test_permanent_delete_removes_desktop_handoff_ledger(
     assert await db_session.get(ContextPack, context_pack_id) is None
     assert await db_session.get(ContinuationExecution, execution_id) is None
     assert await db_session.get(ContinuationStageRequest, stage_request_id) is None
+
+
+async def test_permanent_delete_removes_context_quality_graph_and_preserves_other_workspace(
+    client,
+    db_session,
+) -> None:
+    deleted_response = await client.post(
+        "/api/workspaces",
+        json={"name": "Delete Context Quality"},
+    )
+    kept_response = await client.post(
+        "/api/workspaces",
+        json={"name": "Keep Context Quality"},
+    )
+    deleted_workspace_id = UUID(deleted_response.json()["id"])
+    kept_workspace_id = UUID(kept_response.json()["id"])
+
+    def context_quality_graph(workspace_id: UUID, suffix: str):
+        pack = ContextPack(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            objective="Compile durable workspace context.",
+            markdown=f"# Workspace {suffix}\n",
+            manifest="{}",
+            repo_state_json="{}",
+            idempotency_key=f"context-quality-pack-{suffix}",
+        )
+        observation = ContextObservationBundle(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            context_kind="workspace",
+            scope_key_sha256=("1" if suffix == "deleted" else "2") * 64,
+            access_scope_sha256=("3" if suffix == "deleted" else "4") * 64,
+            delivery_profile_sha256=("5" if suffix == "deleted" else "6") * 64,
+            repository_identity_sha256="7" * 64,
+            repository_snapshot_sha256="8" * 64,
+            observation_json="{}",
+            observation_sha256=("9" if suffix == "deleted" else "a") * 64,
+            idempotency_key=f"context-quality-observation-{suffix}",
+        )
+        candidate = ContextArtifactCandidate(
+            id=uuid4(),
+            observation_bundle_id=observation.id,
+            workspace_id=workspace_id,
+            context_kind="workspace",
+            scope_key_sha256=observation.scope_key_sha256,
+            access_scope_sha256=observation.access_scope_sha256,
+            delivery_profile_sha256=observation.delivery_profile_sha256,
+            context_pack_id=pack.id,
+            artifact_schema_version="workspace_context.v1",
+            generator_version="workspace_generator.v1",
+            compiler_version="workspace_compiler.v1",
+            renderer_version="workspace_renderer.v1",
+            policy_version="context_quality_policy.v1",
+            artifact_json="{}",
+            content=f"# Workspace {suffix}\n",
+            artifact_sha256=("b" if suffix == "deleted" else "c") * 64,
+            content_sha256=("d" if suffix == "deleted" else "e") * 64,
+            semantic_sha256=("f" if suffix == "deleted" else "0") * 64,
+            idempotency_key=f"context-quality-candidate-{suffix}",
+        )
+        claim = ContextArtifactClaim(
+            id=uuid4(),
+            candidate_id=candidate.id,
+            claim_key=f"workspace.product:{suffix}",
+            section="product",
+            claim_kind="product_fact",
+            statement=f"Workspace {suffix} product fact.",
+            statement_sha256="1" * 64,
+            authority="documentation",
+            truth_state="current",
+            criticality="critical",
+            selection_decision="included",
+            evidence_refs_json="[]",
+            evidence_refs_sha256="2" * 64,
+        )
+        evaluation = ContextCandidateEvaluation(
+            id=uuid4(),
+            candidate_id=candidate.id,
+            policy_name="workspace_foundation",
+            policy_version="context_quality_policy.v1",
+            decision="promote",
+            diff_json="{}",
+            hard_failures_json="[]",
+            warnings_json="[]",
+            metrics_json="{}",
+            evaluation_sha256="3" * 64,
+            idempotency_key=f"context-quality-evaluation-{suffix}",
+        )
+        pointer = ActiveContextPointer(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            context_kind="workspace",
+            scope_key_sha256=candidate.scope_key_sha256,
+            access_scope_sha256=candidate.access_scope_sha256,
+            delivery_profile_sha256=candidate.delivery_profile_sha256,
+            active_candidate_id=candidate.id,
+            active_evaluation_id=evaluation.id,
+            generation=1,
+        )
+        activation = ContextActivationEvent(
+            id=uuid4(),
+            pointer_id=pointer.id,
+            workspace_id=workspace_id,
+            context_kind="workspace",
+            action="activate",
+            to_candidate_id=candidate.id,
+            evaluation_id=evaluation.id,
+            generation=1,
+            actor="test",
+            idempotency_key=f"context-quality-activation-{suffix}",
+        )
+        return pack, observation, candidate, claim, evaluation, pointer, activation
+
+    deleted_graph = context_quality_graph(deleted_workspace_id, "deleted")
+    kept_graph = context_quality_graph(kept_workspace_id, "kept")
+    db_session.add_all([*deleted_graph, *kept_graph])
+    await db_session.commit()
+    deleted_ids = tuple(item.id for item in deleted_graph)
+    kept_ids = tuple(item.id for item in kept_graph)
+
+    archived = await client.patch(
+        f"/api/workspaces/{deleted_workspace_id}",
+        json={"status": "archived"},
+    )
+    assert archived.status_code == 200, archived.text
+    deleted = await client.delete(
+        f"/api/workspaces/{deleted_workspace_id}",
+        params={"confirm_name": "Delete Context Quality"},
+    )
+
+    assert deleted.status_code == 204, deleted.text
+    db_session.expire_all()
+    graph_models = (
+        ContextPack,
+        ContextObservationBundle,
+        ContextArtifactCandidate,
+        ContextArtifactClaim,
+        ContextCandidateEvaluation,
+        ActiveContextPointer,
+        ContextActivationEvent,
+    )
+    assert await db_session.get(Workspace, deleted_workspace_id) is None
+    assert await db_session.get(Workspace, kept_workspace_id) is not None
+    for model, deleted_id, kept_id in zip(
+        graph_models,
+        deleted_ids,
+        kept_ids,
+        strict=True,
+    ):
+        assert await db_session.get(model, deleted_id) is None
+        assert await db_session.get(model, kept_id) is not None
 
 
 async def test_delete_refuses_workspace_with_active_run(client, db_session):

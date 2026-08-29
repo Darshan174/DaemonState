@@ -34,6 +34,7 @@ from app.models import (
     Workspace,
 )
 from app.services.source_revisions import ingest_source_document_revision
+from app.services.ingest import IngestionService
 from app.services.context_compiler import ContextCompiler
 from app.services.session_events import NormalizedSessionEvent, persist_session_events
 from app.processing.source_extractors import extract_github_issue
@@ -337,6 +338,45 @@ async def test_new_source_revision_supersedes_old_projection(client, db_session)
         and card["status"] == "superseded"
         for card in digest["history_cards"]
     )
+
+
+async def test_extractor_omission_does_not_delete_prior_source_truth(client, db_session):
+    workspace = await _workspace(db_session, "Non-destructive projection")
+    first = await ingest_source_document_revision(
+        db_session,
+        workspace_id=workspace.id,
+        source_type="local",
+        external_id="durable-project-decision",
+        content="Decision: Preserve append-only project evidence.",
+        metadata_json={"workspace_id": str(workspace.id)},
+    )
+    built = await client.post(
+        "/api/graph/build", json={"workspace_id": str(workspace.id)}
+    )
+    assert built.status_code == 200
+    previous = list(await db_session.scalars(
+        select(Component).where(Component.source_document_id == first.document.id)
+    ))
+    assert previous
+
+    second = await ingest_source_document_revision(
+        db_session,
+        workspace_id=workspace.id,
+        source_type="local",
+        external_id="durable-project-decision",
+        content="The new extractor run emitted no structured facts.",
+        metadata_json={"workspace_id": str(workspace.id)},
+    )
+    service = IngestionService(db_session)
+    await service._reconcile_source_projection(second.document, [])
+
+    assert service.last_projection_report["superseded"] == 0
+    assert service.last_projection_report["not_reobserved"] == len(previous)
+    for component in previous:
+        await db_session.refresh(component)
+        assert component.status != "superseded"
+        assert component.valid_to is None
+        assert component.superseded_by_id is None
 
 
 async def test_github_sync_filters_prs_from_issues_and_persists_temporal_metadata(

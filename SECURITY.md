@@ -8,7 +8,7 @@ is in active alpha; older releases may not receive backports.
 ## Reporting a vulnerability
 
 Please use the repository's
-[private vulnerability report](https://github.com/Darshan174/DaemonState/security/advisories/new).
+[private vulnerability report](https://github.com/Darshan174/DaemonState-Private/security/advisories/new).
 If GitHub reports that private reporting is unavailable, contact the
 repository owner privately through the contact method on their GitHub profile.
 Do not include exploit details, credentials, personal data, or unredacted logs

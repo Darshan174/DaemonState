@@ -118,6 +118,11 @@ logger = logging.getLogger(__name__)
 
 CONTINUATION_RUN_SCHEMA_VERSION = "continuation.run.v1"
 CONTINUATION_STAGE_SCHEMA_VERSION = "continuation.stage.v1"
+CONTINUATION_DELIVERY_RECEIPT_SCHEMA_VERSION = "continuation.delivery_receipt.v1"
+CONTINUATION_DELIVERY_FAILURE_STATE_SCHEMA_VERSION = (
+    "continuation.delivery_failure_state.v1"
+)
+TARGET_CAPABILITY_PROFILE_SCHEMA_VERSION = "continuation.target_capabilities.v1"
 PROVIDER_PREFERENCE: tuple[ProviderName, ...] = ("codex", "claude", "opencode")
 TARGET_PROVIDERS = frozenset((*PROVIDER_PREFERENCE, "auto"))
 MAX_BLOCKER_TASK_LENGTH = 140
@@ -216,6 +221,141 @@ class DesktopStageAttachmentBundle:
     deliveries: dict[str, dict[str, str]]
     baseline_delivery: dict[str, str] | None = None
     published_now: bool = False
+
+
+def _desktop_stage_target_capability_profile(
+    provider: ProviderName,
+) -> dict[str, Any]:
+    """Describe the effective desktop transport, not just model capability.
+
+    A provider may accept image input through another surface while the
+    DaemonState desktop adapter only inserts a text draft containing verified
+    local references. Keeping those facts separate prevents provider support
+    from being misreported as a completed attachment delivery.
+    """
+
+    capabilities = provider_capabilities(provider)
+    return {
+        "schema_version": TARGET_CAPABILITY_PROFILE_SCHEMA_VERSION,
+        "provider": provider,
+        "surface": "desktop_composer",
+        "capabilities": {
+            "text_draft_insertion": {
+                "adapter_supported": True,
+                "requires_user_submission": True,
+            },
+            "receiver_local_file_reference": {
+                "provider_supported": capabilities.supports_file_context,
+                "adapter_supported": True,
+                "effective": capabilities.supports_file_context,
+                "transport": "verified_local_path_in_text_draft",
+            },
+            "native_image_attachment": {
+                "provider_supported": capabilities.supports_native_images,
+                "adapter_supported": False,
+                "effective": False,
+            },
+            "receiver_consumption_acknowledgement": {
+                "adapter_supported": False,
+                "effective": False,
+            },
+            "automatic_execution": {
+                "adapter_supported": False,
+                "effective": False,
+            },
+        },
+    }
+
+
+def _desktop_stage_delivery_receipt(
+    bundle: DesktopStageAttachmentBundle | None,
+    *,
+    provider: ProviderName,
+    context_sha256: str,
+    paste_verified: bool,
+    context_loaded: bool,
+) -> dict[str, Any]:
+    """Return only claims proven at the pre-submission desktop boundary."""
+
+    attachment_ids = sorted(bundle.deliveries) if bundle is not None else []
+    baseline_id = (
+        str((bundle.baseline_delivery or {}).get("id") or "").strip()
+        if bundle is not None
+        else ""
+    )
+    staged_evidence_ids = [*attachment_ids, *([baseline_id] if baseline_id else [])]
+    text_insert_verified = paste_verified and context_loaded
+    blocking_issue_codes = [
+        "receiver_submission_unobserved",
+        "receiver_consumption_unacknowledged",
+    ]
+    if attachment_ids:
+        blocking_issue_codes.append("native_image_attachment_unavailable")
+    return {
+        "schema_version": CONTINUATION_DELIVERY_RECEIPT_SCHEMA_VERSION,
+        "status": "staged_awaiting_user_submission",
+        "surface": "desktop_composer",
+        "provider": provider,
+        # Staging is intentionally not promoted to verified delivery. These
+        # machine-readable failures let every caller fail closed without
+        # reverse-engineering the human-readable claim boundary below.
+        "verified_delivery_ready": False,
+        "blocking_issue_codes": blocking_issue_codes,
+        "failure_state": {
+            "schema_version": CONTINUATION_DELIVERY_FAILURE_STATE_SCHEMA_VERSION,
+            "submission": {
+                "status": "unobserved",
+                "code": "receiver_submission_unobserved",
+                "blocks_verified_delivery": True,
+            },
+            "receiver_consumption": {
+                "status": "unacknowledged",
+                "code": "receiver_consumption_unacknowledged",
+                "blocks_verified_delivery": True,
+            },
+            "native_image_attachment": {
+                "status": "unsupported" if attachment_ids else "not_required",
+                "code": (
+                    "native_image_attachment_unavailable"
+                    if attachment_ids
+                    else None
+                ),
+                "attachment_ids": attachment_ids,
+                "blocks_verified_delivery": bool(attachment_ids),
+            },
+        },
+        "submission_observed": False,
+        "receiver_acknowledged": False,
+        "text": {
+            "status": (
+                "composer_insert_verified"
+                if text_insert_verified
+                else "paste_dispatched_unverified"
+            ),
+            "sha256": context_sha256,
+            "composer_insert_verified": text_insert_verified,
+            "receiver_acknowledged": False,
+        },
+        "evidence": {
+            "status": (
+                "staged_local_references_awaiting_submission"
+                if staged_evidence_ids
+                else "not_required"
+            ),
+            "transport": "verified_local_path_in_text_draft",
+            "required_count": len(staged_evidence_ids),
+            "staged_count": len(staged_evidence_ids),
+            "attachment_ids": attachment_ids,
+            "protected_baseline_id": baseline_id or None,
+            "receiver_acknowledged_ids": [],
+            "receiver_acknowledged": False,
+        },
+        "claim_boundary": (
+            "DaemonState verified draft insertion and receiver-local evidence "
+            "materialization only; user submission and receiver consumption "
+            "have not been observed."
+        ),
+    }
 
 
 @dataclass(frozen=True)
@@ -853,6 +993,16 @@ class ContinuationStageService:
         account_access_state = selected_composer_readiness.account_access_state
         account_access_verified = selected_composer_readiness.account_access_verified is True
         account_access_basis = "provider_desktop_bridge" if account_access_verified else None
+        target_capability_profile = _desktop_stage_target_capability_profile(
+            selected_provider
+        )
+        delivery_receipt = _desktop_stage_delivery_receipt(
+            attachment_bundle,
+            provider=selected_provider,
+            context_sha256=context_sha256,
+            paste_verified=launch.get("paste_verified") is True,
+            context_loaded=launch.get("context_loaded") is True,
+        )
         public_handoff: dict[str, Any] = {
             "handoff_id": handoff_id,
             "provider": selected_provider,
@@ -903,6 +1053,8 @@ class ContinuationStageService:
             "account_access_state": account_access_state,
             "account_access_verified": account_access_verified,
             "account_access_basis": account_access_basis,
+            "delivery_receipt_status": delivery_receipt["status"],
+            "receiver_acknowledged": delivery_receipt["receiver_acknowledged"],
         }
         delivery = {
             "status": "awaiting_user",
@@ -942,6 +1094,8 @@ class ContinuationStageService:
             "account_access_basis": account_access_basis,
             "task_mode": contract.task_mode.value,
             "filesystem_mode": contract.authority.filesystem_mode.value,
+            "target_capability_profile": target_capability_profile,
+            "delivery_receipt": delivery_receipt,
             "harness_session": public_handoff,
             "visibility": {
                 "status": str(launch.get("paste_code") or "desktop_paste_command_dispatched"),

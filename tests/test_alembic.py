@@ -56,6 +56,12 @@ def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
             "requirement_evidence",
             "continuation_outcomes",
             "continuation_stage_requests",
+            "context_observation_bundles",
+            "context_artifact_candidates",
+            "context_artifact_claims",
+            "context_candidate_evaluations",
+            "active_context_pointers",
+            "context_activation_events",
             "waitlist_signups",
             "prompt_snippets",
             "alembic_version",
@@ -185,7 +191,163 @@ def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
             "ix_waitlist_signups_status_created_at",
         } <= waitlist_indexes
 
-        assert version == "0020_waitlist_tracking"
+        context_observation_columns = {
+            column["name"]
+            for column in inspector.get_columns("context_observation_bundles")
+        }
+        assert {
+            "workspace_id",
+            "context_kind",
+            "scope_key_sha256",
+            "access_scope_sha256",
+            "delivery_profile_sha256",
+            "checkpoint_id",
+            "boundary_event_id",
+            "repository_identity_sha256",
+            "repository_snapshot_sha256",
+            "observation_json",
+            "observation_sha256",
+            "idempotency_key",
+        } <= context_observation_columns
+
+        context_candidate_columns = {
+            column["name"]
+            for column in inspector.get_columns("context_artifact_candidates")
+        }
+        assert {
+            "observation_bundle_id",
+            "workspace_id",
+            "context_kind",
+            "scope_key_sha256",
+            "access_scope_sha256",
+            "delivery_profile_sha256",
+            "context_pack_id",
+            "checkpoint_id",
+            "generator_version",
+            "compiler_version",
+            "renderer_version",
+            "policy_version",
+            "artifact_json",
+            "content",
+            "artifact_sha256",
+            "content_sha256",
+            "semantic_sha256",
+            "idempotency_key",
+        } <= context_candidate_columns
+
+        context_claim_columns = {
+            column["name"]
+            for column in inspector.get_columns("context_artifact_claims")
+        }
+        assert {
+            "candidate_id",
+            "claim_key",
+            "section",
+            "claim_kind",
+            "statement",
+            "statement_sha256",
+            "authority",
+            "truth_state",
+            "criticality",
+            "selection_decision",
+            "exclusion_reason",
+            "evidence_refs_json",
+            "evidence_refs_sha256",
+            "repository_snapshot_sha256",
+            "session_boundary_id",
+            "primary_claim_id",
+            "primary_evidence_span_id",
+            "primary_source_document_id",
+            "primary_session_event_id",
+            "primary_checkpoint_item_id",
+        } <= context_claim_columns
+
+        context_evaluation_columns = {
+            column["name"]
+            for column in inspector.get_columns("context_candidate_evaluations")
+        }
+        assert {
+            "candidate_id",
+            "baseline_candidate_id",
+            "baseline_generation",
+            "policy_name",
+            "policy_version",
+            "decision",
+            "diff_json",
+            "hard_failures_json",
+            "warnings_json",
+            "metrics_json",
+            "evaluation_sha256",
+            "idempotency_key",
+        } <= context_evaluation_columns
+
+        active_pointer_columns = {
+            column["name"]
+            for column in inspector.get_columns("active_context_pointers")
+        }
+        assert {
+            "workspace_id",
+            "context_kind",
+            "scope_key_sha256",
+            "access_scope_sha256",
+            "delivery_profile_sha256",
+            "active_candidate_id",
+            "active_evaluation_id",
+            "generation",
+            "activated_at",
+        } <= active_pointer_columns
+
+        activation_event_columns = {
+            column["name"]
+            for column in inspector.get_columns("context_activation_events")
+        }
+        assert {
+            "pointer_id",
+            "workspace_id",
+            "context_kind",
+            "action",
+            "from_candidate_id",
+            "to_candidate_id",
+            "evaluation_id",
+            "generation",
+            "actor",
+            "reason",
+            "idempotency_key",
+        } <= activation_event_columns
+
+        context_indexes = {
+            table_name: {
+                item["name"] for item in inspector.get_indexes(table_name)
+            }
+            for table_name in (
+                "context_observation_bundles",
+                "context_artifact_candidates",
+                "context_artifact_claims",
+                "context_candidate_evaluations",
+                "active_context_pointers",
+                "context_activation_events",
+            )
+        }
+        assert "uq_context_observation_bundles_idempotency_key" in context_indexes[
+            "context_observation_bundles"
+        ]
+        assert "uq_context_artifact_candidates_idempotency_key" in context_indexes[
+            "context_artifact_candidates"
+        ]
+        assert "uq_context_artifact_claims_candidate_key" in context_indexes[
+            "context_artifact_claims"
+        ]
+        assert "uq_context_candidate_evaluations_idempotency_key" in context_indexes[
+            "context_candidate_evaluations"
+        ]
+        assert "uq_active_context_pointers_scope" in context_indexes[
+            "active_context_pointers"
+        ]
+        assert "uq_context_activation_events_idempotency_key" in context_indexes[
+            "context_activation_events"
+        ]
+
+        assert version == "0021_context_quality_controller"
         agent_run_indexes = {
             item["name"] for item in inspector.get_indexes("agent_runs")
         }
@@ -237,6 +399,55 @@ def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
             "uq_continuation_stage_requests_workspace_current",
             "ix_continuation_stage_requests_workspace_created",
         } <= stage_request_indexes
+    finally:
+        engine.dispose()
+
+
+def test_context_quality_migration_upgrades_existing_0020_schema(tmp_path):
+    db_path = tmp_path / "context-quality-upgrade.db"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db_path}")
+    command.upgrade(config, "0020_waitlist_tracking")
+
+    engine = create_engine(f"sqlite:///{db_path}")
+    try:
+        # Revision 0001 bootstraps from current metadata, so remove these tables
+        # to reproduce a real installation whose schema predates revision 0021.
+        with engine.begin() as conn:
+            for table_name in (
+                "context_activation_events",
+                "active_context_pointers",
+                "context_candidate_evaluations",
+                "context_artifact_claims",
+                "context_artifact_candidates",
+                "context_observation_bundles",
+            ):
+                conn.execute(text(f"DROP TABLE {table_name}"))
+
+        command.upgrade(config, "head")
+
+        inspector = inspect(engine)
+        assert {
+            "context_observation_bundles",
+            "context_artifact_candidates",
+            "context_artifact_claims",
+            "context_candidate_evaluations",
+            "active_context_pointers",
+            "context_activation_events",
+        } <= set(inspector.get_table_names())
+        assert "content_sha256" in {
+            column["name"]
+            for column in inspector.get_columns("context_artifact_candidates")
+        }
+        assert "uq_active_context_pointers_scope" in {
+            item["name"]
+            for item in inspector.get_indexes("active_context_pointers")
+        }
+        with engine.connect() as conn:
+            version = conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+        assert version == "0021_context_quality_controller"
     finally:
         engine.dispose()
 

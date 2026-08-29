@@ -40,9 +40,19 @@ from app.services.conversation_state import (
     ResolvedConversationState,
     normalize_dialogue_user_request,
     request_extends_active_task,
+    request_requires_active_task_context,
     resolve_conversation_state,
 )
 from app.services.local_harness import RepositorySnapshot, capture_repository_snapshot
+from app.services.objective_resolution import (
+    ObjectiveAntecedent,
+    ObjectiveClassification,
+    ObjectiveResolution,
+    ObjectiveResolutionStatus,
+    classify_objective,
+    objective_antecedents,
+    resolve_objective,
+)
 from app.services.project_scope import workspace_references
 from app.services.request_artifacts import (
     TrustedRequestImageDescriptor,
@@ -72,7 +82,7 @@ from app.time import utc_now
 
 
 CHECKPOINT_SCHEMA_VERSION = "work_checkpoint.v10"
-DIALOGUE_CLASSIFIER_VERSION = "failure_feedback.v2"
+DIALOGUE_CLASSIFIER_VERSION = "contextual_followups.v4"
 SESSION_HANDOFF_SCHEMA_VERSION = "session_handoff.v1"
 SESSION_CONTEXT_REQUIRED_HEADINGS = (
     "# Session Context — task-level working memory",
@@ -533,6 +543,96 @@ _CONTINUATION_LEAD_DEICTIC_VISUAL_RE = re.compile(
     r")",
     re.IGNORECASE | re.DOTALL,
 )
+_EXPLICIT_IMAGE_DEPENDENCY_REFERENCE_RE = re.compile(
+    r"(?:"
+    r"\b(?:this|that|my|our|your|attached|uploaded|provided|shared|sent|"
+    r"current|latest|new|exact)\s+"
+    r"(?:design|diagram|image|mock[- ]?up|photo|picture|prototype|screenshot|"
+    r"visual(?:\s+reference)?|wireframe)\b|"
+    r"\b(?:design|diagram|image|mock[- ]?up|photo|picture|prototype|screenshot|"
+    r"visual(?:\s+reference)?|wireframe)\b.{0,48}"
+    r"\b(?:above|below|attached|uploaded|provided|shared|sent)\b|"
+    r"\b(?:as\s+)?shown\s+in\s+(?:the\s+)?(?:attached\s+)?"
+    r"(?:design|diagram|image|mock[- ]?up|photo|picture|prototype|screenshot|"
+    r"visual|wireframe)\b|"
+    r"\b(?:inspect|look\s+at|analy[sz]e|examine|review|check|compare|debug|"
+    r"diagnose|explain|use|match|copy|recreate|replicate|mirror|follow)\b"
+    r".{0,80}\b(?:this|that|my|our|your|attached)\s+"
+    r"(?:design|diagram|image|mock[- ]?up|photo|picture|prototype|screenshot|"
+    r"visual(?:\s+reference)?|wireframe)\b"
+    r"|\b(?:do|can)\s+(?:you|u)\s+"
+    r"(?:see|notice|spot|identify|recognize)\b.{0,100}"
+    r"\b(?:design|diagram|image|mock[- ]?up|photo|picture|prototype|screenshot|"
+    r"visual|wireframe)\b"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+_EXPLICIT_INACTIVE_IMAGE_REFERENCE_RE = re.compile(
+    r"(?:"
+    r"\b(?:historical|old|previous|prior)\s+(?:attached\s+)?"
+    r"(?:design|diagram|image|mock[- ]?up|photo|picture|screenshot|visual|"
+    r"wireframe)\b|"
+    r"\b(?:design|diagram|image|mock[- ]?up|photo|picture|screenshot|visual|"
+    r"wireframe)\b.{0,40}\b(?:historical\s+context|context\s+only)\b|"
+    r"\b(?:discard|ignore|stop\s+using|do\s+not\s+use|don['’]?t\s+use)\b"
+    r".{0,80}\b(?:design|diagram|image|mock[- ]?up|photo|picture|screenshot|"
+    r"visual|wireframe)\b|"
+    r"\b(?:documented|illustrated|recorded|depicted)\s+(?:by|in)\s+"
+    r"(?:the\s+)?(?:design|diagram|image|mock[- ]?up|photo|picture|screenshot|"
+    r"visual|wireframe)\b"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+_EXPLICIT_FILE_DEPENDENCY_REFERENCE_RE = re.compile(
+    r"(?:"
+    r"\b(?:follow|read|use|apply)\s+(?:the\s+)?instructions?\s+"
+    r"(?:from|in)\s+(?:this|that|the)\s+file\s*:\s*@?"
+    r"(?:/[A-Za-z0-9_.~+@%=-]+)+(?:\.[A-Za-z0-9_-]+)?|"
+    r"\b(?:attached|uploaded|provided|shared|sent)\s+"
+    r"(?:(?:source|task|reference|specification|requirements?)\s+)?"
+    r"(?:file|document|pdf|spreadsheet|archive)\b|"
+    r"\b(?:file|document|pdf|spreadsheet|archive)\b.{0,32}"
+    r"\b(?:i|we|you)\s+(?:attached|uploaded|provided|shared|sent)\b|"
+    r"\b(?:check|consult|follow|inspect|open|read|review|use)\b.{0,80}"
+    r"\b(?:the|this|that|my|our|your)\s+"
+    r"(?:(?:[A-Za-z0-9_.-]+|source|reference|specification|requirements?)\s+)?"
+    r"task\s+file\b|"
+    r"\b(?:the|this|that|my|our|your)\s+"
+    r"(?:attached|uploaded|provided|shared|sent)\s+"
+    r"(?:file|document|pdf|spreadsheet|archive)\b"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+_EXPLICIT_CONVERSATION_DEPENDENCY_REFERENCE_RE = re.compile(
+    r"(?:"
+    r"\b(?:this|that|the|linked|shared|sent|referenced|previous|prior)\s+"
+    r"(?:chat|conversation|thread)\b|"
+    r"\b(?:chat|conversation|thread)\b.{0,36}"
+    r"\b(?:i|we|you)\s+(?:linked|referenced|shared|sent)\b|"
+    r"(?:chatgpt-conversation://|https?://(?:www\.)?chatgpt\.com/)"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+_SESSION_ONLY_CHANGE_SET_DEPENDENCY_RE = re.compile(
+    r"(?:"
+    r"\b(?:commit|push|publish|ship)\b.{0,180}\b(?:changes?|work)\b.{0,140}"
+    r"(?:"
+    r"\b(?:only|solely|exclusively)\b.{0,48}\b"
+    r"(?:(?:in|from|during|by)\s+)?(?:this|the\s+current)\s+session\b|"
+    r"\b(?:in|from|during|by)\s+(?:this|the\s+current)\s+session\b"
+    r".{0,48}\b(?:only|solely|exclusively)\b"
+    r")|"
+    r"\b(?:commit|push|publish|ship)\b.{0,100}"
+    r"\bonly\s+(?:this|the\s+current)\s+session['’]s\s+changes?\b"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+_UNRESOLVED_DEPENDENCY_ISSUE_CODES = {
+    "image": "required_image_dependency_manifest_missing",
+    "file": "required_file_dependency_manifest_missing",
+    "conversation": "required_conversation_dependency_manifest_missing",
+    "change_set": "session_change_ownership_unproven",
+}
 _SESSION_COMPOSITE_REQUEST_HEADING_RE = re.compile(
     r"(?m)^(?:## Additional user-authored requirements|"
     r"### Follow-up \d+)[ \t]*$",
@@ -904,10 +1004,16 @@ def _legacy_goal_requires_dialogue_replay(
     """Detect goals stored before feedback-aware dialogue replay was available."""
 
     goal_payload = payload if isinstance(payload, dict) else {}
-    if goal_payload.get("dialogue_classifier_version") == DIALOGUE_CLASSIFIER_VERSION:
+    stored_classifier_version = goal_payload.get("dialogue_classifier_version")
+    if stored_classifier_version == DIALOGUE_CLASSIFIER_VERSION:
         return False
+    if stored_classifier_version:
+        # A stored classifier version is an integrity binding, not a compatibility
+        # hint. Replay older decisions whenever classification semantics change.
+        return True
     return bool(
-        is_user_failure_feedback(request_verbatim, active_task=True)
+        request_requires_active_task_context(request_verbatim)
+        or is_user_failure_feedback(request_verbatim, active_task=True)
         or extract_user_failure_feedback_directive(
             request_verbatim,
             active_task=True,
@@ -2200,10 +2306,22 @@ def _recovered_goal_conversation_state(
     request_verbatim: str,
     *,
     failure_feedback: bool,
+    source_provider_event_ids: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Build a coherent safe state when an older stored goal is reclassified."""
 
-    root_event_id = "recovered-goal-at-boundary"
+    provider_event_ids = tuple(
+        dict.fromkeys(
+            str(value).strip()
+            for value in source_provider_event_ids
+            if str(value).strip()
+        )
+    )
+    root_event_id = (
+        provider_event_ids[-1]
+        if provider_event_ids
+        else "recovered-goal-at-boundary"
+    )
     fragment = {
         "event_id": root_event_id,
         "sequence_number": 0,
@@ -2218,7 +2336,7 @@ def _recovered_goal_conversation_state(
         "root_request_verbatim": request_verbatim,
         "fragments": [fragment],
         "composite_request_verbatim": request_verbatim,
-        "source_event_ids": [root_event_id],
+        "source_event_ids": list(provider_event_ids or (root_event_id,)),
     }
     transitions = (
         [
@@ -2292,6 +2410,17 @@ def _safe_checkpoint_projection(
             item_payload if isinstance(item_payload, dict) else {},
         ):
             goals.append(item)
+    recovered_provider_event_ids = resolved_session_request_source_provider_event_ids(
+        recovered_goal
+    )
+    recovered_session_event_ids = resolved_session_request_source_event_ids(
+        recovered_goal
+    )
+    recovered_objective_resolution = (
+        recovered_goal.objective_resolution
+        if isinstance(recovered_goal, ResolvedSessionRequest)
+        else None
+    )
     validated_recovery = _validated_session_request(recovered_goal)
     recovered_goal_projection = (
         not goals and validated_recovery is not None and len(projected["goal"]) <= 1
@@ -2347,6 +2476,18 @@ def _safe_checkpoint_projection(
                 "conversation_state": _recovered_goal_conversation_state(
                     validated_recovery,
                     failure_feedback=recovered_from_failure_feedback,
+                    source_provider_event_ids=recovered_provider_event_ids,
+                ),
+                "source_provider_event_ids": list(recovered_provider_event_ids),
+                "source_session_event_ids": list(recovered_session_event_ids),
+                **(
+                    {
+                        "objective_resolution": (
+                            recovered_objective_resolution.to_dict()
+                        )
+                    }
+                    if recovered_objective_resolution is not None
+                    else {}
                 ),
             }
         )
@@ -3315,6 +3456,492 @@ def render_resume_bundle(checkpoint: WorkCheckpoint) -> str:
     return "\n".join(lines)
 
 
+class ResolvedSessionRequest(str):
+    """A string-compatible request with access-checked replay provenance."""
+
+    objective_resolution: ObjectiveResolution | None
+    source_provider_event_ids: tuple[str, ...]
+    source_session_event_ids: tuple[str, ...]
+
+    def __new__(
+        cls,
+        value: str,
+        *,
+        objective_resolution: ObjectiveResolution | None = None,
+        source_provider_event_ids: Iterable[str] = (),
+        source_session_event_ids: Iterable[str] = (),
+    ) -> ResolvedSessionRequest:
+        instance = super().__new__(cls, value)
+        instance.objective_resolution = objective_resolution
+        instance.source_provider_event_ids = tuple(
+            dict.fromkeys(
+                str(item).strip()
+                for item in source_provider_event_ids
+                if str(item).strip()
+            )
+        )
+        instance.source_session_event_ids = tuple(
+            dict.fromkeys(
+                str(item).strip()
+                for item in source_session_event_ids
+                if str(item).strip()
+            )
+        )
+        return instance
+
+
+def resolved_session_request_source_event_ids(
+    value: str | None,
+) -> tuple[str, ...]:
+    """Return proven SessionEvent UUIDs carried by a replayed request."""
+
+    return tuple(getattr(value, "source_session_event_ids", ()) or ())
+
+
+def resolved_session_request_source_provider_event_ids(
+    value: str | None,
+) -> tuple[str, ...]:
+    """Return provider message IDs carried separately from database IDs."""
+
+    return tuple(getattr(value, "source_provider_event_ids", ()) or ())
+
+
+_REPLAY_CONTEXTUAL_ACTS = frozenset(
+    {
+        "accept",
+        "amend",
+        "continue",
+        "failure_feedback",
+        "interruption_marker",
+        "completion_marker",
+        "provider_compaction_wrapper",
+        "status_inquiry",
+        "unresolved_reference",
+    }
+)
+_REPLAY_CONTEXT_ONLY_CLASSIFICATIONS = frozenset(
+    {
+        ObjectiveClassification.INTERRUPTION_MARKER,
+        ObjectiveClassification.COMPLETION_MARKER,
+        ObjectiveClassification.PROVIDER_COMPACTION_WRAPPER,
+    }
+)
+_REPLAY_SCOPE_REFERENCE_RE = re.compile(
+    r"^\s*(?:both|all|each)\s+(?:for|in|across|on)\b",
+    re.IGNORECASE,
+)
+_REPLAY_NAMED_OBJECTIVE_RE = re.compile(
+    r"\b(?P<subject>[a-z][a-z0-9_.-]{2,})\s+"
+    r"(?:issue|problem|bug|failure|flow|handoff|context)\b",
+    re.IGNORECASE,
+)
+_REPLAY_GENERIC_SUBJECTS = frozenset(
+    {"current", "latest", "same", "still", "that", "the", "this"}
+)
+_REPLAY_REFERENTIAL_HYPOTHESIS_RE = re.compile(
+    r"^\s*(?:same|still)\s+(?:issue|problem|bug)\b[\s\S]*"
+    r"\b(?:i|we)\s+(?:believe|suspect|think|wonder)\b",
+    re.IGNORECASE,
+)
+_REPLAY_SELF_GROUNDING_EXPLANATION_RE = re.compile(
+    r"^\s*(?:same|still)\s+(?:issue|problem|bug)\b[\s\S]*"
+    r"\b(?:explain|why)\b",
+    re.IGNORECASE,
+)
+_REPLAY_FAILURE_AUTHORITY_SIGNAL_RE = re.compile(
+    r"<image\b|<attachment\b|"
+    r"^\s*(?:same|still)\s+(?:issue|problem|bug)\b|"
+    r"\?|"
+    r"\b(?:fix|explain|diagnose|investigate|review|test|verify|continue|"
+    r"go\s+ahead)\b|"
+    r"\bsession\s+id\b",
+    re.IGNORECASE,
+)
+_REPLAY_SESSION_IDENTIFIER_RE = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+    re.IGNORECASE,
+)
+_REPLAY_REFERENCED_SESSION_SCOPE_RE = re.compile(
+    r"^\s*what\s+about\b[\s\S]{0,180}\b(?:session|task|request)(?:\s+id)?\b"
+    r"[\s\S]{0,120}\b(?:shared|mentioned|provided|sent)\b",
+    re.IGNORECASE,
+)
+_REPLAY_COMPLETION_REJECTION_RE = re.compile(
+    r"^\s*(?:same|still)\s+(?:issue|problem|bug)\b|"
+    r"\b(?:not|never)\s+(?:fixed|resolved|working)\b|"
+    r"\b(?:didn['’]?t|did\s+not|doesn['’]?t|does\s+not|won['’]?t|will\s+not)\s+"
+    r"(?:fix|resolve|work)\b|"
+    r"\b(?:you|u)\s+(?:didn['’]?t|did\s+not|failed\s+to)\b",
+    re.IGNORECASE,
+)
+
+
+def _replay_contextual_anchor(value: str) -> bool:
+    if _REPLAY_SCOPE_REFERENCE_RE.search(value):
+        return False
+    match = _REPLAY_NAMED_OBJECTIVE_RE.search(value)
+    return bool(
+        match is not None
+        and match.group("subject").casefold() not in _REPLAY_GENERIC_SUBJECTS
+    )
+
+
+def _replay_candidate_requires_antecedent(
+    value: str,
+    classification: ObjectiveClassification,
+) -> bool:
+    if _SESSION_TASK_DELIVERY_FOLLOWUP_RE.search(value):
+        return False
+    if _REPLAY_SELF_GROUNDING_EXPLANATION_RE.search(value):
+        return False
+    if _REPLAY_REFERENTIAL_HYPOTHESIS_RE.search(value):
+        return True
+    return bool(
+        classification is not ObjectiveClassification.SUBSTANTIVE
+        or request_requires_active_task_context(value)
+    )
+
+
+def _replay_transition_is_context_only(
+    transition: Any,
+    classification: ObjectiveClassification,
+) -> bool:
+    if classification in _REPLAY_CONTEXT_ONLY_CLASSIFICATIONS:
+        return True
+    return bool(
+        transition.act == "failure_feedback"
+        and not _REPLAY_FAILURE_AUTHORITY_SIGNAL_RE.search(transition.user_text)
+    )
+
+
+def _replay_user_rejects_completion(value: str) -> bool:
+    return bool(
+        _REPLAY_COMPLETION_REJECTION_RE.search(value)
+        or is_user_failure_feedback(value, active_task=True)
+    )
+
+
+def _latest_replay_assistant_completion_sequence(
+    events: Iterable[Any],
+    *,
+    after_sequence: int,
+    before_sequence: int,
+) -> int | None:
+    sequences = [
+        int(getattr(event, "sequence_number", 0) or 0)
+        for event in events
+        if str(getattr(event, "event_type", "") or "") == "assistant_update"
+        and str(getattr(event, "role", "") or "") == "assistant"
+        and after_sequence
+        < int(getattr(event, "sequence_number", 0) or 0)
+        < before_sequence
+        and _positive_completion_claim(str(getattr(event, "content", "") or ""))
+    ]
+    return max(sequences, default=None)
+
+
+def _replay_scoped_reference_anchor(
+    transition: Any,
+    *,
+    chain_reversed: Iterable[tuple[Any, Any]],
+    records: Iterable[tuple[Any, Any]],
+    events: Iterable[Any],
+) -> bool:
+    """Stop at a concrete referenced-session turn after a completed branch pivot."""
+
+    if _REPLAY_SESSION_IDENTIFIER_RE.search(transition.user_text) is None:
+        return False
+    pivot = next(
+        (
+            item
+            for item, _event in chain_reversed
+            if _REPLAY_REFERENCED_SESSION_SCOPE_RE.search(item.user_text)
+        ),
+        None,
+    )
+    if pivot is None or pivot.sequence_number <= transition.sequence_number:
+        return False
+    completion_sequence = _latest_replay_assistant_completion_sequence(
+        events,
+        after_sequence=transition.sequence_number,
+        before_sequence=pivot.sequence_number,
+    )
+    if completion_sequence is None:
+        return False
+    return not any(
+        completion_sequence < item.sequence_number < pivot.sequence_number
+        and _replay_user_rejects_completion(item.user_text)
+        for item, _event in records
+    )
+
+
+def _render_replayed_authority_chain(records: Iterable[tuple[Any, Any]]) -> str:
+    """Render a bounded exact user chain without semantic paraphrasing."""
+
+    values = [
+        transition.user_text.strip()
+        for transition, _event in records
+        if transition.user_text.strip()
+    ]
+    if not values:
+        return ""
+    if len(values) == 1:
+        return values[0]
+    lines = ["Original user objective:", "", values[0]]
+    for index, value in enumerate(values[1:-1], start=1):
+        lines.extend(
+            [
+                "",
+                f"User-authored follow-up {index}:",
+                "",
+                value,
+            ]
+        )
+    lines.extend(["", "Final user direction or status:", "", values[-1]])
+    return "\n".join(lines)
+
+
+def _replay_event_authority_ids(event: Any) -> tuple[str | None, str | None]:
+    if event is None or str(getattr(event, "role", "") or "") != "user":
+        return None, None
+    if str(getattr(event, "event_type", "") or "") not in {
+        "user_request",
+        "runtime_instruction",
+    }:
+        return None, None
+    provider_event_id = str(getattr(event, "provider_event_id", "") or "").strip()
+    raw_session_event_id = str(getattr(event, "id", "") or "").strip()
+    try:
+        session_event_id = str(UUID(raw_session_event_id))
+    except (TypeError, ValueError):
+        session_event_id = None
+    return provider_event_id or None, session_event_id
+
+
+def _replay_resolution_with_authority(
+    resolution: ObjectiveResolution,
+    records: Iterable[tuple[Any, Any]],
+) -> ObjectiveResolution:
+    provider_event_ids: list[str] = []
+    session_event_ids: list[str] = []
+    for _transition_value, event in records:
+        provider_event_id, session_event_id = _replay_event_authority_ids(event)
+        if provider_event_id and provider_event_id not in provider_event_ids:
+            provider_event_ids.append(provider_event_id)
+        if session_event_id and session_event_id not in session_event_ids:
+            session_event_ids.append(session_event_id)
+    return replace(
+        resolution,
+        source_event_id=(provider_event_ids[-1] if provider_event_ids else None),
+        # Historical consumers treated this generic field opaquely. When replay
+        # proves database identity, make it the unambiguous SessionEvent alias.
+        source_event_ids=tuple(session_event_ids),
+        source_provider_event_ids=tuple(provider_event_ids),
+        source_session_event_ids=tuple(session_event_ids),
+    )
+
+
+def _resolved_replay_request(
+    state: ResolvedConversationState,
+    replay_events: Iterable[Any],
+) -> ResolvedSessionRequest | None:
+    """Select the latest user-authoritative leaf instead of a rendered composite."""
+
+    events = tuple(replay_events)
+    event_by_provider_id = {
+        str(getattr(event, "provider_event_id", "") or ""): event
+        for event in events
+        if str(getattr(event, "provider_event_id", "") or "")
+    }
+    records = [
+        (transition, event_by_provider_id.get(transition.event_id))
+        for transition in state.transitions
+        if event_by_provider_id.get(transition.event_id) is not None
+    ]
+    if not records:
+        return None
+
+    candidate_index = len(records) - 1
+    candidate_transition, candidate_event = records[candidate_index]
+    candidate_classification = classify_objective(candidate_transition.user_text)
+    if (
+        candidate_transition.act == "ack"
+        and candidate_classification is ObjectiveClassification.NON_SUBSTANTIVE
+        and state.active_goal is not None
+        and state.active_goal.fragments
+    ):
+        latest_fragment_id = state.active_goal.fragments[-1].event_id
+        candidate_index = next(
+            (
+                index
+                for index in range(len(records) - 1, -1, -1)
+                if records[index][0].event_id == latest_fragment_id
+            ),
+            candidate_index,
+        )
+        candidate_transition, candidate_event = records[candidate_index]
+        candidate_classification = classify_objective(candidate_transition.user_text)
+
+    candidate_provider_id, candidate_session_id = _replay_event_authority_ids(
+        candidate_event
+    )
+    direct_resolution = resolve_objective(
+        candidate_transition.user_text,
+        candidate_source_event_ids=(
+            (candidate_provider_id,) if candidate_provider_id else ()
+        ),
+        candidate_source_provider_event_ids=(
+            (candidate_provider_id,) if candidate_provider_id else ()
+        ),
+        candidate_source_session_event_ids=(
+            (candidate_session_id,) if candidate_session_id else ()
+        ),
+    )
+    candidate_requires_antecedent = _replay_candidate_requires_antecedent(
+        candidate_transition.user_text,
+        candidate_classification,
+    )
+    direct_embedded_request = bool(
+        candidate_classification
+        is ObjectiveClassification.PROVIDER_COMPACTION_WRAPPER
+        and direct_resolution.status is ObjectiveResolutionStatus.RESOLVED
+        and direct_resolution.resolution_source == "embedded_current_user_request"
+    )
+    candidate_is_context_only = bool(
+        _replay_transition_is_context_only(
+            candidate_transition,
+            candidate_classification,
+        )
+        and not direct_embedded_request
+    )
+    if (
+        direct_resolution.status is ObjectiveResolutionStatus.RESOLVED
+        and not candidate_is_context_only
+        and (
+            direct_embedded_request
+            or (
+                candidate_classification is ObjectiveClassification.SUBSTANTIVE
+                and not candidate_requires_antecedent
+            )
+        )
+    ):
+        resolution = _replay_resolution_with_authority(
+            direct_resolution,
+            ((candidate_transition, candidate_event),),
+        )
+        return ResolvedSessionRequest(
+            str(resolution.resolved_text or ""),
+            objective_resolution=resolution,
+            source_provider_event_ids=resolution.source_provider_event_ids,
+            source_session_event_ids=resolution.source_session_event_ids,
+        )
+    if _REPLAY_SELF_GROUNDING_EXPLANATION_RE.search(
+        candidate_transition.user_text
+    ):
+        resolution = ObjectiveResolution(
+            classification=candidate_classification,
+            status=ObjectiveResolutionStatus.RESOLVED,
+            candidate_text=candidate_transition.user_text,
+            resolved_text=candidate_transition.user_text,
+            resolution_source="direct_user_request",
+            reason="candidate_is_self_grounding_explanation_request",
+        )
+        resolution = _replay_resolution_with_authority(
+            resolution,
+            ((candidate_transition, candidate_event),),
+        )
+        return ResolvedSessionRequest(
+            str(resolution.resolved_text or ""),
+            objective_resolution=resolution,
+            source_provider_event_ids=resolution.source_provider_event_ids,
+            source_session_event_ids=resolution.source_session_event_ids,
+        )
+
+    chain_reversed: list[tuple[Any, Any]] = (
+        []
+        if candidate_is_context_only
+        else [(candidate_transition, candidate_event)]
+    )
+    seen_chain_texts = (
+        set()
+        if candidate_is_context_only
+        else {" ".join(candidate_transition.user_text.split()).casefold()}
+    )
+    anchor_record: tuple[Any, Any] | None = None
+    for index in range(candidate_index - 1, -1, -1):
+        transition, event = records[index]
+        classification = classify_objective(transition.user_text)
+        normalized_text = " ".join(transition.user_text.split()).casefold()
+        if _replay_transition_is_context_only(transition, classification):
+            continue
+        if _replay_scoped_reference_anchor(
+            transition,
+            chain_reversed=chain_reversed,
+            records=records,
+            events=events,
+        ):
+            anchor_record = (transition, event)
+            if normalized_text not in seen_chain_texts:
+                chain_reversed.append(anchor_record)
+                seen_chain_texts.add(normalized_text)
+            break
+        if _replay_contextual_anchor(transition.user_text):
+            anchor_record = (transition, event)
+            if normalized_text not in seen_chain_texts:
+                chain_reversed.append(anchor_record)
+                seen_chain_texts.add(normalized_text)
+            break
+        if classification is ObjectiveClassification.SUBSTANTIVE:
+            if _replay_candidate_requires_antecedent(
+                transition.user_text,
+                classification,
+            ):
+                if normalized_text not in seen_chain_texts:
+                    chain_reversed.append((transition, event))
+                    seen_chain_texts.add(normalized_text)
+                continue
+            anchor_record = (transition, event)
+            if normalized_text not in seen_chain_texts:
+                chain_reversed.append(anchor_record)
+                seen_chain_texts.add(normalized_text)
+            break
+        if (
+            classification is ObjectiveClassification.DEICTIC
+            or transition.act in _REPLAY_CONTEXTUAL_ACTS
+        ):
+            if normalized_text not in seen_chain_texts:
+                chain_reversed.append((transition, event))
+                seen_chain_texts.add(normalized_text)
+            continue
+        if transition.act == "ack":
+            continue
+        break
+
+    if anchor_record is None:
+        return None
+    authority_chain = tuple(reversed(chain_reversed))
+    resolved_text = _render_replayed_authority_chain(authority_chain)
+    resolution = ObjectiveResolution(
+        classification=(
+            candidate_classification
+            if candidate_classification is not ObjectiveClassification.NON_SUBSTANTIVE
+            else ObjectiveClassification.DEICTIC
+        ),
+        status=ObjectiveResolutionStatus.RESOLVED,
+        candidate_text=candidate_transition.user_text,
+        resolved_text=resolved_text,
+        resolution_source="replayed_authoritative_user_chain",
+        reason="preserved_bounded_exact_user_authority_chain",
+    )
+    resolution = _replay_resolution_with_authority(resolution, authority_chain)
+    return ResolvedSessionRequest(
+        str(resolution.resolved_text or ""),
+        objective_resolution=resolution,
+        source_provider_event_ids=resolution.source_provider_event_ids,
+        source_session_event_ids=resolution.source_session_event_ids,
+    )
+
+
 async def resolve_session_handoff_request_verbatim(
     session: AsyncSession,
     checkpoint: WorkCheckpoint,
@@ -3324,6 +3951,7 @@ async def resolve_session_handoff_request_verbatim(
     """Resolve the lossless goal, including for historical v5 checkpoints."""
 
     data = checkpoint_to_dict(checkpoint)
+    boundary_sequence = data["boundary"].get("sequence_number")
     goals = data["sections"]["goal"]
     goal = goals[0] if goals else {}
     projected_goal_key = goal.get("item_key")
@@ -3349,6 +3977,7 @@ async def resolve_session_handoff_request_verbatim(
     goal_payload = _json_object(goal_item.payload_json)
     stored_verbatim = goal_payload.get("request_verbatim")
     stored_goal_is_intact_but_non_substantive = False
+    validated_stored_request: str | None = None
     if isinstance(stored_verbatim, str) and stored_verbatim.strip():
         expected_sha256 = str(goal_payload.get("request_sha256") or "").strip()
         stored_is_intact = not expected_sha256 or _sha256(stored_verbatim) == expected_sha256
@@ -3362,9 +3991,20 @@ async def resolve_session_handoff_request_verbatim(
                 goal_payload,
             )
             if request is not None and not requires_dialogue_replay:
-                return request
+                validated_stored_request = request
+            if requires_dialogue_replay:
+                # A classifier-version mismatch invalidates the stored selection,
+                # not just its rendering. Replay the access-scoped dialogue before
+                # consulting historical goal evidence; if replay cannot recover a
+                # unique leaf, fail closed instead of resurrecting an older goal.
+                return await _nearest_authoritative_session_request(
+                    session,
+                    checkpoint,
+                    boundary_sequence=boundary_sequence,
+                    access_scope=access_scope,
+                )
             stored_goal_is_intact_but_non_substantive = bool(
-                request is None or requires_dialogue_replay
+                request is None
             )
 
     goal_evidence = [
@@ -3372,6 +4012,42 @@ async def resolve_session_handoff_request_verbatim(
         for evidence in goal_item.evidence
         if evidence.supports and evidence.evidence_type == "session_event"
     ]
+    if validated_stored_request is not None:
+        ordered_authorities: list[tuple[int, str, str]] = []
+        for evidence in goal_evidence:
+            locator = _json_object(evidence.locator_json)
+            if str(locator.get("event_type") or "") not in {"", "user_request"}:
+                continue
+            provider_event_id = str(locator.get("provider_event_id") or "").strip()
+            session_event_id = (
+                str(evidence.session_event_id)
+                if evidence.session_event_id is not None
+                else ""
+            )
+            if not provider_event_id and not session_event_id:
+                continue
+            sequence_number = locator.get("sequence_number")
+            ordered_authorities.append(
+                (
+                    sequence_number if isinstance(sequence_number, int) else -1,
+                    provider_event_id,
+                    session_event_id,
+                )
+            )
+        ordered_authorities.sort()
+        return ResolvedSessionRequest(
+            validated_stored_request,
+            source_provider_event_ids=(
+                provider_event_id
+                for _, provider_event_id, _ in ordered_authorities
+                if provider_event_id
+            ),
+            source_session_event_ids=(
+                session_event_id
+                for _, _, session_event_id in ordered_authorities
+                if session_event_id
+            ),
+        )
     evidence_event_ids = {
         evidence.session_event_id
         for evidence in goal_evidence
@@ -3401,7 +4077,6 @@ async def resolve_session_handoff_request_verbatim(
         checkpoint.session_id,
     )
     provider, session_id = normalized_session
-    boundary_sequence = data["boundary"].get("sequence_number")
     effective_scope = access_scope or AccessScope.local()
     events: list[SessionEvent] = []
     if reference_predicates:
@@ -3443,7 +4118,30 @@ async def resolve_session_handoff_request_verbatim(
                 request,
                 {},
             ):
-                return request
+                provider_event_id = str(event.provider_event_id or "").strip()
+                session_event_id = str(event.id)
+                resolution = resolve_objective(
+                    request,
+                    candidate_source_event_ids=(
+                        (provider_event_id,) if provider_event_id else ()
+                    ),
+                    candidate_source_provider_event_ids=(
+                        (provider_event_id,) if provider_event_id else ()
+                    ),
+                    candidate_source_session_event_ids=(session_event_id,),
+                )
+                resolution = replace(
+                    resolution,
+                    source_event_ids=(session_event_id,),
+                )
+                return ResolvedSessionRequest(
+                    request,
+                    objective_resolution=resolution,
+                    source_provider_event_ids=(
+                        (provider_event_id,) if provider_event_id else ()
+                    ),
+                    source_session_event_ids=(session_event_id,),
+                )
         prefix = _truncated_request_prefix(event.content)
         if prefix is not None:
             recovery_prefixes.add((prefix, event.event_type))
@@ -3576,11 +4274,7 @@ async def _nearest_authoritative_session_request(
         replay_events,
         boundary_sequence=boundary_sequence,
     )
-    return (
-        state.active_goal.composite_request_verbatim
-        if state.active_goal is not None
-        else None
-    )
+    return _resolved_replay_request(state, replay_events)
 
 
 async def resolve_session_handoff_supporting_context(
@@ -3622,7 +4316,11 @@ async def resolve_session_handoff_supporting_context(
     goal_payload = _json_object(goal_item.payload_json)
     stored = _normalize_supporting_context(goal_payload.get("supporting_context"))
     expected_sha256 = str(goal_payload.get("supporting_context_sha256") or "").strip()
-    if stored and (not expected_sha256 or _sha256(_canonical_json(stored)) == expected_sha256):
+    if (
+        stored
+        and all(item.get("source_document_id") for item in stored)
+        and (not expected_sha256 or _sha256(_canonical_json(stored)) == expected_sha256)
+    ):
         return stored
 
     effective_scope = access_scope or AccessScope.local()
@@ -3675,7 +4373,10 @@ async def resolve_session_handoff_supporting_context(
             request_verbatim=request_verbatim,
         )
         if materialized:
-            candidates[_canonical_json(materialized)] = materialized
+            candidates[_canonical_json(materialized)] = [
+                {**item, "source_document_id": str(event.source_document_id)}
+                for item in materialized
+            ]
 
     source_ids = {
         checkpoint.source_document_id,
@@ -3702,7 +4403,10 @@ async def resolve_session_handoff_supporting_context(
             request_verbatim=request_verbatim,
         )
         if materialized:
-            candidates[_canonical_json(materialized)] = materialized
+            candidates[_canonical_json(materialized)] = [
+                {**item, "source_document_id": str(source.id)}
+                for item in materialized
+            ]
     external_dependency = bool(_EXTERNAL_SESSION_CONTEXT_DEPENDENCY_RE.search(request_verbatim))
     if not external_dependency:
         goal_sequences = [
@@ -3752,9 +4456,22 @@ async def resolve_session_handoff_supporting_context(
 
 def _validated_session_request(value: str | None) -> str | None:
     request = extract_user_authored_request(value)
-    if request is None or normalize_dialogue_user_request(request) is None:
+    if request is None:
         return None
-    return request
+    resolution = resolve_objective(request)
+    resolved_request = resolution.resolved_text
+    if (
+        resolved_request is None
+        or resolution.blocks_copy
+        or normalize_dialogue_user_request(resolved_request) is None
+        or (
+            resolution.classification
+            is not ObjectiveClassification.SUBSTANTIVE
+            and resolution.resolution_source != "embedded_current_user_request"
+        )
+    ):
+        return None
+    return resolved_request
 
 
 def _truncated_request_prefix(value: str | None) -> str | None:
@@ -4013,6 +4730,7 @@ def _materialized_prior_session_context(
                 "text": text,
                 "source": "prior_session_turn",
                 "truth_state": "historical_data",
+                "source_document_id": str(event.source_document_id),
             }
         )
     return result
@@ -4028,6 +4746,7 @@ def _normalize_supporting_context(value: Any) -> list[dict[str, str]]:
         role = str(raw.get("role") or "").strip().lower()
         text = str(raw.get("text") or "").strip()
         source = str(raw.get("source") or "").strip()
+        source_document_id = str(raw.get("source_document_id") or "").strip()
         if role not in {"assistant", "user"} or not text:
             return []
         if source not in {
@@ -4035,14 +4754,15 @@ def _normalize_supporting_context(value: Any) -> list[dict[str, str]]:
             "prior_session_turn",
         }:
             return []
-        result.append(
-            {
-                "role": role,
-                "text": text,
-                "source": source,
-                "truth_state": "historical_data",
-            }
-        )
+        normalized = {
+            "role": role,
+            "text": text,
+            "source": source,
+            "truth_state": "historical_data",
+        }
+        if source_document_id:
+            normalized["source_document_id"] = source_document_id
+        result.append(normalized)
     return result
 
 
@@ -4323,6 +5043,7 @@ def _session_attachment_declaration_dependency_role(
 def _session_attachment_dependency_role(request_verbatim: str) -> str:
     """Classify whether the next agent still needs the visual itself."""
 
+    has_current_turn_image = bool(_SESSION_IMAGE_TAG_RE.search(request_verbatim))
     goal_without_markup = _self_contained_goal(request_verbatim)
     words = re.findall(r"[a-z0-9]+", goal_without_markup.casefold())
     historical_or_negated_reference = re.search(
@@ -4434,6 +5155,11 @@ def _session_attachment_dependency_role(request_verbatim: str) -> str:
         return "active_input"
     if inactive_reference_matches:
         return "historical_evidence"
+    if has_current_turn_image:
+        # An image attached on the exact user turn is evidence, not decoration.
+        # Unless the user explicitly labels it historical or says to ignore it,
+        # fail closed when that visual cannot be carried into Session Context.
+        return "active_input"
     if _SESSION_ATTACHMENT_EXACT_DEPENDENCY_RE.search(goal_without_markup):
         return "active_input"
     if _SUPPLEMENTAL_VISUAL_REFERENCE_RE.search(goal_without_markup):
@@ -4445,6 +5171,32 @@ def _session_attachment_dependency_role(request_verbatim: str) -> str:
         # durable text to replace the visual input.
         return "active_input"
     return "historical_evidence"
+
+
+def _session_attachment_is_explicitly_inactive(request_verbatim: str) -> bool:
+    """Return whether the user explicitly retired the visual as task evidence."""
+
+    without_markup = _self_contained_goal(request_verbatim)
+    if re.search(
+        r"\b(?:do\s+not|don['’]?t|never)\s+ignore\b",
+        without_markup,
+        re.IGNORECASE,
+    ):
+        return False
+    return bool(
+        re.search(
+            r"\b(?:discard|ignore|stop\s+using|do\s+not\s+use|don['’]?t\s+use)\b"
+            r".{0,80}\b(?:screenshot|image|picture|visual)\b|"
+            r"\b(?:historical|old|previous|prior)\s+(?:attached\s+)?"
+            r"(?:screenshot|image|picture|visual)\b|"
+            r"\b(?:screenshot|image|picture|visual)\b.{0,32}"
+            r"\b(?:historical\s+context|context\s+only)\b|"
+            r"\bnot\s+(?:as\s+)?shown\s+in\b.{0,32}"
+            r"\b(?:screenshot|image|picture|visual)\b",
+            without_markup,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _session_attachment_dependencies(
@@ -4495,6 +5247,8 @@ def _session_attachment_dependencies(
             descriptor.size_bytes,
             descriptor.binding_valid,
             descriptor.binding_error,
+            descriptor.source_event_id,
+            descriptor.dependency_role,
         )
 
     descriptors_by_path = {
@@ -4616,8 +5370,44 @@ def _session_attachment_dependencies(
         declaration_identity_ambiguous = declaration_path_counts.get(path, 0) > 1
         artifact = None if declaration_identity_ambiguous else artifacts_by_path.get(path)
         descriptor = None if declaration_identity_ambiguous else descriptors_by_path.get(path)
+        source_fragment_index = declaration.get("_source_fragment_index")
+        source_fragment = (
+            fragment_values[source_fragment_index].source_request
+            if isinstance(source_fragment_index, int)
+            and 0 <= source_fragment_index < len(fragment_values)
+            else ""
+        )
+        if (
+            descriptor is not None
+            and descriptor.dependency_role in {"active_input", "historical_evidence"}
+            and (
+                descriptor.dependency_role != "active_input"
+                or not _session_attachment_is_explicitly_inactive(source_fragment)
+            )
+        ):
+            dependency_role = descriptor.dependency_role
         trusted = path in trusted_paths
         available = bool(artifact and artifact.available and artifact.sha256)
+        source_sha256 = str(descriptor.sha256 or "").strip().casefold() if descriptor else ""
+        source_mime_type = str(descriptor.mime_type or "").strip().casefold() if descriptor else ""
+        source_ordinal = descriptor.ordinal if descriptor is not None else None
+        source_identity_complete = bool(
+            descriptor is not None
+            and descriptor.binding_valid is True
+            and re.fullmatch(r"[0-9a-f]{64}", source_sha256) is not None
+            and source_mime_type in {"image/png", "image/jpeg", "image/gif", "image/webp"}
+            and isinstance(source_ordinal, int)
+            and not isinstance(source_ordinal, bool)
+            and source_ordinal >= 1
+        )
+        manifest_sha256 = source_sha256 if source_identity_complete else None
+        manifest_mime_type = source_mime_type if source_identity_complete else None
+        dependency_sha256 = (
+            artifact.sha256 if available and artifact is not None else manifest_sha256
+        )
+        dependency_mime_type = (
+            artifact.mime_type if available and artifact is not None else manifest_mime_type
+        )
         visual_inspection = (
             validated_trusted_image_inspection(descriptor)
             if descriptor is not None and available
@@ -4628,6 +5418,8 @@ def _session_attachment_dependencies(
             if available
             else "source_event_attachment_identity_ambiguous"
             if declaration_identity_ambiguous and trusted
+            else "source_event_attachment_hash_bound_bytes_unavailable"
+            if source_identity_complete
             else "trusted_provider_attachment_unavailable"
             if trusted
             else "trusted_attachment_descriptor_required"
@@ -4649,15 +5441,36 @@ def _session_attachment_dependencies(
                 "dependency_role": dependency_role,
                 "available": available,
                 "available_at_capture": available,
-                "sha256": artifact.sha256 if artifact else None,
-                "content_hash": artifact.sha256 if artifact else None,
-                "mime_type": artifact.mime_type if artifact else None,
-                "media_type": artifact.mime_type if artifact else None,
+                "source_binding_valid": bool(
+                    descriptor is not None and descriptor.binding_valid is True
+                ),
+                "source_identity_complete": source_identity_complete,
+                "source_bytes_available": available,
+                "source_attachment_ordinal": (
+                    source_ordinal if source_identity_complete else None
+                ),
+                "source_event_id": (
+                    descriptor.source_event_id if descriptor is not None else None
+                ),
+                "sha256": dependency_sha256,
+                "content_hash": dependency_sha256,
+                "mime_type": dependency_mime_type,
+                "media_type": dependency_mime_type,
                 "source": ("exact_provider_event" if trusted else declaration["source"]),
                 "resolution": resolution,
-                "capture_status": "hash_verified" if available else "not_captured",
+                "capture_status": (
+                    "hash_verified"
+                    if available
+                    else "source_manifest_verified"
+                    if source_identity_complete
+                    else "not_captured"
+                ),
                 "integrity_status": (
-                    "available_and_verified" if available else "missing_or_corrupted"
+                    "available_and_verified"
+                    if available
+                    else "source_hash_bound_bytes_unavailable"
+                    if source_identity_complete
+                    else "missing_or_corrupted"
                 ),
                 "integrity_verification_owner": "infrastructure",
                 "materialization_owner": "infrastructure",
@@ -4698,6 +5511,143 @@ def _session_attachment_dependencies(
                 ),
             }
         )
+    return dependencies
+
+
+def _explicit_unresolved_session_dependencies(
+    request_verbatim: str,
+    *,
+    request_fragments: Iterable[_SessionRequestFragment | str] = (),
+    attachment_dependencies: Iterable[dict[str, Any]] = (),
+    supporting_context: Iterable[dict[str, str]] = (),
+) -> list[dict[str, Any]]:
+    """Represent explicit evidence references that have no captured manifest.
+
+    Absence of an attachment row is not evidence that the user's request has no
+    dependency. This detector is deliberately limited to explicit deictic or
+    external references so ordinary requests about image/file handling code do
+    not invent dependencies.
+    """
+
+    fragment_values = [
+        fragment.source_request
+        if isinstance(fragment, _SessionRequestFragment)
+        else str(fragment)
+        for fragment in request_fragments
+        if (
+            isinstance(fragment, _SessionRequestFragment)
+            and fragment.source_request.strip()
+        )
+        or (not isinstance(fragment, _SessionRequestFragment) and str(fragment).strip())
+    ] or [str(request_verbatim or "")]
+    attachments = list(attachment_dependencies)
+    active_images = [
+        item
+        for item in attachments
+        if item.get("kind") == "image" and item.get("required") is True
+    ]
+    supporting = list(supporting_context)
+    references: dict[str, list[str]] = {
+        "image": [],
+        "file": [],
+        "conversation": [],
+        "change_set": [],
+    }
+
+    for fragment in fragment_values:
+        has_exact_turn_image_markup = _SESSION_IMAGE_TAG_RE.search(fragment) is not None
+        without_markup = _SESSION_IMAGE_TAG_RE.sub(" ", fragment)
+        image_match = _EXPLICIT_IMAGE_DEPENDENCY_REFERENCE_RE.search(without_markup)
+        if (
+            (
+                image_match is not None
+                and _session_attachment_dependency_role(fragment) == "active_input"
+            )
+            or (
+                has_exact_turn_image_markup
+                and _EXPLICIT_INACTIVE_IMAGE_REFERENCE_RE.search(without_markup) is None
+            )
+        ):
+            references["image"].append(
+                image_match.group(0)
+                if image_match is not None
+                else "exact-turn image attachment"
+            )
+        file_match = _EXPLICIT_FILE_DEPENDENCY_REFERENCE_RE.search(without_markup)
+        if file_match is not None and re.search(
+            r"\b(?:design|diagram|image|mock[- ]?up|photo|picture|screenshot|visual|"
+            r"wireframe)\s+file\b",
+            file_match.group(0),
+            re.IGNORECASE,
+        ) is None:
+            references["file"].append(file_match.group(0))
+        conversation_match = _EXPLICIT_CONVERSATION_DEPENDENCY_REFERENCE_RE.search(
+            without_markup
+        )
+        if conversation_match is not None:
+            references["conversation"].append(conversation_match.group(0))
+        change_set_match = _SESSION_ONLY_CHANGE_SET_DEPENDENCY_RE.search(
+            without_markup
+        )
+        if change_set_match is not None:
+            references["change_set"].append(change_set_match.group(0))
+
+    missing_image_count = max(0, len(references["image"]) - len(active_images))
+    if missing_image_count == 0:
+        references["image"] = []
+    else:
+        references["image"] = references["image"][-missing_image_count:]
+    if supporting:
+        references["conversation"] = []
+
+    dependencies: list[dict[str, Any]] = []
+    request_sha256 = _sha256(request_verbatim)
+    labels = {
+        "image": "Referenced image evidence",
+        "file": "Referenced file evidence",
+        "conversation": "Referenced conversation context",
+        "change_set": "Session-owned change set",
+    }
+    reasons = {
+        "image": (
+            "The user explicitly depends on visual evidence, but no source-bound "
+            "image manifest was captured for that reference."
+        ),
+        "file": (
+            "The user explicitly depends on a file or document, but no portable "
+            "file manifest was captured for that reference."
+        ),
+        "conversation": (
+            "The user explicitly depends on another chat or conversation, but its "
+            "turns were not materialized into supporting context."
+        ),
+        "change_set": (
+            "The user limited delivery to changes made in this session, but the "
+            "captured repository state does not prove session ownership for each change."
+        ),
+    }
+    for kind in ("image", "file", "conversation", "change_set"):
+        for reference in references[kind]:
+            normalized_reference = re.sub(r"\s+", " ", reference).strip()
+            dependencies.append(
+                {
+                    "id": f"U{len(dependencies) + 1}",
+                    "kind": kind,
+                    "name": labels[kind],
+                    "required": True,
+                    "dependency_role": "active_input",
+                    "status": "unresolved",
+                    "resolution": "required_manifest_missing",
+                    "available": False,
+                    "blocks_copy": True,
+                    "source": "explicit_user_request_reference",
+                    "source_request_sha256": request_sha256,
+                    "reference_text": normalized_reference[:240],
+                    "reference_sha256": _sha256(normalized_reference),
+                    "blocking_issue_code": _UNRESOLVED_DEPENDENCY_ISSUE_CODES[kind],
+                    "reason": reasons[kind],
+                }
+            )
     return dependencies
 
 
@@ -4916,12 +5866,423 @@ def resolve_handoff_attachment_reference(
     return resolved[0]
 
 
+_SESSION_SOURCE_IMAGE_MIME_TYPES = frozenset(
+    {"image/png", "image/jpeg", "image/gif", "image/webp"}
+)
+_SESSION_ATTACHMENT_EVIDENCE_CATEGORIES = frozenset({"goal", "exact_next_action"})
+
+
+def _source_image_descriptor_identity_complete(
+    descriptor: TrustedRequestImageDescriptor,
+) -> bool:
+    return bool(
+        descriptor.binding_valid is True
+        and re.fullmatch(r"[0-9a-f]{64}", str(descriptor.sha256 or "").casefold())
+        is not None
+        and str(descriptor.mime_type or "").casefold()
+        in _SESSION_SOURCE_IMAGE_MIME_TYPES
+        and isinstance(descriptor.ordinal, int)
+        and not isinstance(descriptor.ordinal, bool)
+        and descriptor.ordinal >= 1
+    )
+
+
+def _integrity_checked_checkpoint_payload(
+    checkpoint: WorkCheckpoint,
+) -> dict[str, Any] | None:
+    """Return the immutable checkpoint payload only when identity and hash match."""
+
+    if checkpoint.schema_version != CHECKPOINT_SCHEMA_VERSION:
+        return None
+    raw_payload = str(checkpoint.payload_json or "")
+    if (
+        not raw_payload
+        or not checkpoint.payload_sha256
+        or _sha256(raw_payload) != checkpoint.payload_sha256
+    ):
+        return None
+    payload = _json_object(raw_payload)
+    boundary = payload.get("boundary")
+    if (
+        payload.get("schema_version") != CHECKPOINT_SCHEMA_VERSION
+        or str(payload.get("workspace_id") or "") != str(checkpoint.workspace_id)
+        or str(payload.get("provider") or "") != checkpoint.provider
+        or str(payload.get("session_id") or "") != checkpoint.session_id
+        or not isinstance(boundary, dict)
+        or str(boundary.get("session_event_id") or "")
+        != str(checkpoint.boundary_event_id)
+        or not isinstance(payload.get("sections"), dict)
+    ):
+        return None
+    return payload
+
+
+def _checkpoint_image_descriptor_manifest(
+    checkpoint: WorkCheckpoint,
+) -> tuple[bool, str | None, tuple[TrustedRequestImageDescriptor, ...]]:
+    """Read the hash-bound source manifest without coupling it to a projected goal."""
+
+    payload = _integrity_checked_checkpoint_payload(checkpoint)
+    if payload is None:
+        return False, None, ()
+    sections = payload["sections"]
+    goals = sections.get("goal")
+    if not isinstance(goals, list) or len(goals) != 1:
+        return False, None, ()
+    goal_payload = goals[0].get("payload") if isinstance(goals[0], dict) else None
+    if not isinstance(goal_payload, dict):
+        return False, None, ()
+    request_sha256 = str(goal_payload.get("request_sha256") or "").casefold()
+    if re.fullmatch(r"[0-9a-f]{64}", request_sha256) is None:
+        return False, None, ()
+    raw_descriptors = goal_payload.get("trusted_image_descriptors")
+    expected_digest = str(
+        goal_payload.get("trusted_image_descriptors_sha256") or ""
+    ).casefold()
+    if (
+        not isinstance(raw_descriptors, list)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None
+        or _sha256(_canonical_json(raw_descriptors)) != expected_digest
+    ):
+        return False, None, ()
+    descriptors: list[TrustedRequestImageDescriptor] = []
+    for raw in raw_descriptors:
+        if not isinstance(raw, dict):
+            return False, None, ()
+        path = str(raw.get("path") or "").strip()
+        if not path:
+            return False, None, ()
+        ordinal = raw.get("ordinal")
+        size_bytes = raw.get("size_bytes")
+        descriptors.append(
+            TrustedRequestImageDescriptor(
+                path=path,
+                sha256=str(raw.get("sha256") or "").strip().casefold() or None,
+                mime_type=str(raw.get("mime_type") or "").strip().casefold() or None,
+                resolved_path=(
+                    str(raw.get("resolved_path") or raw.get("stored_path") or "").strip()
+                    or None
+                ),
+                ordinal=(
+                    ordinal
+                    if isinstance(ordinal, int) and not isinstance(ordinal, bool)
+                    else None
+                ),
+                size_bytes=(
+                    size_bytes
+                    if isinstance(size_bytes, int) and not isinstance(size_bytes, bool)
+                    else None
+                ),
+                binding_valid=raw.get("binding_valid") is not False,
+                binding_error=(str(raw.get("binding_error") or "").strip() or None),
+                visual_inspection=(
+                    raw.get("visual_inspection")
+                    if isinstance(raw.get("visual_inspection"), dict)
+                    else None
+                ),
+                visual_inspection_attested=raw.get("visual_inspection_attested") is True,
+            )
+        )
+    return True, request_sha256, tuple(descriptors)
+
+
+def _checkpoint_attachment_evidence_event_ids(
+    payload: dict[str, Any],
+) -> set[str] | None:
+    """Return only attachment-relevant event IDs frozen into the payload hash."""
+
+    sections = payload.get("sections")
+    if not isinstance(sections, dict):
+        return None
+    event_ids: set[str] = set()
+    for category in _SESSION_ATTACHMENT_EVIDENCE_CATEGORIES:
+        items = sections.get(category)
+        if not isinstance(items, list):
+            return None
+        for item in items:
+            if not isinstance(item, dict):
+                return None
+            if str(item.get("state") or "active").casefold() in _INACTIVE_BLOCKER_STATES:
+                continue
+            raw_event_ids = item.get("evidence_event_ids")
+            if not isinstance(raw_event_ids, list):
+                return None
+            for raw_event_id in raw_event_ids:
+                try:
+                    event_ids.add(str(UUID(str(raw_event_id))))
+                except (TypeError, ValueError):
+                    return None
+    return event_ids
+
+
+def _session_image_markup_paths(value: str | None) -> tuple[str, ...]:
+    paths: list[str] = []
+    for match in _SESSION_IMAGE_TAG_RE.finditer(str(value or "")):
+        attributes_text = (
+            match.group("attributes")
+            if match.group("attributes") is not None
+            else match.group("self_closing_attributes") or ""
+        )
+        attributes: dict[str, str] = {}
+        for attribute in _SESSION_IMAGE_ATTRIBUTE_RE.finditer(attributes_text):
+            attributes[attribute.group(1).casefold()] = next(
+                (group for group in attribute.groups()[1:] if group is not None),
+                "",
+            ).strip()
+        for attribute in _SESSION_IMAGE_BRACKET_ATTRIBUTE_RE.finditer(attributes_text):
+            attributes[attribute.group(1).casefold()] = attribute.group(2).strip()
+        path = str(attributes.get("path") or attributes.get("src") or "").strip()
+        if path:
+            paths.append(path)
+    return tuple(paths)
+
+
+def _trusted_image_descriptors_from_source_event(
+    event: SessionEvent,
+) -> tuple[TrustedRequestImageDescriptor, ...]:
+    """Bind legacy input hashes to paths carried by that same immutable event."""
+
+    payload = event_payload(event)
+    descriptors = trusted_request_image_descriptors_from_payload(payload)
+    if descriptors:
+        return tuple(
+            replace(descriptor, source_event_id=str(event.id))
+            for descriptor in descriptors
+        )
+    raw_paths = payload.get("local_images")
+    raw_inputs = payload.get("input_images")
+    if raw_paths not in (None, [], ()) or not isinstance(raw_inputs, (list, tuple)):
+        return ()
+    paths = _session_image_markup_paths(event.content)
+    if not paths or len(paths) != len(raw_inputs):
+        return ()
+    synthesized_payload = dict(payload)
+    synthesized_payload["local_images"] = list(paths)
+    return tuple(
+        replace(descriptor, source_event_id=str(event.id))
+        for descriptor in trusted_request_image_descriptors_from_payload(
+            synthesized_payload
+        )
+    )
+
+
+def _interstitial_visual_attachment_event_ids(
+    events: Iterable[SessionEvent],
+    *,
+    objective_source_event_ids: Iterable[str],
+) -> set[str]:
+    """Bind visual-only evidence between consecutive objective authorities."""
+
+    values = tuple(events)
+    events_by_id = {
+        str(event.id): event
+        for event in values
+        if event.event_type == "user_request"
+        or (event.event_type == "runtime_instruction" and event.role == "user")
+    }
+    authority_ids = {
+        str(raw_event_id)
+        for raw_event_id in objective_source_event_ids
+        if str(raw_event_id) in events_by_id
+    }
+    authorities = sorted(
+        (events_by_id[event_id] for event_id in authority_ids),
+        key=lambda event: (event.sequence_number, event.id),
+    )
+    if len(authorities) < 2:
+        return set()
+    event_ids: set[str] = set()
+    user_events = sorted(
+        events_by_id.values(),
+        key=lambda event: (event.sequence_number, event.id),
+    )
+
+    def visual_branch_was_completed(
+        visual_event: SessionEvent,
+        right_authority: SessionEvent,
+    ) -> bool:
+        completion_sequence = _latest_replay_assistant_completion_sequence(
+            values,
+            after_sequence=visual_event.sequence_number,
+            before_sequence=right_authority.sequence_number,
+        )
+        if completion_sequence is None:
+            return False
+        return not any(
+            completion_sequence < event.sequence_number <= right_authority.sequence_number
+            and _replay_user_rejects_completion(
+                str(_checkpoint_request_verbatim(event) or "")
+            )
+            for event in user_events
+        )
+
+    for left, right in zip(authorities, authorities[1:]):
+        interstitial = [
+            event
+            for event in user_events
+            if left.sequence_number < event.sequence_number < right.sequence_number
+            and str(event.id) not in authority_ids
+        ]
+        if any(
+            classify_objective(
+                _SESSION_IMAGE_TAG_RE.sub(
+                    " ",
+                    str(_checkpoint_request_verbatim(event) or ""),
+                ).strip()
+            )
+            is ObjectiveClassification.SUBSTANTIVE
+            for event in interstitial
+            if _SESSION_IMAGE_TAG_RE.sub(
+                " ",
+                str(_checkpoint_request_verbatim(event) or ""),
+            ).strip()
+        ):
+            continue
+        for event in interstitial:
+            request = str(_checkpoint_request_verbatim(event) or "")
+            if (
+                _SESSION_IMAGE_TAG_RE.sub(" ", request).strip()
+                or not _trusted_image_descriptors_from_source_event(event)
+                or visual_branch_was_completed(event, right)
+            ):
+                continue
+            event_ids.add(str(event.id))
+    return event_ids
+
+
+def _merge_source_image_descriptors(
+    frozen: Iterable[TrustedRequestImageDescriptor],
+    recovered: Iterable[TrustedRequestImageDescriptor],
+) -> tuple[TrustedRequestImageDescriptor, ...]:
+    """Prefer frozen identities; replace only incomplete records with exact matches."""
+
+    frozen_values = tuple(frozen)
+    recovered_values = tuple(recovered)
+    recovered_by_path: dict[str, list[TrustedRequestImageDescriptor]] = {}
+    for descriptor in recovered_values:
+        recovered_by_path.setdefault(descriptor.path, []).append(descriptor)
+
+    merged: list[TrustedRequestImageDescriptor] = []
+    consumed_recovered: set[int] = set()
+    complete_frozen_by_path: dict[str, set[tuple[str, str, int]]] = {}
+    for descriptor in frozen_values:
+        if _source_image_descriptor_identity_complete(descriptor):
+            frozen_identity = (
+                str(descriptor.sha256).casefold(),
+                str(descriptor.mime_type).casefold(),
+                int(descriptor.ordinal),
+            )
+            complete_frozen_by_path.setdefault(descriptor.path, set()).add(
+                frozen_identity
+            )
+            matching_recovered = next(
+                (
+                    candidate
+                    for candidate in recovered_by_path.get(descriptor.path, [])
+                    if _source_image_descriptor_identity_complete(candidate)
+                    and (
+                        str(candidate.sha256).casefold(),
+                        str(candidate.mime_type).casefold(),
+                        int(candidate.ordinal),
+                    )
+                    == frozen_identity
+                ),
+                None,
+            )
+            merged.append(
+                replace(
+                    descriptor,
+                    source_event_id=(
+                        matching_recovered.source_event_id
+                        if matching_recovered is not None
+                        else descriptor.source_event_id
+                    ),
+                    dependency_role=(
+                        matching_recovered.dependency_role
+                        if matching_recovered is not None
+                        and matching_recovered.dependency_role is not None
+                        else descriptor.dependency_role
+                    ),
+                )
+            )
+            continue
+        candidates = [
+            (index, candidate)
+            for index, candidate in enumerate(recovered_values)
+            if candidate.path == descriptor.path
+            and _source_image_descriptor_identity_complete(candidate)
+            and (
+                not descriptor.sha256
+                or str(candidate.sha256).casefold() == str(descriptor.sha256).casefold()
+            )
+        ]
+        identities = {
+            (
+                str(candidate.sha256).casefold(),
+                str(candidate.mime_type).casefold(),
+                int(candidate.ordinal),
+            )
+            for _, candidate in candidates
+        }
+        if len(identities) == 1:
+            index, candidate = candidates[0]
+            consumed_recovered.update(candidate_index for candidate_index, _ in candidates)
+            merged.append(
+                replace(
+                    candidate,
+                    resolved_path=descriptor.resolved_path or candidate.resolved_path,
+                    visual_inspection=descriptor.visual_inspection,
+                    visual_inspection_attested=descriptor.visual_inspection_attested,
+                )
+            )
+        else:
+            merged.append(descriptor)
+
+    for index, descriptor in enumerate(recovered_values):
+        if index in consumed_recovered:
+            continue
+        identity = (
+            str(descriptor.sha256 or "").casefold(),
+            str(descriptor.mime_type or "").casefold(),
+            int(descriptor.ordinal or 0),
+        )
+        frozen_identities = complete_frozen_by_path.get(descriptor.path, set())
+        if identity in frozen_identities:
+            continue
+        merged.append(descriptor)
+
+    deduped: list[TrustedRequestImageDescriptor] = []
+    seen: dict[tuple[Any, ...], int] = {}
+    for descriptor in merged:
+        identity = (
+            descriptor.path,
+            descriptor.sha256,
+            str(descriptor.mime_type or "").casefold(),
+            descriptor.ordinal,
+            descriptor.binding_valid,
+            descriptor.binding_error,
+        )
+        previous_index = seen.get(identity)
+        if previous_index is not None:
+            previous = deduped[previous_index]
+            if (
+                previous.dependency_role != "active_input"
+                and descriptor.dependency_role == "active_input"
+            ):
+                deduped[previous_index] = descriptor
+            continue
+        seen[identity] = len(deduped)
+        deduped.append(descriptor)
+    return tuple(deduped)
+
+
 async def resolve_session_handoff_attachment_descriptors(
     session: AsyncSession,
     checkpoint: WorkCheckpoint,
     *,
     request_verbatim: str,
     access_scope: AccessScope | None = None,
+    source_event_ids: Iterable[str | UUID] = (),
 ) -> tuple[TrustedRequestImageDescriptor, ...]:
     """Resolve images only from the exact authoritative local provider turn.
 
@@ -4933,15 +6294,33 @@ async def resolve_session_handoff_attachment_descriptors(
 
     if access_scope is None or access_scope.principal_id != "local":
         return ()
-    checkpoint_bound, checkpoint_descriptors = _checkpoint_bound_image_descriptors(
-        checkpoint,
-        request_verbatim=request_verbatim,
-    )
-    if checkpoint_bound:
-        return checkpoint_descriptors
+    checkpoint_payload: dict[str, Any] | None = None
+    checkpoint_descriptors: tuple[TrustedRequestImageDescriptor, ...] = ()
+    checkpoint_evidence_event_ids: set[str] = set()
+    if checkpoint.schema_version == CHECKPOINT_SCHEMA_VERSION:
+        checkpoint_payload = _integrity_checked_checkpoint_payload(checkpoint)
+        manifest_valid, _request_sha256, checkpoint_descriptors = (
+            _checkpoint_image_descriptor_manifest(checkpoint)
+        )
+        if checkpoint_payload is None or not manifest_valid:
+            return ()
+        evidence_event_ids = _checkpoint_attachment_evidence_event_ids(checkpoint_payload)
+        if evidence_event_ids is None:
+            return ()
+        checkpoint_evidence_event_ids = evidence_event_ids
+    else:
+        checkpoint_bound, checkpoint_descriptors = _checkpoint_bound_image_descriptors(
+            checkpoint,
+            request_verbatim=request_verbatim,
+        )
+        if checkpoint_bound:
+            return checkpoint_descriptors
     effective_scope = access_scope
-    data = checkpoint_to_dict(checkpoint)
-    boundary_sequence = data["boundary"].get("sequence_number")
+    boundary_sequence = (
+        (checkpoint_payload.get("boundary") or {}).get("sequence_number")
+        if checkpoint_payload is not None
+        else checkpoint_to_dict(checkpoint)["boundary"].get("sequence_number")
+    )
     if not isinstance(boundary_sequence, int):
         return ()
     normalized_session = normalize_session_key(checkpoint.provider, checkpoint.session_id) or (
@@ -4952,6 +6331,21 @@ async def resolve_session_handoff_attachment_descriptors(
     expected_request = " ".join(str(request_verbatim or "").split())
     if not expected_request:
         return ()
+    objective_source_event_ids: set[str] = set()
+    raw_source_event_ids = (
+        *source_event_ids,
+        *resolved_session_request_source_event_ids(request_verbatim),
+    )
+    for raw_event_id in raw_source_event_ids:
+        try:
+            objective_source_event_ids.add(str(UUID(str(raw_event_id))))
+        except (TypeError, ValueError):
+            continue
+    exact_source_event_ids = {
+        *checkpoint_evidence_event_ids,
+        *objective_source_event_ids,
+    }
+    request_image_paths = set(_session_image_markup_paths(request_verbatim))
     events = list(
         await session.scalars(
             select(SessionEvent)
@@ -4967,16 +6361,50 @@ async def resolve_session_handoff_attachment_descriptors(
                         SessionEvent.event_type == "runtime_instruction",
                         SessionEvent.role == "user",
                     ),
+                    SessionEvent.event_type == "assistant_update",
                 ),
                 source_access_predicate(
                     effective_scope,
                     workspace_id=checkpoint.workspace_id,
                 ),
             )
-            .order_by(SessionEvent.sequence_number.desc(), SessionEvent.id.desc())
+            .order_by(SessionEvent.sequence_number, SessionEvent.id)
         )
     )
-    for event in events:
+    interstitial_visual_event_ids = _interstitial_visual_attachment_event_ids(
+        events,
+        objective_source_event_ids=objective_source_event_ids,
+    )
+    exact_source_event_ids.update(interstitial_visual_event_ids)
+    user_events = [
+        event
+        for event in events
+        if event.event_type == "user_request"
+        or (event.event_type == "runtime_instruction" and event.role == "user")
+    ]
+    provenance_descriptors: list[TrustedRequestImageDescriptor] = []
+    for event in user_events:
+        event_is_exact_source = str(event.id) in exact_source_event_ids
+        descriptors = _trusted_image_descriptors_from_source_event(event)
+        matching_path_descriptors = [
+            descriptor
+            for descriptor in descriptors
+            if descriptor.path in request_image_paths
+        ]
+        if event_is_exact_source:
+            provenance_descriptors.extend(
+                replace(descriptor, dependency_role="active_input")
+                for descriptor in descriptors
+            )
+        elif matching_path_descriptors:
+            provenance_descriptors.extend(matching_path_descriptors)
+    if provenance_descriptors:
+        return _merge_source_image_descriptors(
+            checkpoint_descriptors,
+            provenance_descriptors,
+        )
+
+    for event in reversed(user_events):
         candidate = _checkpoint_request_verbatim(event)
         candidate_request = _validated_session_request(candidate)
         exact_match = (
@@ -4988,25 +6416,9 @@ async def resolve_session_handoff_attachment_descriptors(
         if not exact_match and not prefix_match:
             continue
 
-        descriptors = trusted_request_image_descriptors_from_payload(event_payload(event))
-        if descriptors and all(
-            descriptor.resolved_path or not descriptor.binding_valid for descriptor in descriptors
-        ):
-            return tuple(
-                materialize_trusted_request_image_descriptor(
-                    descriptor,
-                    data_dir=settings.data_dir,
-                )
-                for descriptor in descriptors
-            )
+        descriptors = _trusted_image_descriptors_from_source_event(event)
         if provider != "codex":
-            return tuple(
-                materialize_trusted_request_image_descriptor(
-                    descriptor,
-                    data_dir=settings.data_dir,
-                )
-                for descriptor in descriptors
-            )
+            return _merge_source_image_descriptors(checkpoint_descriptors, descriptors)
 
         source = await session.get(SourceDocument, event.source_document_id)
         metadata = _json_object(source.metadata_json if source else None)
@@ -5026,15 +6438,9 @@ async def resolve_session_handoff_attachment_descriptors(
             artifact_data_dir=settings.data_dir,
         )
         if recovered and (not descriptors or _same_descriptor_binding(descriptors, recovered)):
-            return recovered
-        return tuple(
-            materialize_trusted_request_image_descriptor(
-                descriptor,
-                data_dir=settings.data_dir,
-            )
-            for descriptor in descriptors
-        )
-    return ()
+            return _merge_source_image_descriptors(checkpoint_descriptors, recovered)
+        return _merge_source_image_descriptors(checkpoint_descriptors, descriptors)
+    return checkpoint_descriptors
 
 
 def _checkpoint_bound_image_descriptors(
@@ -5046,67 +6452,12 @@ def _checkpoint_bound_image_descriptors(
 
     if checkpoint.schema_version != CHECKPOINT_SCHEMA_VERSION:
         return False, ()
-    raw_payload = str(checkpoint.payload_json or "")
-    if (
-        not raw_payload
-        or not checkpoint.payload_sha256
-        or _sha256(raw_payload) != checkpoint.payload_sha256
-    ):
+    manifest_valid, request_sha256, descriptors = _checkpoint_image_descriptor_manifest(
+        checkpoint
+    )
+    if not manifest_valid or request_sha256 != _sha256(request_verbatim):
         return True, ()
-    payload = _json_object(raw_payload)
-    sections = payload.get("sections")
-    goals = sections.get("goal") if isinstance(sections, dict) else None
-    if not isinstance(goals, list) or len(goals) != 1:
-        return True, ()
-    goal_payload = goals[0].get("payload")
-    if not isinstance(goal_payload, dict):
-        return True, ()
-    if str(goal_payload.get("request_sha256") or "") != _sha256(request_verbatim):
-        return True, ()
-    raw_descriptors = goal_payload.get("trusted_image_descriptors")
-    expected_digest = str(goal_payload.get("trusted_image_descriptors_sha256") or "")
-    if (
-        not isinstance(raw_descriptors, list)
-        or not expected_digest
-        or _sha256(_canonical_json(raw_descriptors)) != expected_digest
-    ):
-        return True, ()
-    descriptors: list[TrustedRequestImageDescriptor] = []
-    for raw in raw_descriptors:
-        if not isinstance(raw, dict):
-            return True, ()
-        path = str(raw.get("path") or "").strip()
-        if not path:
-            return True, ()
-        ordinal = raw.get("ordinal")
-        size_bytes = raw.get("size_bytes")
-        descriptors.append(
-            TrustedRequestImageDescriptor(
-                path=path,
-                sha256=str(raw.get("sha256") or "").strip() or None,
-                mime_type=str(raw.get("mime_type") or "").strip() or None,
-                resolved_path=(
-                    str(raw.get("resolved_path") or raw.get("stored_path") or "").strip() or None
-                ),
-                ordinal=(
-                    ordinal if isinstance(ordinal, int) and not isinstance(ordinal, bool) else None
-                ),
-                size_bytes=(
-                    size_bytes
-                    if isinstance(size_bytes, int) and not isinstance(size_bytes, bool)
-                    else None
-                ),
-                binding_valid=raw.get("binding_valid") is not False,
-                binding_error=(str(raw.get("binding_error") or "").strip() or None),
-                visual_inspection=(
-                    raw.get("visual_inspection")
-                    if isinstance(raw.get("visual_inspection"), dict)
-                    else None
-                ),
-                visual_inspection_attested=raw.get("visual_inspection_attested") is True,
-            )
-        )
-    return True, tuple(descriptors)
+    return True, descriptors
 
 
 def _derive_session_requirements(
@@ -6845,11 +8196,25 @@ def _session_handoff_readiness(
     requirements: list[dict[str, Any]],
     reconciliation: dict[str, Any],
     files: dict[str, Any],
+    objective_resolution: dict[str, Any] | None = None,
     fresh_user_lead: bool = False,
     handoff_boundary_current: bool = True,
     repository_baseline_ready: bool = True,
     repository_available: bool = True,
 ) -> dict[str, Any]:
+    objective_resolution = (
+        objective_resolution if isinstance(objective_resolution, dict) else {}
+    )
+    objective_resolved = bool(
+        not objective_resolution
+        or (
+            objective_resolution.get("status") == "resolved"
+            and objective_resolution.get("blocks_copy") is not True
+        )
+    )
+    objective_execution_ready = bool(
+        objective_resolved and objective_resolution.get("blocks_execution") is not True
+    )
     statuses = [str(item.get("status") or "unknown") for item in requirements]
     target = intent["target_resolution"]
     task_type = str(intent.get("task_type") or "report")
@@ -6890,6 +8255,8 @@ def _session_handoff_readiness(
     no_active_blockers = not bool(reconciliation.get("active_reported_blockers"))
     intent_confirmed = intent.get("task_type_basis") != "safety_default_unconfirmed"
     checks = [
+        ("objective_resolved", 0, objective_resolved),
+        ("objective_grants_execution_authority", 0, objective_execution_ready),
         ("goal_normalized", 15, bool(intent.get("normalized_requirement"))),
         ("intent_confirmed", 0, intent_confirmed),
         (
@@ -6937,6 +8304,7 @@ def _session_handoff_readiness(
     counts = reconciliation.get("counts") or {}
     hard_prerequisites_met = bool(
         requirements
+        and objective_execution_ready
         and intent_confirmed
         and (not target["required"] or target["status"] == "resolved")
         and (task_type != "change" or implementation_known)
@@ -6950,7 +8318,11 @@ def _session_handoff_readiness(
             int(counts.get(state) or 0) for state in ("unknown", "reported_done", "contradicted")
         )
     )
-    if not intent_confirmed:
+    if not objective_resolved:
+        status = "objective_resolution_required"
+    elif not objective_execution_ready:
+        status = "fresh_user_lead_required"
+    elif not intent_confirmed:
         status = "intent_resolution_required"
     elif score >= 80 and hard_prerequisites_met:
         status = "execution_ready"
@@ -6973,7 +8345,17 @@ def _session_handoff_readiness(
             if candidate_paths
             else ""
         )
-        if not handoff_boundary_current:
+        if not objective_resolved:
+            next_action = (
+                "Preserve the recovered evidence as context only and ask the user "
+                "for one explicit, self-contained objective before copying or acting."
+            )
+        elif not objective_execution_ready:
+            next_action = (
+                "Show the restored objective as historical background only and ask "
+                "the user for a fresh instruction before inspecting, editing, or executing."
+            )
+        elif not handoff_boundary_current:
             next_action = (
                 "Refresh the Session Context from the current session boundary "
                 "and repository state before relying on recovered work."
@@ -7249,7 +8631,11 @@ def validate_continuation_lead(value: str | None) -> str | None:
         raise ValueError(
             f"The continuation lead must be at most {MAX_CONTINUATION_LEAD_CHARS:,} characters."
         )
-    if not raw.strip() or normalize_dialogue_user_request(raw) is None:
+    if (
+        not raw.strip()
+        or classify_objective(raw) is not ObjectiveClassification.SUBSTANTIVE
+        or normalize_dialogue_user_request(raw) is None
+    ):
         raise ValueError("The continuation lead must be a substantive user instruction.")
     return raw
 
@@ -7267,6 +8653,7 @@ def build_session_handoff_contract(
     receiver_attachment_deliveries: dict[str, dict[str, str]] | None = None,
     receiver_baseline_delivery: dict[str, str] | None = None,
     delivery_mode: str = "direct_copy",
+    allow_unresolved_dependency_preview: bool = False,
 ) -> dict[str, Any]:
     """Build the typed, reconciled contract used by the copyable rendering."""
 
@@ -7284,6 +8671,7 @@ def build_session_handoff_contract(
         normalized_continuation_lead
         and _continuation_lead_requires_unbound_evidence(effective_request)
         and not (lead_matches_historical_request and trusted_descriptor_values)
+        and not allow_unresolved_dependency_preview
     ):
         raise ValueError(
             "The continuation lead depends on referenced conversation or "
@@ -7292,10 +8680,11 @@ def build_session_handoff_contract(
             "self-contained."
         )
     normalized_supporting = _normalize_supporting_context(list(supporting_context))
-    dependency_required = _request_requires_materialized_context(effective_request)
-    if dependency_required and not normalized_supporting:
-        raise SessionContextMaterializationRequiredError()
-
+    effective_supporting = (
+        normalized_supporting
+        if not normalized_continuation_lead or lead_matches_historical_request
+        else []
+    )
     data = checkpoint_data or checkpoint_to_dict(
         checkpoint,
         recovered_goal=request_verbatim,
@@ -7311,26 +8700,166 @@ def build_session_handoff_contract(
         if isinstance(goal_payload.get("conversation_state"), dict)
         else None
     )
+    stored_goal_request = str(
+        goal_payload.get("request_verbatim")
+        or (
+            sections["goal"][-1].get("statement")
+            if sections.get("goal")
+            else ""
+        )
+        or ""
+    ).strip()
+    objective_candidate = effective_request
+    if (
+        not normalized_continuation_lead
+        and stored_goal_request
+        and classify_objective(stored_goal_request)
+        is not ObjectiveClassification.SUBSTANTIVE
+    ):
+        objective_candidate = stored_goal_request
+    antecedent_values = list(
+        objective_antecedents(
+            conversation_state=conversation_state,
+            goal_payload=goal_payload,
+            supporting_context=effective_supporting,
+        )
+    )
+    if (
+        request_verbatim.strip()
+        and " ".join(request_verbatim.split()).casefold()
+        != " ".join(objective_candidate.split()).casefold()
+    ):
+        antecedent_values.append(
+            ObjectiveAntecedent(
+                text=request_verbatim,
+                source="recovered_handoff_request",
+                source_event_id=(
+                    request_verbatim.source_provider_event_ids[-1]
+                    if isinstance(request_verbatim, ResolvedSessionRequest)
+                    and request_verbatim.source_provider_event_ids
+                    else None
+                ),
+                source_event_ids=(
+                    request_verbatim.source_provider_event_ids
+                    if isinstance(request_verbatim, ResolvedSessionRequest)
+                    else ()
+                ),
+                source_provider_event_ids=(
+                    request_verbatim.source_provider_event_ids
+                    if isinstance(request_verbatim, ResolvedSessionRequest)
+                    else ()
+                ),
+                source_session_event_ids=(
+                    request_verbatim.source_session_event_ids
+                    if isinstance(request_verbatim, ResolvedSessionRequest)
+                    else ()
+                ),
+            )
+        )
+    replayed_objective_resolution = (
+        request_verbatim.objective_resolution
+        if isinstance(request_verbatim, ResolvedSessionRequest)
+        and not normalized_continuation_lead
+        else None
+    )
+    objective_resolution_value = replayed_objective_resolution or resolve_objective(
+        objective_candidate,
+        antecedents=antecedent_values,
+        candidate_source_event_ids=(
+            request_verbatim.source_provider_event_ids
+            if isinstance(request_verbatim, ResolvedSessionRequest)
+            and not normalized_continuation_lead
+            else ()
+        ),
+        candidate_source_provider_event_ids=(
+            request_verbatim.source_provider_event_ids
+            if isinstance(request_verbatim, ResolvedSessionRequest)
+            and not normalized_continuation_lead
+            else ()
+        ),
+        candidate_source_session_event_ids=(
+            request_verbatim.source_session_event_ids
+            if isinstance(request_verbatim, ResolvedSessionRequest)
+            and not normalized_continuation_lead
+            else ()
+        ),
+    )
+    if (
+        isinstance(request_verbatim, ResolvedSessionRequest)
+        and request_verbatim.source_session_event_ids
+        and not objective_resolution_value.source_session_event_ids
+        and not normalized_continuation_lead
+    ):
+        objective_resolution_value = replace(
+            objective_resolution_value,
+            source_event_ids=request_verbatim.source_session_event_ids,
+            source_provider_event_ids=request_verbatim.source_provider_event_ids,
+            source_session_event_ids=request_verbatim.source_session_event_ids,
+        )
+    objective_resolution = objective_resolution_value.to_dict()
+    current_goal_provider_event_ids = (
+        list(request_verbatim.source_provider_event_ids)
+        if isinstance(request_verbatim, ResolvedSessionRequest)
+        else [
+            str(value).strip()
+            for value in goal_payload.get("source_provider_event_ids", [])
+            if str(value).strip()
+        ]
+        if isinstance(goal_payload.get("source_provider_event_ids"), list)
+        else []
+    )
+    current_goal_session_event_ids = (
+        list(request_verbatim.source_session_event_ids)
+        if isinstance(request_verbatim, ResolvedSessionRequest)
+        else [
+            str(value).strip()
+            for value in goal_payload.get("source_session_event_ids", [])
+            if str(value).strip()
+        ]
+        if isinstance(goal_payload.get("source_session_event_ids"), list)
+        else []
+    )
+    if not normalized_continuation_lead:
+        current_goal_provider_event_ids = current_goal_provider_event_ids or list(
+            objective_resolution.get("source_provider_event_ids") or []
+        )
+        current_goal_session_event_ids = current_goal_session_event_ids or list(
+            objective_resolution.get("source_session_event_ids") or []
+        )
+    resolved_effective_request = (
+        objective_resolution_value.resolved_text or effective_request
+    )
+    dependency_required = _request_requires_materialized_context(
+        resolved_effective_request
+    )
+    if (
+        dependency_required
+        and not effective_supporting
+        and objective_resolution_value.blocks_copy is False
+        and not allow_unresolved_dependency_preview
+    ):
+        raise SessionContextMaterializationRequiredError()
+
     stored_request_fragments = (
         _stored_session_request_fragments(
             sections,
-            request_verbatim=request_verbatim,
+            request_verbatim=resolved_effective_request,
         )
         if not normalized_continuation_lead or lead_matches_historical_request
         else []
     )
     request_fragment_records = stored_request_fragments or [
         _SessionRequestFragment(
-            source_request=effective_request,
-            requirement_request=effective_request,
+            source_request=resolved_effective_request,
+            requirement_request=resolved_effective_request,
         )
     ]
     derived_requirements = _derive_session_requirements_from_fragments(
-        effective_request,
+        resolved_effective_request,
         request_fragments=(
             fragment.requirement_request for fragment in request_fragment_records
         ),
-        supporting_context=normalized_supporting,
+        supporting_context=effective_supporting,
         include_source_fragment_provenance=True,
     )
     requirements: list[dict[str, Any]] = []
@@ -7351,7 +8880,7 @@ def build_session_handoff_contract(
             }
         )
     attachment_dependencies = _session_attachment_dependencies(
-        effective_request,
+        resolved_effective_request,
         request_fragments=request_fragment_records,
         trusted_descriptors=(
             trusted_descriptor_values
@@ -7364,6 +8893,12 @@ def build_session_handoff_contract(
         attachment_dependencies,
         receiver_attachment_deliveries or {},
     )
+    unresolved_dependencies = _explicit_unresolved_session_dependencies(
+        resolved_effective_request,
+        request_fragments=request_fragment_records,
+        attachment_dependencies=attachment_dependencies,
+        supporting_context=effective_supporting,
+    )
     _link_session_attachments_to_requirements(
         attachment_dependencies,
         requirements=requirements,
@@ -7374,9 +8909,9 @@ def build_session_handoff_contract(
         requirement.pop("_source_fragment_indexes", None)
     for item in execution_guidance:
         item.pop("_source_fragment_indexes", None)
-    task_mode = _infer_session_task_mode(effective_request)
+    task_mode = _infer_session_task_mode(resolved_effective_request)
     task_type_basis = _session_handoff_task_type_basis(
-        effective_request,
+        resolved_effective_request,
         task_mode=task_mode,
     )
     effective_progress = [] if normalized_continuation_lead else sections["progress"]
@@ -7446,7 +8981,7 @@ def build_session_handoff_contract(
         repository=repository,
     )
     intent = _session_handoff_intent(
-        effective_request,
+        resolved_effective_request,
         task_mode=task_mode,
         requirements=enriched_requirements,
         files=files,
@@ -7458,6 +8993,7 @@ def build_session_handoff_contract(
         requirements=enriched_requirements,
         reconciliation=reconciliation,
         files=files,
+        objective_resolution=objective_resolution,
         fresh_user_lead=normalized_continuation_lead is not None,
         handoff_boundary_current=not bool(
             (data.get("boundary") or {}).get("has_newer_events") is True
@@ -7479,7 +9015,11 @@ def build_session_handoff_contract(
         ),
         repository_available=bool(repository.get("root")),
     )
-    if direction_required:
+    if (
+        direction_required
+        and objective_resolution.get("status") == "resolved"
+        and objective_resolution.get("blocks_execution") is not True
+    ):
         readiness.update(
             {
                 "status": "direction_required",
@@ -7527,8 +9067,10 @@ def build_session_handoff_contract(
     )
     quality = _session_handoff_quality(
         dependency_required=dependency_required,
-        supporting_context=normalized_supporting,
+        supporting_context=effective_supporting,
         attachment_dependencies=attachment_dependencies,
+        unresolved_dependencies=unresolved_dependencies,
+        objective_resolution=objective_resolution,
         requirements=enriched_requirements,
         reconciliation=reconciliation,
         repository=repository,
@@ -7547,7 +9089,12 @@ def build_session_handoff_contract(
         blocking_codes = {
             str(item.get("code") or "") for item in quality.get("blocking_issues") or []
         }
-        if not direction_required and "repository_snapshot_present" in blocking_codes and (
+        if "objective_resolved" in blocking_codes:
+            readiness["next_action"] = (
+                "Ask the user for one explicit, self-contained objective. Preserve "
+                "the unresolved candidate and recovered evidence as background only."
+            )
+        elif not direction_required and "repository_snapshot_present" in blocking_codes and (
             (repository.get("resolution") or {}).get("status")
             == "selection_required"
         ):
@@ -7561,24 +9108,38 @@ def build_session_handoff_contract(
                 "recapture a complete current repository snapshot before execution."
             )
         quality["automatic_execution_ready"] = False
+    objective_execution_blocked = bool(
+        objective_resolution.get("blocks_execution") is True
+    )
+    required_capability = (
+        "repository_read"
+        if objective_execution_blocked and repository.get("root")
+        else "workspace_read"
+        if objective_execution_blocked
+        else "repository_write"
+        if task_mode == "change" and repository.get("root")
+        else "repository_read"
+        if repository.get("root")
+        else "workspace_write"
+        if task_mode == "change"
+        else "workspace_read"
+    )
     return {
         "task_mode": task_mode,
         "execution_policy": {
             "permission_mode": (
                 "workspace_write"
-                if task_mode == "change" and not direction_required
+                if task_mode == "change"
+                and not direction_required
+                and not objective_execution_blocked
                 else "read_only"
             ),
-            "may_edit": task_mode == "change" and not direction_required,
-            "required_capability": (
-                "repository_write"
-                if task_mode == "change" and repository.get("root")
-                else "repository_read"
-                if repository.get("root")
-                else "workspace_write"
-                if task_mode == "change"
-                else "workspace_read"
+            "may_edit": bool(
+                task_mode == "change"
+                and not direction_required
+                and not objective_execution_blocked
             ),
+            "required_capability": required_capability,
             "permission_observed_at_capture": ("unavailable"),
             "revalidate_live_permission": True,
             "requires_new_user_lead": True,
@@ -7586,18 +9147,45 @@ def build_session_handoff_contract(
         },
         "current_goal": {
             "request_verbatim": request_verbatim,
-            "text": _self_contained_goal(request_verbatim),
-            "authority": "user_authored",
-            "request_sha256": _sha256(request_verbatim),
-            "self_contained": (
-                not _request_requires_materialized_context(request_verbatim)
-                or bool(normalized_supporting)
+            "text": _self_contained_goal(
+                request_verbatim
+                if normalized_continuation_lead
+                else resolved_effective_request
             ),
-            "materialized_dependency_count": len(normalized_supporting),
+            "authority": (
+                "user_authored"
+                if objective_resolution.get("status") == "resolved"
+                else "unresolved_candidate"
+            ),
+            "request_sha256": _sha256(request_verbatim),
+            "resolved_request_sha256": _sha256(
+                request_verbatim
+                if normalized_continuation_lead
+                else resolved_effective_request
+            ),
+            "objective_classification": objective_resolution.get("classification"),
+            "objective_resolution_status": objective_resolution.get("status"),
+            "source_provider_event_ids": current_goal_provider_event_ids,
+            "source_session_event_ids": current_goal_session_event_ids,
+            "self_contained": (
+                (
+                    not _request_requires_materialized_context(
+                        request_verbatim
+                        if normalized_continuation_lead
+                        else resolved_effective_request
+                    )
+                    or bool(effective_supporting)
+                )
+                and not unresolved_dependencies
+                and objective_resolution.get("blocks_copy") is not True
+            ),
+            "materialized_dependency_count": len(effective_supporting),
             "attachment_dependency_count": len(attachment_dependencies),
+            "unresolved_dependency_count": len(unresolved_dependencies),
         },
         "intent": intent,
         "readiness": readiness,
+        "objective_resolution": objective_resolution,
         "conversation_state": conversation_state,
         **(
             {
@@ -7612,8 +9200,9 @@ def build_session_handoff_contract(
             if normalized_continuation_lead
             else {}
         ),
-        "supporting_context": normalized_supporting,
+        "supporting_context": effective_supporting,
         "attachment_dependencies": attachment_dependencies,
+        "unresolved_dependencies": unresolved_dependencies,
         "constraints": execution_guidance,
         "requirements": enriched_requirements,
         "definition_of_done": definition_of_done,
@@ -9183,6 +10772,8 @@ def _session_handoff_quality(
     dependency_required: bool,
     supporting_context: list[dict[str, str]],
     attachment_dependencies: list[dict[str, Any]],
+    unresolved_dependencies: list[dict[str, Any]],
+    objective_resolution: dict[str, Any],
     requirements: list[dict[str, Any]],
     reconciliation: dict[str, Any],
     repository: dict[str, Any],
@@ -9195,6 +10786,9 @@ def _session_handoff_quality(
     delivery_mode: str = "direct_copy",
 ) -> dict[str, Any]:
     readiness = readiness if isinstance(readiness, dict) else {}
+    objective_resolution = (
+        objective_resolution if isinstance(objective_resolution, dict) else {}
+    )
     currentness = currentness if isinstance(currentness, dict) else {}
     boundary = boundary if isinstance(boundary, dict) else {}
     conversation_state = conversation_state if isinstance(conversation_state, dict) else {}
@@ -9235,7 +10829,40 @@ def _session_handoff_quality(
         if item.get("required") is True
         and str(item.get("receiver_availability") or "") != "available"
     ]
+    unresolved_required_dependencies = [
+        item
+        for item in unresolved_dependencies
+        if item.get("required") is True and item.get("blocks_copy") is True
+    ]
+    unresolved_by_kind = {
+        kind: [
+            item
+            for item in unresolved_required_dependencies
+            if str(item.get("kind") or "") == kind
+        ]
+        for kind in ("image", "file", "conversation", "change_set")
+    }
     checks = [
+        {
+            "code": "objective_resolved",
+            "status": (
+                "pass"
+                if objective_resolution.get("status") == "resolved"
+                and objective_resolution.get("blocks_copy") is not True
+                else "fail"
+            ),
+            "classification": objective_resolution.get("classification"),
+            "reason": objective_resolution.get("reason"),
+            "message": (
+                "The candidate objective was resolved to one substantive user task."
+                if objective_resolution.get("status") == "resolved"
+                and objective_resolution.get("blocks_copy") is not True
+                else (
+                    "The candidate is context-dependent or non-objective text and "
+                    "could not be resolved against one authoritative antecedent."
+                )
+            ),
+        },
         {
             "code": "goal_self_contained",
             "status": ("pass" if not dependency_required or supporting_context else "fail"),
@@ -9296,6 +10923,17 @@ def _session_handoff_quality(
                 else "Every required attachment supports a user-authored outcome."
             ),
         },
+        *(
+            {
+                "code": _UNRESOLVED_DEPENDENCY_ISSUE_CODES[kind],
+                "status": "fail",
+                "dependency_ids": [str(item.get("id") or "") for item in items],
+                "dependency_kind": kind,
+                "message": str(items[0].get("reason") or "").strip(),
+            }
+            for kind, items in unresolved_by_kind.items()
+            if items
+        ),
         {
             "code": "status_reconciled",
             "status": "pass",
@@ -12135,6 +13773,14 @@ def _session_handoff_evidence_access(contract: dict[str, Any]) -> dict[str, Any]
         and item.get("sha256")
         and str(item.get("receiver_availability") or "") != "available"
     ]
+    unresolved_dependencies = [
+        item
+        for item in contract.get("unresolved_dependencies") or []
+        if item.get("required") is True and item.get("blocks_copy") is True
+    ]
+    unresolved_dependency_ids = [
+        str(item.get("id") or "") for item in unresolved_dependencies
+    ]
     repository = contract.get("repository") or {}
     repository_resolution = repository.get("resolution") or {}
     repository_selection_required = (
@@ -12188,7 +13834,13 @@ def _session_handoff_evidence_access(contract: dict[str, Any]) -> dict[str, Any]
         else "selection_required"
         if repository_selection_required
         else "unavailable"
-        if unavailable or unmapped or baseline_unavailable or repository_unavailable
+        if (
+            unavailable
+            or unmapped
+            or unresolved_dependencies
+            or baseline_unavailable
+            or repository_unavailable
+        )
         else "materialization_required"
         if receiver_pending or baseline_receiver_pending
         else "available"
@@ -12198,6 +13850,14 @@ def _session_handoff_evidence_access(contract: dict[str, Any]) -> dict[str, Any]
         "required_attachment_ids": [str(item.get("id") or "") for item in required],
         "unavailable_attachment_ids": unavailable,
         "unmapped_attachment_ids": unmapped,
+        **(
+            {
+                "unresolved_dependency_ids": unresolved_dependency_ids,
+                "unresolved_dependencies": unresolved_dependencies,
+            }
+            if unresolved_dependencies
+            else {}
+        ),
         "receiver_materialization_required_ids": receiver_pending,
         "repository_snapshot": {
             "required": repository_required,
@@ -12218,11 +13878,16 @@ def _session_handoff_evidence_access(contract: dict[str, Any]) -> dict[str, Any]
             "manifest_sha256": baseline_manifest.get("manifest_sha256"),
         },
         "blocks_copy": bool(
-            unavailable or unmapped or baseline_unavailable or repository_unavailable
+            unavailable
+            or unmapped
+            or unresolved_dependencies
+            or baseline_unavailable
+            or repository_unavailable
         ),
         "ready_for_execution": bool(
             not unavailable
             and not unmapped
+            and not unresolved_dependencies
             and not receiver_pending
             and repository_available
             and not baseline_unavailable
@@ -12244,6 +13909,7 @@ def _session_handoff_readiness_dimensions(
     evidence_blocker_codes = {
         "required_attachments_resolved",
         "required_attachment_requirement_linkage",
+        *_UNRESOLVED_DEPENDENCY_ISSUE_CODES.values(),
         "repository_snapshot_present",
         "repository_status_capture_complete",
         "repository_protected_baseline_exact",
@@ -12299,6 +13965,7 @@ def build_session_handoff_artifact(
     delivery_mode: str = "direct_copy",
     target_model: str | None = None,
     token_budget: int | None = None,
+    allow_unresolved_dependency_preview: bool = False,
 ) -> dict[str, Any]:
     """Build the one canonical Session Context artifact used by every surface."""
 
@@ -12322,6 +13989,7 @@ def build_session_handoff_artifact(
         receiver_attachment_deliveries=receiver_attachment_deliveries,
         receiver_baseline_delivery=receiver_baseline_delivery,
         delivery_mode=normalized_delivery_mode,
+        allow_unresolved_dependency_preview=allow_unresolved_dependency_preview,
     )
     required_delivery_attachments = [
         item
@@ -12875,6 +14543,10 @@ def _build_sections(
                 request_event.content,
                 request_verbatim=fragment,
             ):
+                item = {
+                    **item,
+                    "source_document_id": str(request_event.source_document_id),
+                }
                 key = _canonical_json(item)
                 if key in seen_supporting_context:
                     continue

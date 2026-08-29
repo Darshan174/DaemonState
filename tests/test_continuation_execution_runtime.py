@@ -58,6 +58,7 @@ from app.services.continuation_quality_gate import evaluate_continuation_quality
 from app.services.checkpoints import SESSION_HANDOFF_SCHEMA_VERSION
 from app.services.continuation_runtime import (
     ContinuationRunError,
+    _canonical_session_context_for_preparation,
     _contract_outcome,
     _repairable,
     _staging_context_for_preparation,
@@ -87,6 +88,122 @@ from app.services.runtime_bundle import (
     materialize_runtime_bundle,
 )
 from app.time import utc_now
+
+
+async def test_continuation_runtime_keeps_execution_handoff_builder(monkeypatch) -> None:
+    """Continue must not consume the public, background-only Session Context."""
+
+    workspace_id = uuid4()
+    checkpoint_id = uuid4()
+    execution_id = uuid4()
+    request_verbatim = "Implement the approved change and run the focused tests."
+    request_sha256 = hashlib.sha256(request_verbatim.encode("utf-8")).hexdigest()
+    checkpoint = SimpleNamespace(
+        id=checkpoint_id,
+        workspace_id=workspace_id,
+        provider="codex",
+        session_id="execution-context-split",
+    )
+    preparation = SimpleNamespace(
+        checkpoint={"id": str(checkpoint_id)},
+        task={},
+        repository={},
+    )
+    contract = SimpleNamespace(
+        id=execution_id,
+        task=SimpleNamespace(request_sha256=request_sha256),
+        task_mode=SimpleNamespace(value="change"),
+        authority=SimpleNamespace(
+            filesystem_mode=SimpleNamespace(value="workspace_write")
+        ),
+    )
+    builder_calls: list[dict[str, object]] = []
+
+    async def projected_checkpoints(*_args, **_kwargs):
+        return [{"boundary": {}}]
+
+    async def checkpoint_data(*_args, **_kwargs):
+        return {
+            "sections": {
+                "goal": [{"payload": {"request_verbatim": request_verbatim}}]
+            }
+        }
+
+    async def empty_values(*_args, **_kwargs):
+        return []
+
+    async def repository_comparison(*_args, **_kwargs):
+        return {}
+
+    def execution_handoff_builder(received_checkpoint, **kwargs):
+        assert received_checkpoint is checkpoint
+        builder_calls.append(kwargs)
+        return {
+            "schema_version": "session_handoff.v1",
+            "scope": "session",
+            "task_mode": "change",
+            "execution_policy": {"permission_mode": "workspace_write"},
+            "exact_next_action": {"text": "Implement and verify the change."},
+            "content": "# Continuation Brief v2\n\n## Start here\n",
+            "sha256": "a" * 64,
+        }
+
+    def public_background_builder(*_args, **_kwargs):
+        pytest.fail("continuation runtime called the public background-only builder")
+
+    async def get_checkpoint(*_args, **_kwargs):
+        return checkpoint
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.get_checkpoint",
+        get_checkpoint,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.checkpoints_to_dicts",
+        projected_checkpoints,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.project_desktop_stage_checkpoint_data",
+        checkpoint_data,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.resolve_session_handoff_supporting_context",
+        empty_values,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.resolve_session_handoff_attachment_descriptors",
+        empty_values,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.compare_checkpoint_repository",
+        repository_comparison,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.build_session_handoff_artifact",
+        execution_handoff_builder,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.build_session_context_artifact",
+        public_background_builder,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime._materialize_desktop_stage_attachments",
+        lambda *_args, **_kwargs: None,
+    )
+
+    artifact, attachment_bundle = await _canonical_session_context_for_preparation(
+        SimpleNamespace(),
+        preparation,
+        contract=contract,
+        workspace_id=workspace_id,
+        access_scope=SimpleNamespace(principal_id="local"),
+    )
+
+    assert attachment_bundle is None
+    assert artifact["exact_next_action"]["text"] == "Implement and verify the change."
+    assert len(builder_calls) == 1
+    assert builder_calls[0]["delivery_mode"] == "desktop_stage"
 
 
 def _git(root: Path, *args: str) -> None:

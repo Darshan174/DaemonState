@@ -48,6 +48,7 @@ async def run_migrations(conn: AsyncConnection) -> None:
     await _migrate_work_checkpoint_schema(conn)
     await _migrate_continuation_execution_schema(conn)
     await _migrate_continuation_stage_request_schema(conn)
+    await _migrate_context_quality_schema(conn)
     await _migrate_query_and_sync_indexes(conn)
     await _migrate_source_ingestion_jobs(conn)
     await _migrate_daemonstate_brand(conn)
@@ -194,7 +195,6 @@ async def _migrate_continuation_stage_request_schema(
             index.create(sync_conn, checkfirst=True)
 
     await conn.run_sync(_create)
-
 
 async def _migrate_daemonstate_brand(conn: AsyncConnection) -> None:
     """Move system-owned brand identifiers forward without rewriting user prose."""
@@ -396,6 +396,60 @@ async def _migrate_work_checkpoint_schema(conn: AsyncConnection) -> None:
         await conn.execute(text(
             f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} "
             f"ON {table_name} ({joined})"
+        ))
+
+
+async def _migrate_context_quality_schema(conn: AsyncConnection) -> None:
+    """Install the shared append-only context quality ledger on legacy databases."""
+
+    required = {
+        "workspaces",
+        "context_packs",
+        "claims",
+        "evidence_spans",
+        "source_documents",
+        "session_events",
+        "work_checkpoints",
+        "checkpoint_items",
+    }
+    available = {
+        name for name in required if await _get_table_columns(conn, name)
+    }
+    if available != required:
+        return
+
+    table_names = (
+        "context_observation_bundles",
+        "context_artifact_candidates",
+        "context_artifact_claims",
+        "context_candidate_evaluations",
+        "active_context_pointers",
+        "context_activation_events",
+    )
+
+    def _create(sync_conn) -> None:
+        for table_name in table_names:
+            Base.metadata.tables[table_name].create(sync_conn, checkfirst=True)
+        for table_name in table_names:
+            for index in Base.metadata.tables[table_name].indexes:
+                index.create(sync_conn, checkfirst=True)
+
+    await conn.run_sync(_create)
+
+    claim_columns = await _get_table_columns(conn, "context_artifact_claims")
+    for column in ("repository_snapshot_sha256", "session_boundary_id"):
+        if column not in claim_columns:
+            await conn.execute(text(
+                "ALTER TABLE context_artifact_claims "
+                f"ADD COLUMN {column} VARCHAR(64)"
+            ))
+    evaluation_columns = await _get_table_columns(
+        conn, "context_candidate_evaluations"
+    )
+    if "baseline_generation" not in evaluation_columns:
+        await conn.execute(text(
+            "ALTER TABLE context_candidate_evaluations "
+            "ADD COLUMN baseline_generation INTEGER NOT NULL DEFAULT 0"
         ))
 
 
