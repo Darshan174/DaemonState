@@ -261,6 +261,7 @@ struct CheckpointHandoffRequest: Encodable {
 
 struct SessionHandoffEnvelope: Decodable {
     let schemaVersion: String?
+    let contextRole: String?
     let scope: String?
     let provider: String?
     let sessionID: String?
@@ -270,9 +271,12 @@ struct SessionHandoffEnvelope: Decodable {
     let sha256: String?
     let qualityReport: SessionQualityEnvelope?
     let readinessDimensions: SessionReadinessDimensionsEnvelope?
+    let qualityControl: ContextQualityControlEnvelope?
+    let operationCapabilities: SessionOperationCapabilitiesEnvelope?
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
+        case contextRole = "context_role"
         case scope
         case provider
         case sessionID = "session_id"
@@ -282,7 +286,39 @@ struct SessionHandoffEnvelope: Decodable {
         case sha256
         case qualityReport = "quality_report"
         case readinessDimensions = "readiness_dimensions"
+        case qualityControl = "quality_control"
+        case operationCapabilities = "operation_capabilities"
     }
+}
+
+struct ContextQualityControlEnvelope: Decodable {
+    let schemaVersion: String?
+    let status: String?
+    let copyAllowed: Bool?
+    let candidateID: String?
+    let activeCandidateID: String?
+    let artifactSHA256: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case status
+        case copyAllowed = "copy_allowed"
+        case candidateID = "candidate_id"
+        case activeCandidateID = "active_candidate_id"
+        case artifactSHA256 = "artifact_sha256"
+    }
+}
+
+struct SessionOperationCapabilitiesEnvelope: Decodable {
+    let clipboardCopy: SessionClipboardCopyEnvelope?
+
+    private enum CodingKeys: String, CodingKey {
+        case clipboardCopy = "clipboard_copy"
+    }
+}
+
+struct SessionClipboardCopyEnvelope: Decodable {
+    let allowed: Bool?
 }
 
 struct SessionReadinessDimensionsEnvelope: Decodable {
@@ -356,12 +392,14 @@ struct WorkspaceContextPackEnvelope: Decodable {
     let schemaVersion: String?
     let markdown: String?
     let manifest: WorkspaceContextManifestEnvelope?
+    let qualityControl: ContextQualityControlEnvelope?
 
     private enum CodingKeys: String, CodingKey {
         case contextPackID = "context_pack_id"
         case schemaVersion = "schema_version"
         case markdown
         case manifest
+        case qualityControl = "quality_control"
     }
 }
 

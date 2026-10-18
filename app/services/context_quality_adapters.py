@@ -60,6 +60,7 @@ def session_context_claims(
     *,
     checkpoint_id: str,
     boundary_event_id: str | None,
+    retrieval_context: Mapping[str, Any] | None = None,
 ) -> tuple[ContextClaimEnvelope, ...]:
     claims: list[ContextClaimEnvelope] = []
     boundary_ref = f"session_event:{boundary_event_id}" if boundary_event_id else None
@@ -329,31 +330,58 @@ def session_context_claims(
         ))
 
     repository = dict(contract.get("repository") or {})
-    repository_root = _text(repository.get("root"))
     repository_snapshot = _text(
         repository.get("status_fingerprint")
         or repository.get("snapshot_fingerprint")
         or repository.get("head_commit")
     )
-    if repository_root or repository_snapshot:
+    snapshot_authority = repository.get("snapshot_authority")
+    captured_repository = repository.get("captured_snapshot") or {}
+    repository_observations = []
+    if captured_repository and snapshot_authority != "observed_at_checkpoint":
+        repository_observations.append((
+            "session.repository_checkpoint_snapshot", "repository_checkpoint",
+            "Checkpoint repository snapshot", captured_repository, "historical",
+        ))
+    repository_observations.append((
+        "session.repository_snapshot",
+        "repository_checkpoint" if snapshot_authority == "observed_at_checkpoint" else "repository_inspection",
+        "Checkpoint repository snapshot"
+        if snapshot_authority == "observed_at_checkpoint"
+        else "Repository inspected for this context",
+        repository,
+        "historical" if snapshot_authority == "observed_at_checkpoint"
+        else "current" if snapshot_authority == "observed_at_handoff"
+        else "unknown",
+    ))
+    for stable_id, section, label, observation, truth_state in repository_observations:
+        root = _text(observation.get("root"))
+        fingerprint = _text(
+            observation.get("status_fingerprint") or observation.get("snapshot_fingerprint")
+            or observation.get("worktree_fingerprint") or observation.get("head_commit")
+        )
+        if not (root or fingerprint or observation.get("branch")):
+            continue
+        observed_at = _text(observation.get("captured_at"))
+        dirty = observation.get("dirty")
         statement = _text(
-            f"Repository {repository_root or 'unresolved'}; "
-            f"branch {repository.get('branch') or 'unknown'}; "
-            f"HEAD {repository.get('head_commit') or 'unknown'}; "
-            f"dirty {bool(repository.get('dirty'))}."
+            f"{label} (observed {observed_at or 'time unavailable'}): "
+            f"{root or 'unresolved'}; branch {observation.get('branch') or 'unknown'}; "
+            f"HEAD {observation.get('head_commit') or 'unknown'}; "
+            f"dirty {'unknown' if dirty is None else bool(dirty)}."
         )
         claims.append(ContextClaimEnvelope(
-            stable_id="session.repository_snapshot",
-            section="relevant_surfaces",
+            stable_id=stable_id,
+            section=section,
             kind="repository_state",
             statement=statement,
             scope=ContextKind.SESSION,
             authority="repository_observation",
-            truth_state="current",
+            truth_state=truth_state,
             criticality=ClaimCriticality.HIGH,
-            evidence_refs=_refs(repository_snapshot, repository.get("captured_at")),
+            evidence_refs=_refs(fingerprint, observed_at),
             repository_snapshot_sha256=(
-                repository_snapshot if len(repository_snapshot) == 64 else None
+                fingerprint if len(fingerprint) == 64 else None
             ),
             session_boundary_id=boundary_event_id,
         ))
@@ -409,7 +437,12 @@ def session_context_claims(
                     if repository_observed
                     else "agent_report"
                 ),
-                truth_state="current" if repository_observed else "reported",
+                truth_state=(
+                    "reported" if not repository_observed
+                    else "current" if snapshot_authority == "observed_at_handoff"
+                    else "historical" if snapshot_authority == "observed_at_checkpoint"
+                    else "unknown"
+                ),
                 criticality=ClaimCriticality.NORMAL,
                 selection=(
                     ClaimSelection.INCLUDED if included else ClaimSelection.EXCLUDED
@@ -478,6 +511,18 @@ def session_context_claims(
                 evidence_refs=_refs(boundary_ref),
                 session_boundary_id=boundary_event_id,
             ))
+    for span in (retrieval_context or {}).get("spans") or []:
+        claims.append(ContextClaimEnvelope(
+            stable_id=f"session.{span['id']}", section="retrieved_evidence",
+            kind="historical_excerpt", statement=span["statement"],
+            scope=ContextKind.SESSION, authority="compiler_inference",
+            truth_state="historical", criticality=ClaimCriticality.NORMAL,
+            evidence_refs=_refs(
+                span["source_document_id"], span["source_event_id"],
+                span["source_event_sha256"], span["excerpt_sha256"],
+            ),
+            session_boundary_id=boundary_event_id,
+        ))
     return tuple(sorted(claims, key=lambda item: item.stable_id))
 
 
@@ -507,13 +552,19 @@ def workspace_context_claims(
             evidence_refs=_refs(product.get("evidence_ref_ids")),
             repository_snapshot_sha256=snapshot or None,
         ))
+    product_claim_occurrences: dict[str, int] = {}
     for item in product.get("claims") or []:
         statement = _text(item.get("value") or item.get("statement"))
         if not statement:
             continue
         kind = _text(item.get("kind")) or "product_fact"
+        ordinal = product_claim_occurrences.get(kind, 0)
+        product_claim_occurrences[kind] = ordinal + 1
+        # Keep the first slot compatible with existing candidates, while retaining
+        # every additional boundary/deployment claim instead of colliding in SQL.
+        stable_id = f"workspace.product:{kind}" + (f":{ordinal}" if ordinal else "")
         claims.append(ContextClaimEnvelope(
-            stable_id=f"workspace.product:{kind}",
+            stable_id=stable_id,
             section="product",
             kind="product_fact",
             statement=statement,

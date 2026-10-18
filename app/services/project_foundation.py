@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Iterable
 from uuid import UUID
@@ -85,9 +85,8 @@ _EVIDENCE_PRIORITY = {
     ProjectEvidenceLevel.HUMAN_CONFIRMED: 2,
     ProjectEvidenceLevel.CORROBORATED: 1,
 }
-_MAX_FACTS_PER_SECTION = 2
-_MAX_FOUNDATION_FACTS = 16
-_MAX_PROVENANCE_PER_FACT = 3
+_FOUNDATION_FACT_BUDGET_TOKENS = 3_000
+_MAX_PROVENANCE_PER_FACT = 8
 _MAX_ATOMIC_FACT_CHARS = 600
 
 
@@ -506,6 +505,8 @@ def _provenance(
 
 def _select_balanced(
     candidates: Iterable[_Candidate],
+    *,
+    budget_tokens: int = _FOUNDATION_FACT_BUDGET_TOKENS,
 ) -> list[tuple[_Candidate, tuple[ProjectContextProvenance, ...], int]]:
     grouped_duplicates: dict[
         tuple[ProjectFoundationSection, str, str],
@@ -549,21 +550,37 @@ def _select_balanced(
         -value[0].confidence,
         value[0].title.casefold(),
     ))
-    counts: dict[ProjectFoundationSection, int] = defaultdict(int)
+    by_section: dict[ProjectFoundationSection, deque] = defaultdict(deque)
+    for value in deduped:
+        by_section[value[0].section].append(value)
+
+    # Give every populated topic a place before spending the remaining budget
+    # on deeper detail. The old prefix selected two per topic and exhausted its
+    # item cap before reaching constraints or product direction.
+    ordered = [values.popleft() for values in by_section.values()]
+    critical_kinds = {ProjectContextKind.INVARIANT, ProjectContextKind.RISK}
+    for section, values in by_section.items():
+        ordered.extend(value for value in values if value[0].kind in critical_kinds)
+        by_section[section] = deque(value for value in values if value[0].kind not in critical_kinds)
+    while any(by_section.values()):
+        ordered.extend(values.popleft() for values in by_section.values() if values)
+
     result: list[
         tuple[_Candidate, tuple[ProjectContextProvenance, ...], int]
     ] = []
-    for value in deduped:
-        section = value[0].section
-        if counts[section] >= _MAX_FACTS_PER_SECTION:
+    used_tokens = 0
+    for value in ordered:
+        candidate = value[0]
+        # The export renderer measures its final lines separately. Here reserve
+        # room for the complete atomic statement, heading, and citation labels.
+        tokens = (len(candidate.title) + len(candidate.statement) + 99) // 4
+        if used_tokens + tokens > budget_tokens:
             continue
-        counts[section] += 1
+        used_tokens += tokens
         result.append(value)
-        if len(result) >= min(
-            MAX_PROJECT_CONTEXT_ITEMS,
-            _MAX_FOUNDATION_FACTS,
-        ):
+        if len(result) >= MAX_PROJECT_CONTEXT_ITEMS:
             break
+    result.sort(key=lambda value: section_order[value[0].section])
     return result
 
 
@@ -651,9 +668,9 @@ def _source_metadata(source: SourceDocument) -> dict[str, object]:
 
 
 def _normalized_fact(value: str) -> str:
-    return " ".join(
-        re.sub(r"[^a-z0-9/_.:-]+", " ", value.casefold()).split()
-    )[:500]
+    # Punctuation, case, or whitespace inside a quoted value can change its
+    # meaning. Only identical statements are safe to consolidate here.
+    return value.strip()
 
 
 def _single_line(value: str, limit: int) -> str:

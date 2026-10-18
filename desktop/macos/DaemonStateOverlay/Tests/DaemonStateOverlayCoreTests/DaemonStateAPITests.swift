@@ -131,7 +131,7 @@ struct DaemonStateAPITests {
     }
 
     @Test
-    func workspaceContextFailsClosedWhenFoundationIsNotCopyReady() async {
+    func workspaceContextFailsClosedWhenControllerRejectsIt() async {
         defer { URLProtocolStub.reset() }
         let content = "# Workspace Context\n\nIncomplete repository context."
         let api = makeAPI { request in
@@ -140,7 +140,7 @@ struct DaemonStateAPITests {
                 json: workspaceContextJSON(
                     content: content,
                     sha256: sha256(content),
-                    foundationCopyReady: false
+                    qualityControlAllowed: false
                 )
             )
         }
@@ -158,7 +158,7 @@ struct DaemonStateAPITests {
                 return
             }
             #expect(reasons == [
-                "No safe repository-stated product purpose was found."
+                "Context quality control has not approved this artifact (rejected)."
             ])
         } catch {
             Issue.record("Unexpected error: \(error)")
@@ -985,7 +985,7 @@ struct DaemonStateAPITests {
     }
 
     @Test
-    func currentSessionSkipsHistoricalCompactionPrecheckAndMarksHandoffOrigin() async throws {
+    func currentSessionCopiesBackgroundWithoutExecutionHintsOrCompactionPrecheck() async throws {
         defer { URLProtocolStub.reset() }
         let content = "# Current Session Context\n\nContinue the active session."
         var paths: [String] = []
@@ -1007,7 +1007,7 @@ struct DaemonStateAPITests {
             case "/api/checkpoints/latest":
                 return URLProtocolStub.response(
                     for: request,
-                    json: self.checkpointJSON()
+                    json: self.checkpointJSON(hasExecutionHints: false)
                 )
             case "/api/checkpoints/checkpoint-1/handoff":
                 handoffBody = try self.jsonBody(request)
@@ -1391,17 +1391,24 @@ struct DaemonStateAPITests {
         provider: String = "codex",
         sessionID: String = "session-1",
         checkpointID: String = "checkpoint-1",
-        currentnessState: String = "captured"
+        currentnessState: String = "captured",
+        hasExecutionHints: Bool = true
     ) -> String {
-        """
+        let sections = hasExecutionHints ? """
+        {
+          "goal": [{"statement": "Build the floating context overlay."}],
+          "exact_next_action": [{"statement": "Compile and test the overlay."}]
+        }
+        """ : "{}"
+        return """
         {
           "id": "\(checkpointID)",
           "workspace_id": "\(workspaceID)",
           "provider": "\(provider)",
           "session_id": "\(sessionID)",
           "schema_version": "work_checkpoint.v10",
-          "capture_status": "complete",
-          "projection": {"valid": true},
+          "capture_status": "\(hasExecutionHints ? "complete" : "incomplete")",
+          "projection": {"valid": \(hasExecutionHints)},
           "currentness": {"state": "\(currentnessState)"},
           "boundary": {
             "event_id": "event-20",
@@ -1409,10 +1416,7 @@ struct DaemonStateAPITests {
             "session_tip_sequence": 20,
             "has_newer_events": false
           },
-          "sections": {
-            "goal": [{"statement": "Build the floating context overlay."}],
-            "exact_next_action": [{"statement": "Compile and test the overlay."}]
-          }
+          "sections": \(sections)
         }
         """
     }
@@ -1444,7 +1448,8 @@ struct DaemonStateAPITests {
     ) -> String {
         """
         {
-          "schema_version": "session_handoff.v1",
+          "schema_version": "session_background.v1",
+          "context_role": "background_only",
           "scope": "session",
           "provider": "\(provider)",
           "session_id": "\(sessionID)",
@@ -1457,6 +1462,11 @@ struct DaemonStateAPITests {
           },
           "content": "\(escaped(content))",
           "sha256": "\(sha256)",
+          "quality_control": \(qualityControlJSON(sha256: sha256)),
+          "operation_capabilities": {
+            "clipboard_copy": {"allowed": true},
+            "automatic_execution": {"allowed": false}
+          },
           "quality_report": {
             "copy_ready": true,
             "blocking_issues": []
@@ -1480,6 +1490,7 @@ struct DaemonStateAPITests {
         repoPath: String = "/workspace/daemonstate",
         foundationSchemaVersion: String = "workspace_foundation.v1",
         foundationCopyReady: Bool = true,
+        qualityControlAllowed: Bool = true,
         extraTopLevel: String = ""
     ) -> String {
         let workspaceValue = workspaceID.map {
@@ -1527,6 +1538,7 @@ struct DaemonStateAPITests {
           "context_pack_id": "context-pack-1",
           "schema_version": "context_pack.v2",
           "markdown": "\(escaped(content))",
+          "quality_control": \(qualityControlJSON(sha256: sha256, allowed: qualityControlAllowed)),
           "selected_context": [],
           "excluded_context": [],
           "manifest": {
@@ -1549,6 +1561,19 @@ struct DaemonStateAPITests {
             "workspace_foundation": \(foundationJSON)
           }
           \(extraTopLevel)
+        }
+        """
+    }
+
+    private func qualityControlJSON(sha256: String, allowed: Bool = true) -> String {
+        """
+        {
+          "schema_version": "context_quality_activation.v1",
+          "status": "\(allowed ? "active" : "rejected")",
+          "copy_allowed": \(allowed),
+          "candidate_id": "candidate-1",
+          "active_candidate_id": "candidate-1",
+          "artifact_sha256": "\(sha256)"
         }
         """
     }

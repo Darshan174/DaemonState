@@ -419,10 +419,12 @@ async def test_session_context_requires_two_compactions_at_the_handoff_api(
     }
     assert public_context["semantic_schema_version"] == "session_context.v3"
     assert public_context["context_role"] == "background_only"
-    assert public_context["render_variant"] == "session_context_background.v2"
-    assert public_context["readiness"]["status"] == "blocked"
+    assert public_context["render_variant"] == "session_context_background.v7"
+    assert public_context["readiness"]["status"] == "awaiting_user_instruction"
     assert public_context["operation_capabilities"]["preview"]["allowed"] is True
-    assert public_context["operation_capabilities"]["clipboard_copy"]["allowed"] is False
+    assert public_context["operation_capabilities"]["clipboard_copy"]["allowed"] is True
+    assert public_context["quality_report"]["status"] == "ready_with_limitations"
+    assert "[older snapshot]" in public_context["content"]
     assert public_context["delivery"]["context_role"] == "background_only"
     assert public_context["delivery"]["ready_for_execution"] is False
     assert "# Session Context — background" in public_context["content"]
@@ -870,13 +872,16 @@ async def test_session_handoff_api_preserves_verbatim_pre_compaction_context_onl
     assert handoff["boundary"]["has_newer_events"] is True
     assert handoff["currentness"]["state"] == "superseded"
     assert handoff["current_goal"]["request_verbatim"] == request_verbatim
-    assert handoff["quality_report"]["copy_ready"] is False
+    assert handoff["quality_report"]["copy_ready"] is True
+    assert handoff["quality_report"]["status"] == "ready_with_limitations"
     assert handoff["quality_report"]["automatic_execution_ready"] is False
-    assert handoff["quality_control"]["status"] == "rejected"
-    assert handoff["quality_control"]["copy_allowed"] is False
+    assert handoff["quality_control"]["status"] == "active"
+    assert handoff["quality_control"]["copy_allowed"] is True
     assert "CURRENT_STATE_BOUND_TO_OLD_SNAPSHOT" in (
-        handoff["quality_evaluation"]["hard_failures"]
+        handoff["quality_evaluation"]["warnings"]
     )
+    assert handoff["quality_evaluation"]["hard_failures"] == []
+    assert "[older snapshot]" in handoff["content"]
     assert handoff["snapshot_phase"] == "pre_compaction"
     assert handoff["captured_at"] == handoff["boundary"]["occurred_at"]
     assert handoff["estimated_tokens"] > 0
@@ -925,8 +930,21 @@ async def test_session_handoff_api_preserves_verbatim_pre_compaction_context_onl
         "overrides_historical_next_action": True,
     }
     assert preview["current_goal"] == handoff["current_goal"]
+    candidates = await client.get(
+        "/api/context-quality/candidates",
+        params={"workspace_id": str(workspace.id), "context_kind": "session"},
+    )
+    assert candidates.status_code == 200
+    evaluated = next(
+        candidate for candidate in candidates.json()["candidates"]
+        if candidate["candidate_id"] == preview["quality_control"]["candidate_id"]
+    )
+    # Changing the lead drops prior critical requirements. Old capture age is
+    # informational, but this unexplained evidence loss still blocks admission.
     assert preview["quality_control"]["status"] == "rejected"
     assert preview["quality_control"]["copy_allowed"] is False
+    assert "CRITICAL_CLAIM_NOT_OBSERVED" in evaluated["hard_failures"]
+    assert "CURRENT_STATE_BOUND_TO_OLD_SNAPSHOT" not in evaluated["hard_failures"]
     assert "## Open context from the prior session" in preview["content"]
     assert "Review the evidence-backed dashboard before continuing." in (preview["content"])
     assert "Keep the historical goal unchanged." in preview["content"]
@@ -993,11 +1011,11 @@ async def test_session_handoff_rendering_deduplicates_and_bounds_file_inventory(
     handoff = response.json()
     assert len(handoff["files"]["pre_existing_at_handoff"]) == len(changed_files)
     assert handoff["files"]["pre_existing_at_handoff"][-1]["path"] == ("app/dirty_069.py")
-    evidence_section = handoff["content"].split("## Relevant surfaces\n", 1)[1]
+    evidence_section = handoff["content"].split("## Relevant surfaces\n", 1)[1].split("\n## ", 1)[0]
     assert evidence_section.count("app/core.py") == 1
     assert "app/dirty_069.py" not in evidence_section
-    assert "71 pre-existing changed paths were recorded" in evidence_section
-    assert handoff["token_accounting"]["efficiency_target"]["within_target"] is True
+    assert "71 changed paths were recorded" in evidence_section
+    assert handoff["token_accounting"]["destination_limit"]["status"] == "fits"
     file_claims = [
         item for item in handoff["claim_manifest"]
         if item["kind"] == "relevant_file"
@@ -1160,15 +1178,17 @@ async def test_session_context_carries_complete_latest_task_memory(
     assert {
         "# Session Context — background for the user’s next request",
         "## Prior user objective",
-        "## Evidence dependencies",
         "## Verified state",
         "## Reported state — unverified",
         "## Open context from the prior session",
         "## Decisions and failed approaches",
         "## Relevant surfaces",
-        "## Uncertainties",
+        "## Retrieved session evidence",
         "## Awaiting user instruction",
     } <= set(handoff["content"].splitlines())
+    # With source excerpts attached, empty structured sections are omitted
+    # instead of asserting "nothing recovered" above evidence that says otherwise.
+    assert "No attachment or external evidence dependency was recorded." not in handoff["content"]
     assert handoff["decisions"][0]["payload"]["reason"] == (
         "they are task-specific and API_KEY=[redacted] stays private"
     )
@@ -1220,13 +1240,17 @@ async def test_session_context_carries_complete_latest_task_memory(
     assert "`pytest -q tests/test_checkpoints.py` passed with exit code 0" in (
         verified_section
     )
-    assert "abc123 historical commit" not in handoff["content"]
+    assert "abc123 historical commit" not in verified_section
+    history = handoff["content"].split("## Retrieved session evidence", 1)[1]
+    assert "abc123 historical commit" in history
     assert "super-secret" not in handoff["content"]
     assert "fix-secret" not in handoff["content"]
     assert "decision-secret" not in handoff["content"]
     assert "rejected-secret" not in handoff["content"]
     assert "Rejected embedding the complete transcript" in handoff["content"]
-    assert "ERROR: file or directory not found" not in handoff["content"]
+    assert "ERROR: file or directory not found" in history
+    assert all(claim["truth_state"] == "historical" for claim in handoff["claim_manifest"]
+               if claim["kind"] == "historical_excerpt")
 
     monkeypatch.setattr(
         "app.services.session_context.render_background_session_context",
@@ -4009,9 +4033,12 @@ async def test_fresh_continuation_lead_cannot_reuse_historical_reference(
     assert response.status_code == 200, response.text
     artifact = response.json()
     assert artifact["operation_capabilities"]["preview"]["allowed"] is True
-    assert artifact["operation_capabilities"]["clipboard_copy"]["allowed"] is False
+    assert artifact["operation_capabilities"]["clipboard_copy"]["allowed"] is True
+    assert artifact["quality_report"]["status"] == "ready_with_limitations"
     assert artifact["unresolved_dependencies"][0]["kind"] == "conversation"
-    assert artifact["unresolved_dependencies"][0]["blocks_copy"] is True
+    assert artifact["unresolved_dependencies"][0]["blocks_copy"] is False
+    assert artifact["unresolved_dependencies"][0]["blocks_execution"] is True
+    assert "[unresolved required conversation dependency]" in artifact["content"]
     assert artifact["supporting_context"] == []
     assert "HISTORICAL_A_REQUIREMENT" not in response.text
 
@@ -4021,7 +4048,7 @@ async def test_fresh_continuation_lead_cannot_reuse_historical_reference(
     [False, True],
     ids=["top-level-conversation", "prior-conversation"],
 )
-async def test_session_handoff_previews_but_blocks_unmaterialized_external_goal_dependency(
+async def test_session_handoff_copies_with_unmaterialized_external_dependency_warning(
     client,
     db_session,
     tmp_path,
@@ -4086,9 +4113,9 @@ async def test_session_handoff_previews_but_blocks_unmaterialized_external_goal_
     assert response.status_code == 200, response.text
     artifact = response.json()
     assert artifact["operation_capabilities"]["preview"]["allowed"] is True
-    assert artifact["operation_capabilities"]["clipboard_copy"]["allowed"] is False
-    assert artifact["quality_report"]["status"] == "blocked"
-    assert artifact["quality_report"]["copy_ready"] is False
+    assert artifact["operation_capabilities"]["clipboard_copy"]["allowed"] is True
+    assert artifact["quality_report"]["status"] == "ready_with_limitations"
+    assert artifact["quality_report"]["copy_ready"] is True
     assert artifact["unresolved_dependencies"] == [
         {
             "id": "U1",
@@ -4099,7 +4126,8 @@ async def test_session_handoff_previews_but_blocks_unmaterialized_external_goal_
             "status": "unresolved",
             "resolution": "required_manifest_missing",
             "available": False,
-            "blocks_copy": True,
+            "blocks_copy": False,
+            "blocks_execution": True,
             "source": "explicit_user_request_reference",
             "source_request_sha256": hashlib.sha256(
                 (
@@ -4683,10 +4711,15 @@ async def test_session_handoff_recovers_zero_goal_from_nearest_bounded_user_turn
     assert "reconciliation" not in handoff
     assert "exact_next_action" not in handoff
     assert "wrong task" not in handoff["content"]
-    assert "unrelated legacy workflow" not in handoff["content"]
+    assert "unrelated legacy workflow" not in handoff["current_goal"]["text"]
+    # Earlier tasks are legitimate historical context; they cannot replace the
+    # resolved objective or become instructions for the receiving agent.
+    old_turn = next(span for span in handoff["retrieval_context"]["spans"]
+                    if "unrelated legacy workflow" in span["statement"])
+    assert old_turn["source_sequence_number"] == 1
 
 
-async def test_session_handoff_blocks_untrusted_image_markup_without_leaking_tags(
+async def test_session_handoff_copies_text_without_reading_untrusted_image_markup(
     client,
     db_session,
     tmp_path,
@@ -4790,12 +4823,16 @@ async def test_session_handoff_blocks_untrusted_image_markup_without_leaking_tag
             "visual_candidate_files": [],
         }
     ]
-    assert handoff["quality_report"]["copy_ready"] is False
-    assert "REQUIRED_DEPENDENCY_MISSING" in {
-        issue["code"] for issue in handoff["quality_report"]["blocking_issues"]
+    assert handoff["quality_report"]["copy_ready"] is True
+    assert handoff["quality_report"]["status"] == "ready_with_limitations"
+    assert "required_dependency_sources_incomplete" in {
+        issue["code"] for issue in handoff["quality_report"]["warnings"]
     }
-    assert handoff["quality_control"]["status"] == "rejected"
-    assert handoff["quality_control"]["copy_allowed"] is False
+    assert handoff["quality_control"]["status"] == "active"
+    assert handoff["quality_control"]["copy_allowed"] is True
+    assert handoff["readiness_dimensions"]["source_completeness"]["complete"] is False
+    assert handoff["readiness_dimensions"]["receiver_readiness"]["ready"] is False
+    assert "source bytes unavailable" in handoff["content"]
 
 
 async def test_session_handoff_keeps_described_historical_image_non_blocking(
@@ -5048,20 +5085,19 @@ async def test_session_handoff_hashes_exact_provider_attachment_without_markup(
     assert handoff["schema_version"] == "session_background.v1"
     assert handoff["operation_capabilities"]["preview"]["allowed"] is True
     assert handoff["operation_capabilities"]["clipboard_copy"] == {
-        "allowed": False,
-        "status": "materialization_required",
-        "blocking_issue_codes": [
-            "required_evidence_receiver_materialization_required"
-        ],
+        "allowed": True,
+        "status": "ready_with_limitations",
+        "blocking_issue_codes": [],
     }
-    assert handoff["quality_report"]["status"] == "materialization_required"
-    assert handoff["quality_report"]["copy_ready"] is False
+    assert handoff["quality_report"]["status"] == "ready_with_limitations"
+    assert handoff["quality_report"]["copy_ready"] is True
     assert handoff["quality_control"]["status"] == "active"
     assert handoff["readiness_dimensions"]["source_completeness"]["complete"] is True
     assert handoff["readiness_dimensions"]["receiver_readiness"]["ready"] is False
-    assert handoff["readiness_dimensions"]["evidence_access"]["blocks_copy"] is True
+    assert handoff["readiness_dimensions"]["evidence_access"]["blocks_copy"] is False
     assert handoff["delivery"]["preview_ready"] is True
-    assert handoff["delivery"]["clipboard_copy_ready"] is False
+    assert handoff["delivery"]["clipboard_copy_ready"] is True
+    assert "not included in this copied text" in handoff["content"]
 
 
 async def test_fresh_continuation_lead_cannot_reuse_historical_attachment(
@@ -5130,10 +5166,13 @@ async def test_fresh_continuation_lead_cannot_reuse_historical_attachment(
     assert response.status_code == 200, response.text
     artifact = response.json()
     assert artifact["operation_capabilities"]["preview"]["allowed"] is True
-    assert artifact["operation_capabilities"]["clipboard_copy"]["allowed"] is False
+    assert artifact["operation_capabilities"]["clipboard_copy"]["allowed"] is True
+    assert artifact["quality_report"]["status"] == "ready_with_limitations"
     assert artifact["attachment_dependencies"] == []
     assert artifact["unresolved_dependencies"][0]["kind"] == "image"
-    assert artifact["unresolved_dependencies"][0]["blocks_copy"] is True
+    assert artifact["unresolved_dependencies"][0]["blocks_copy"] is False
+    assert artifact["unresolved_dependencies"][0]["blocks_execution"] is True
+    assert "[unresolved required image dependency]" in artifact["content"]
     assert hashlib.sha256(image_bytes).hexdigest() not in response.text
 
     self_contained = await client.post(
@@ -5403,7 +5442,7 @@ async def test_checkpoint_decisions_use_only_user_authored_request_body(
     assert "OUTER_USER_DECISION" not in decision_section
 
 
-async def test_session_handoff_fails_closed_for_historically_truncated_goal(
+async def test_session_handoff_labels_incomplete_history_without_inventing_a_goal(
     client,
     db_session,
     tmp_path,
@@ -5442,12 +5481,15 @@ async def test_session_handoff_fails_closed_for_historically_truncated_goal(
         json={"workspace_id": str(workspace.id)},
     )
 
-    assert response.status_code == 422
-    detail = response.json()["detail"]
-    assert "does not contain a lossless session goal" in detail
-    assert "BACKGROUND_MUST_NOT_BECOME_AUTHORITY" not in detail
-    assert "Referenced ChatGPT conversation" not in detail
-    assert "[output truncated]" not in detail
+    assert response.status_code == 200, response.text
+    artifact = response.json()
+    assert artifact["quality_report"]["copy_ready"] is True
+    assert artifact["quality_report"]["status"] == "ready_with_limitations"
+    assert not artifact["current_goal"].get("request_verbatim")
+    assert not any(claim["kind"] == "prior_user_objective" for claim in artifact["claim_manifest"])
+    assert "No unambiguous prior user objective was recovered" in artifact["content"]
+    assert "BACKGROUND_MUST_NOT_BECOME_AUTHORITY" not in artifact["content"]
+    assert "[output truncated]" not in artifact["content"]
 
 
 async def test_checkpoint_api_captures_verifies_and_builds_resume_bundle(

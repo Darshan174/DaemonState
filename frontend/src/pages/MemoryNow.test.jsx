@@ -5,10 +5,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../api/client";
 import MemoryNow from "./MemoryNow";
+import { downloadContextFile } from "./contextExport";
 import {
   readExecuteSessionContexts,
   writeExecuteSessionContexts,
 } from "./executeSessionSelection";
+
+vi.mock("./contextExport", async (importOriginal) => ({
+  ...await importOriginal(),
+  downloadContextFile: vi.fn(),
+}));
 
 function sha256Text(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
@@ -216,6 +222,7 @@ function checkpointData() {
     projection: { valid: true, state: "safe" },
     currentness: { state: "captured" },
     boundary: {
+      event_id: "event-20",
       occurred_at: "2026-07-21T09:58:00Z",
       sequence_number: 20,
       session_tip_sequence: 20,
@@ -667,6 +674,7 @@ function selectDefaultSession(overrides = {}) {
 }
 
 beforeEach(() => {
+  downloadContextFile.mockReset();
   const storedValues = new Map();
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
@@ -745,6 +753,77 @@ beforeEach(() => {
 });
 
 describe("ExecutePage", () => {
+  it("refreshes and validates Workspace Context before downloading its full records", async () => {
+    const foundation = workspaceFoundationForSchema("workspace_foundation.v2", {
+      evidence_references: [{ id: "source-1", path: "app/main.py", start_line: 1, end_line: 4 }],
+    });
+    mocks.prepare.mutateAsync.mockResolvedValue(preparedContextForFoundation(foundation));
+    renderMemory();
+    const preview = screen.getByRole("button", { name: "Preview Workspace Context" });
+    await waitFor(() => expect(preview).toHaveTextContent("Open full preview"));
+    fireEvent.click(preview);
+    const dialog = await screen.findByRole("dialog", { name: "Workspace Context Preview" });
+    mocks.prepare.mutateAsync.mockClear();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Download context" }));
+    await waitFor(() => expect(downloadContextFile).toHaveBeenCalledTimes(1));
+    expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith(workspaceSnapshotPayload);
+    const file = downloadContextFile.mock.calls[0][0];
+    expect(file.filename).toMatch(/^workspace-context-.*\.md$/);
+    expect(file.content).toContain("PROJECT_CONTEXT_ONLY");
+    expect(file.content).toContain("## Evidence references");
+    expect(file.content).not.toContain(preparedContext.execution_prompt);
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+  });
+
+  it("does not download workspace detail whose integrity changed after preview", async () => {
+    renderMemory();
+    const preview = screen.getByRole("button", { name: "Preview Workspace Context" });
+    await waitFor(() => expect(preview).toHaveTextContent("Open full preview"));
+    fireEvent.click(preview);
+    const dialog = await screen.findByRole("dialog", { name: "Workspace Context Preview" });
+    const tampered = structuredClone(preparedContext);
+    tampered.manifest.workspace_foundation.repository_state.branch = "Unbound replacement";
+    mocks.prepare.mutateAsync.mockResolvedValue(tampered);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Download context" }));
+    await waitFor(() => expect(within(dialog).getByText(/integrity check/i)).toBeInTheDocument());
+    expect(downloadContextFile).not.toHaveBeenCalled();
+  });
+
+  it("downloads the selected background session with detail omitted from its preview", async () => {
+    selectDefaultSession();
+    const handoff = sessionHandoff("# Session Context\nSESSION_CONTEXT_ONLY", {
+      context_role: "background_only",
+      claim_manifest: [{
+        stable_id: "historical-state", section: "state", selection: "included",
+        statement: "EARLIER_SOURCE_BACKED_DETAIL", authority: "agent_report", truth_state: "historical",
+        evidence_refs: ["event-12"],
+      }],
+    });
+    const detailContent = JSON.stringify({
+      provider: handoff.provider, session_id: handoff.session_id,
+      checkpoint_id: handoff.checkpoint_id, boundary: handoff.boundary,
+      overview_sha256: handoff.sha256, claim_manifest: handoff.claim_manifest,
+    });
+    handoff.portable_details = {
+      schema_version: "session_context_details.v1",
+      content: detailContent,
+      sha256: sha256Text(detailContent),
+    };
+    mocks.handoff.mutateAsync.mockResolvedValue(handoff);
+    renderMemory();
+    const preview = screen.getByRole("button", { name: "Preview Harden checkpoint capture Session Context" });
+    await waitFor(() => expect(preview).toHaveTextContent("Open full preview"));
+    fireEvent.click(preview);
+    const dialog = await screen.findByRole("dialog", { name: "Harden checkpoint capture Session Context Preview" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Download context" }));
+    await waitFor(() => expect(downloadContextFile).toHaveBeenCalledTimes(1));
+    const file = downloadContextFile.mock.calls[0][0];
+    expect(file.content).toContain('"session_id": "session-1"');
+    expect(file.content).toContain('"checkpoint_id": "checkpoint-1"');
+    expect(file.content).toContain("EARLIER_SOURCE_BACKED_DETAIL");
+    expect(file.content).toContain("event-12");
+  });
+
   it("loads the durable parent from the full workspace scope", () => {
     renderMemory();
 
@@ -2238,7 +2317,7 @@ describe("ExecutePage", () => {
       {
         quality_report: {
           status: "needs_reconciliation",
-          copy_ready: true,
+          copy_ready: false,
           automatic_execution_ready: false,
           blocking_issues: [blockingIssue],
           warnings: [],
@@ -2275,6 +2354,48 @@ describe("ExecutePage", () => {
       ),
     )).toBeInTheDocument();
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+  });
+
+  it("shows limitations and copies background even when attachments are unavailable", async () => {
+    const content = "# Session Context\n\nEarlier capture. The referenced image is unavailable.";
+    const warning = "The referenced image is unavailable; attach it separately if needed.";
+    mocks.handoff.mutateAsync.mockResolvedValue(sessionHandoff(content, {
+      readiness: { status: "awaiting_user_instruction" },
+      quality_report: {
+        status: "ready_with_limitations",
+        copy_ready: true,
+        warnings: [{ code: "required_evidence_unavailable", message: warning }],
+      },
+      readiness_dimensions: {
+        semantic_readiness: { copy_ready: false },
+        evidence_access: { status: "unavailable", blocks_copy: false },
+        receiver_readiness: { status: "materialization_required" },
+      },
+      operation_capabilities: {
+        preview: { allowed: true, status: "ready" },
+        clipboard_copy: { allowed: true, status: "ready_with_limitations" },
+        automatic_execution: { allowed: false, status: "awaiting_user_instruction" },
+      },
+    }));
+    selectDefaultSession();
+    renderMemory();
+
+    const sessionCard = screen.getByRole("article", { name: "Harden checkpoint capture" });
+    await waitFor(() => expect(within(sessionCard).getByRole("button", {
+      name: "Copy Harden checkpoint capture Session Context",
+    })).toBeEnabled());
+    fireEvent.click(within(sessionCard).getByRole("button", {
+      name: "Preview Harden checkpoint capture Session Context",
+    }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "Harden checkpoint capture Session Context Preview",
+    });
+    expect(within(dialog).getByRole("status")).toHaveTextContent(warning);
+    expect(within(dialog).getByRole("status")).toHaveTextContent("can be copied as background");
+    fireEvent.click(within(dialog).getByRole("button", {
+      name: "Copy Harden checkpoint capture Session Context",
+    }));
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(content));
   });
 
   it("shows receiver-pending background without a normal Session Context copy action", async () => {
@@ -2376,6 +2497,38 @@ describe("ExecutePage", () => {
       name: "Required evidence pending for Harden checkpoint capture Session Context",
     })).toBeDisabled();
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+  });
+
+  it("copies a current background checkpoint without a goal or next-action projection", async () => {
+    mocks.checkpoint.data = {
+      ...checkpointData(),
+      capture_status: "incomplete",
+      projection: { valid: false, state: "missing_substantive_goal" },
+      sections: { goal: [], exact_next_action: [] },
+    };
+    const content = "# Session Context\n\nNo prior objective was recovered. Earlier cache findings remain available.";
+    mocks.handoff.mutateAsync.mockResolvedValue(sessionHandoff(content, {
+      current_goal: { text: "", request_verbatim: "" },
+      quality_report: {
+        copy_ready: true,
+        status: "ready_with_limitations",
+        warnings: [{ message: "No prior objective was recovered." }],
+      },
+    }));
+    selectDefaultSession();
+    renderMemory();
+
+    const sessionCard = screen.getByRole("article", { name: "Harden checkpoint capture" });
+    const copy = within(sessionCard).getByRole("button", {
+      name: "Copy Harden checkpoint capture Session Context",
+    });
+    await waitFor(() => expect(copy).toBeEnabled());
+    fireEvent.click(copy);
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(content));
+    expect(mocks.handoff.mutateAsync).toHaveBeenCalledWith({
+      workspaceId: "workspace-1", checkpointId: "checkpoint-1",
+    });
+    expect(mocks.capture.mutateAsync).not.toHaveBeenCalled();
   });
 
   it("captures a new session tip before copying when the saved checkpoint is stale", async () => {
@@ -2796,6 +2949,29 @@ describe("ExecutePage", () => {
       preparedContext.markdown,
     ));
     expect(within(workspaceContext).queryByText("Not copy-ready")).not.toBeInTheDocument();
+  });
+
+  it("shows workspace coverage limitations without blocking an approved background copy", async () => {
+    const warning = "Build verification is unavailable for this captured snapshot.";
+    const foundation = workspaceFoundationForSchema("workspace_foundation.v1", {
+      quality_report: {
+        status: "pass_with_warnings",
+        copy_ready: true,
+        score: 75,
+        issues: [{ id: "issue.verification_missing", blocking: false, message: warning }],
+      },
+    });
+    mocks.prepare.mutateAsync.mockResolvedValue(preparedContextForFoundation(foundation));
+    renderMemory();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview Workspace Context" }));
+    const dialog = await screen.findByRole("dialog", { name: "Workspace Context Preview" });
+    await waitFor(() => expect(within(dialog).getByRole("status")).toHaveTextContent(warning));
+    expect(within(dialog).getByRole("status")).toHaveTextContent("Background available with limitations");
+    const copy = within(dialog).getByRole("button", { name: "Copy Workspace Context" });
+    expect(copy).toBeEnabled();
+    fireEvent.click(copy);
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(preparedContext.markdown));
   });
 
   it("fails closed when the Workspace Foundation quality gate blocks copy", async () => {

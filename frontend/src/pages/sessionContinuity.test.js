@@ -145,6 +145,7 @@ describe("session context quality messaging", () => {
     };
     handoff.readiness_dimensions.evidence_access = evidence;
     handoff.quality_report.evidence_access = evidence;
+    handoff.quality_report.copy_ready = false;
 
     expect(sessionContextSemanticCopyReady(handoff)).toBe(false);
     expect(sessionContextReadinessLabel(handoff)).toBe(
@@ -173,11 +174,12 @@ describe("session context quality messaging", () => {
         handoff.readiness_dimensions.evidence_access = { status: "unavailable" };
       },
     },
-  ])("fails closed for $name", ({ mutate }) => {
+  ])("keeps legacy validation closed for $name", ({ mutate }) => {
     const handoff = readyHandoff({
       efficiency_target: { within_target: true },
       destination_limit: { status: "unknown" },
     });
+    handoff.schema_version = "session_handoff.v1";
     mutate(handoff);
 
     expect(sessionContextSemanticCopyReady(handoff)).toBe(false);
@@ -210,9 +212,67 @@ describe("session context quality messaging", () => {
     });
     Object.assign(handoff.quality_report, dimensions);
     Object.assign(handoff.readiness_dimensions, dimensions);
+    handoff.quality_report.copy_ready = false;
 
     expect(sessionContextSemanticCopyReady(handoff)).toBe(false);
     expect(sessionContextReadinessLabel(handoff)).toBe(label);
+  });
+
+  it.each([
+    {
+      limitation: "missing objective",
+      dimensions: { semantic_readiness: { copy_ready: false } },
+      warning: "No current objective was recovered. Add your next instruction.",
+      status: "background_with_limitations",
+    },
+    {
+      limitation: "older capture",
+      dimensions: {},
+      warning: "This capture predates the latest repository changes.",
+      status: "background_with_limitations",
+    },
+    {
+      limitation: "missing source evidence",
+      dimensions: { evidence_access: { status: "unavailable", blocks_copy: false } },
+      warning: "Referenced image is unavailable.",
+      status: "evidence_unavailable",
+    },
+    {
+      limitation: "receiver pending",
+      dimensions: { receiver_readiness: { status: "materialization_required" } },
+      warning: "Referenced image must be attached separately.",
+      status: "evidence_pending",
+    },
+    {
+      limitation: "text-only evidence",
+      dimensions: { receiver_readiness: { status: "degraded_text_only" } },
+      warning: "Only the available text is included.",
+      status: "degraded",
+    },
+  ])("copies canonical background with $limitation when the backend allows it", ({
+    dimensions, warning, status,
+  }) => {
+    const handoff = readyHandoff({});
+    handoff.quality_report.status = "ready_with_limitations";
+    handoff.quality_report.warnings = [{ message: warning }];
+    handoff.operation_capabilities.clipboard_copy.status = "ready_with_limitations";
+    Object.assign(handoff.readiness_dimensions, dimensions);
+
+    expect(sessionContextOperationState(handoff)).toMatchObject({
+      status,
+      clipboardCopyAllowed: true,
+      previewAllowed: true,
+      tone: "attention",
+    });
+    expect(sessionContextAdvisories(handoff)).toContain(warning);
+    expect(sessionContextQualityMessage(handoff)).toContain("can be copied as background");
+    expect(sessionContextQualityMessage(handoff)).toContain(warning);
+
+    handoff.operation_capabilities.clipboard_copy.allowed = false;
+    expect(sessionContextSemanticCopyReady(handoff)).toBe(false);
+    handoff.operation_capabilities.clipboard_copy.allowed = true;
+    handoff.quality_control.copy_allowed = false;
+    expect(sessionContextSemanticCopyReady(handoff)).toBe(false);
   });
 
   it.each([

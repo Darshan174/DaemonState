@@ -68,7 +68,7 @@ from app.time import utc_now
 
 
 SCHEMA_VERSION = "context_pack.v2"
-COMPILER_VERSION = "context_compiler.v9"
+COMPILER_VERSION = "context_compiler.v10"
 EVIDENCE_CONTRACT_VERSION = "exact_evidence_span.v1"
 TOKEN_ESTIMATION_METHOD = "chars_div_4.v1"
 PROMPT_INJECTION_PATTERNS = (
@@ -1166,6 +1166,18 @@ class ContextCompiler:
         project_foundation: CompiledProjectFoundation | None = None
         workspace_foundation: WorkspaceFoundationArtifact | None = None
         workspace_verification_observations = ()
+        foundation_fingerprint_value = (
+            repo_state.get("snapshot_fingerprint")
+            if is_project_snapshot
+            else (
+                repo_state.get("status_fingerprint")
+                or repo_state.get("state_fingerprint")
+                or repo_state.get("snapshot_fingerprint")
+            )
+        )
+        foundation_repository_fingerprint = str(
+            foundation_fingerprint_value or ""
+        ).strip() or None
         if (
             needs_workspace_foundation
             and self.session is not None
@@ -1174,15 +1186,7 @@ class ContextCompiler:
             project_foundation = await compile_workspace_project_foundation(
                 self.session,
                 workspace_id=workspace_uuid,
-                repository_fingerprint=(
-                    str(
-                        repo_state.get("status_fingerprint")
-                        or repo_state.get("state_fingerprint")
-                        or repo_state.get("snapshot_fingerprint")
-                        or ""
-                    ).strip()
-                    or None
-                ),
+                repository_fingerprint=foundation_repository_fingerprint,
                 access_scope=access_scope,
             )
             repo_state["workspace_inventory"]["foundation"] = (
@@ -1200,15 +1204,7 @@ class ContextCompiler:
                 frame=repo_frame,
                 inventory=repo_state["workspace_inventory"],
                 durable_foundation=project_foundation,
-                repository_fingerprint=(
-                    str(
-                        repo_state.get("status_fingerprint")
-                        or repo_state.get("state_fingerprint")
-                        or repo_state.get("snapshot_fingerprint")
-                        or ""
-                    ).strip()
-                    or None
-                ),
+                repository_fingerprint=foundation_repository_fingerprint,
                 verification_observations=workspace_verification_observations,
             )
             repo_state["workspace_foundation_sha256"] = (

@@ -4,6 +4,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from app.schemas.context_quality import (
+    CONTEXT_QUALITY_POLICY_VERSION,
     ClaimCriticality,
     ClaimSelection,
     ContextClaimEnvelope,
@@ -39,6 +40,18 @@ _SESSION_FORBIDDEN_MARKERS = (
     "## Acceptance criteria",
     "Status: **Execution Ready**",
 )
+
+# These describe useful background with known limitations, not permission to
+# execute work. Unexplained claim loss, corrupt evidence, and authority changes
+# still require rejection or review.
+_BACKGROUND_INFORMATIONAL_WARNINGS = frozenset({
+    "CURRENT_STATE_BOUND_TO_OLD_SNAPSHOT",
+    "USER_OBJECTIVE_MISSING",
+    "REQUIRED_DEPENDENCY_MISSING",
+    "DURABLE_PROJECT_KNOWLEDGE_EMPTY",
+    "CURRENT_VERIFICATION_INCOMPLETE",
+    "SEMANTIC_COVERAGE_BELOW_PROMOTION_TARGET",
+})
 
 
 def semantic_claim_hash(claims: Iterable[ContextClaimEnvelope]) -> str:
@@ -170,6 +183,7 @@ def evaluate_context_candidate(
     metadata: Mapping[str, Any] | None = None,
 ) -> ContextQualityEvaluation:
     metadata = dict(metadata or {})
+    background_only = metadata.get("context_role") == "background_only"
     candidates = tuple(candidate_claims)
     active = tuple(active_claims)
     diff = compare_context_claims(active, candidates)
@@ -196,7 +210,7 @@ def evaluate_context_candidate(
     if metadata.get("candidate_quarantined") is True:
         hard("CANDIDATE_QUARANTINED")
     if metadata.get("snapshot_current") is False:
-        hard("CURRENT_STATE_BOUND_TO_OLD_SNAPSHOT")
+        (warn if background_only else hard)("CURRENT_STATE_BOUND_TO_OLD_SNAPSHOT")
     if metadata.get("copy_ready") is False:
         hard("UPSTREAM_CONTEXT_NOT_COPY_READY")
 
@@ -241,7 +255,11 @@ def evaluate_context_candidate(
     if context_kind is ContextKind.SESSION:
         if metadata.get("context_role") != "background_only":
             hard("SESSION_CONTEXT_NOT_BACKGROUND_ONLY")
-        if any(marker in rendered_text for marker in _SESSION_FORBIDDEN_MARKERS):
+        if any(
+            line.lstrip().startswith(marker)
+            for line in rendered_text.splitlines()
+            for marker in _SESSION_FORBIDDEN_MARKERS
+        ):
             hard("INFERRED_ACTION_OR_ACCEPTANCE_PRESENT")
         if any(
             item.kind == "inferred_action"
@@ -256,11 +274,11 @@ def evaluate_context_candidate(
             and item.authority == "direct_user"
         ]
         if not user_objectives:
-            hard("USER_OBJECTIVE_MISSING")
+            (warn if background_only else hard)("USER_OBJECTIVE_MISSING")
         if "awaiting user instruction" not in rendered_text.casefold():
             hard("AWAITING_USER_INSTRUCTION_BOUNDARY_MISSING")
         if metadata.get("required_dependencies_complete") is False:
-            hard("REQUIRED_DEPENDENCY_MISSING")
+            (warn if background_only else hard)("REQUIRED_DEPENDENCY_MISSING")
     else:
         if metadata.get("objective_independent") is not True:
             hard("WORKSPACE_CONTEXT_NOT_OBJECTIVE_INDEPENDENT")
@@ -312,9 +330,12 @@ def evaluate_context_candidate(
         ) if active else 100.0,
     }
 
+    review_warnings = set(warnings) - (
+        _BACKGROUND_INFORMATIONAL_WARNINGS if background_only else set()
+    )
     if hard_failures:
         decision = ContextDecision.REJECT
-    elif warnings:
+    elif review_warnings:
         decision = ContextDecision.REVIEW
     elif active and semantic_claim_hash(active) == semantic_claim_hash(candidates):
         decision = ContextDecision.NO_CHANGE
@@ -322,7 +343,7 @@ def evaluate_context_candidate(
         decision = ContextDecision.PROMOTE
 
     payload = {
-        "policy_version": "context_quality_policy.v1",
+        "policy_version": CONTEXT_QUALITY_POLICY_VERSION,
         "decision": decision.value,
         "hard_failures": sorted(hard_failures),
         "warnings": sorted(warnings),

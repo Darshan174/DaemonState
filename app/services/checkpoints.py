@@ -84,6 +84,7 @@ from app.time import utc_now
 CHECKPOINT_SCHEMA_VERSION = "work_checkpoint.v10"
 DIALOGUE_CLASSIFIER_VERSION = "contextual_followups.v4"
 SESSION_HANDOFF_SCHEMA_VERSION = "session_handoff.v1"
+SESSION_BACKGROUND_MAX_SOURCE_EVENTS = 1_000
 SESSION_CONTEXT_REQUIRED_HEADINGS = (
     "# Session Context — task-level working memory",
     "## Current main goal",
@@ -1942,6 +1943,179 @@ def checkpoint_to_dict(
         ),
         "created_at": checkpoint.created_at,
     }
+
+
+async def project_background_session_checkpoint_data(
+    session: AsyncSession,
+    checkpoint: WorkCheckpoint,
+    *,
+    checkpoint_data: dict[str, Any],
+    access_scope: AccessScope,
+) -> dict[str, Any]:
+    """Recover attributable background from a goal-free capture's exact prefix.
+
+    Older captures discarded all reports without a substantive user goal. Replay
+    only recorded assistant/tool history for this background view, with source ACLs
+    and the immutable capture boundary enforced. No stored row or goal is changed.
+    """
+
+    payload = _integrity_checked_checkpoint_payload(checkpoint)
+    if payload is None:
+        raise ValueError("Background checkpoint identity or payload integrity is invalid.")
+    if payload["sections"].get("goal"):
+        return checkpoint_data
+    boundary_sequence = (checkpoint_data.get("boundary") or {}).get("sequence_number")
+    if not isinstance(boundary_sequence, int):
+        raise ValueError("Background checkpoint capture boundary is unavailable.")
+    provider, session_id = normalize_session_key(
+        checkpoint.provider, checkpoint.session_id,
+    ) or (checkpoint.provider, checkpoint.session_id)
+    history_conditions = (
+        SessionEvent.workspace_id == checkpoint.workspace_id,
+        SessionEvent.provider.in_(session_provider_values(provider)),
+        SessionEvent.session_id == session_id,
+        SessionEvent.sequence_number <= boundary_sequence,
+        SessionEvent.event_type.in_((
+            "user_request", "assistant_update", "command_call", "command_result", "tool_call", "tool_result",
+        )),
+    )
+    total_event_count = int(await session.scalar(
+        select(func.count()).select_from(SessionEvent).where(*history_conditions)
+    ) or 0)
+    complete_event_ids = list(await session.scalars(
+        select(SessionEvent.id).where(*history_conditions)
+        .order_by(SessionEvent.sequence_number.desc(), SessionEvent.id.desc())
+        .limit(SESSION_BACKGROUND_MAX_SOURCE_EVENTS)
+    ))
+    events = list(await session.scalars(
+        select(SessionEvent)
+        .join(SourceDocument, SessionEvent.source_document_id == SourceDocument.id)
+        .where(
+            *history_conditions,
+            source_access_predicate(access_scope, workspace_id=checkpoint.workspace_id),
+        )
+        .order_by(SessionEvent.sequence_number.desc(), SessionEvent.id.desc())
+        .limit(SESSION_BACKGROUND_MAX_SOURCE_EVENTS)
+    ))
+    boundary_accessible = await session.scalar(
+        select(SessionEvent.id)
+        .join(SourceDocument, SessionEvent.source_document_id == SourceDocument.id)
+        .where(
+            SessionEvent.id == checkpoint.boundary_event_id,
+            SessionEvent.workspace_id == checkpoint.workspace_id,
+            SessionEvent.provider.in_(session_provider_values(provider)),
+            SessionEvent.session_id == session_id,
+            SessionEvent.sequence_number == boundary_sequence,
+            source_access_predicate(access_scope, workspace_id=checkpoint.workspace_id),
+        )
+    )
+    if (
+        [event.id for event in events] != complete_event_ids
+        or boundary_accessible != checkpoint.boundary_event_id
+    ):
+        raise ValueError("Background source history is unavailable under the current access scope.")
+    events.reverse()
+    for event in events:
+        canonical_event = {
+            "provider_event_id": event.provider_event_id,
+            "sequence_number": event.sequence_number,
+            "event_type": event.event_type,
+            "role": event.role,
+            "occurred_at": event.occurred_at.isoformat() if event.occurred_at else None,
+            "content": event.content,
+            "payload": event_payload(event),
+            "source_cursor": event.source_cursor,
+        }
+        if _sha256(_canonical_json(canonical_event)) != event.content_sha256:
+            raise ValueError("Background source event integrity is invalid.")
+
+    history = _build_sections(
+        [event for event in events if event.event_type != "user_request"],
+        snapshot=None,
+        background_only=True,
+    )
+    projected = deepcopy(checkpoint_data)
+    user_context = []
+    omitted_user_turn_count = 0
+    for event in events:
+        if event.event_type != "user_request":
+            continue
+        text = extract_user_authored_request(event.content)
+        if not text or is_session_instruction_noise(text):
+            omitted_user_turn_count += 1
+            continue
+        user_context.append({
+            "role": "user",
+            "text": text,
+            "source": "captured_user_turn_without_resolved_objective",
+            "content_sha256": _sha256(text),
+            "source_event_id": str(event.id),
+            "source_document_id": str(event.source_document_id),
+        })
+    projected["background_supporting_context"] = user_context
+    projected["sections"] = {
+        category: [
+            {
+                "id": None,
+                "item_key": f"{category}:background-replay:{index + 1}",
+                "statement": item.statement,
+                "state": item.state,
+                "truth_state": item.truth_state,
+                "payload": deepcopy(item.payload),
+                "evidence": [
+                    {
+                        "id": None,
+                        "type": "session_event_read_time_projection",
+                        "session_event_id": str(event.id),
+                        "source_document_id": str(event.source_document_id),
+                        "supports": True,
+                        "observed_at": event.occurred_at,
+                        "locator": {
+                            "sequence_number": event.sequence_number,
+                            "content_sha256": event.content_sha256,
+                            "projection": "session_background_event_projection.v1",
+                        },
+                    }
+                    for event in _unique_events(item.events)
+                ],
+            }
+            for index, item in enumerate(history[category])
+        ]
+        for category in CHECKPOINT_CATEGORIES
+    }
+    replay_bindings = [
+        {
+            "session_event_id": str(event.id),
+            "source_document_id": str(event.source_document_id),
+            "sequence_number": event.sequence_number,
+            "content_sha256": event.content_sha256,
+        }
+        for event in events
+    ]
+    projected["background_projection"] = {
+        "schema_version": "session_background_event_projection.v1",
+        "method": "access_checked_capture_prefix",
+        "source_integrity_valid": True,
+        "checkpoint_id": str(checkpoint.id),
+        "boundary_sequence": boundary_sequence,
+        "omitted_user_turn_count": omitted_user_turn_count,
+        "source_event_limit": SESSION_BACKGROUND_MAX_SOURCE_EVENTS,
+        "total_source_event_count": total_event_count,
+        "omitted_source_event_count": max(0, total_event_count - len(events)),
+        "first_source_sequence": events[0].sequence_number if events else None,
+        "last_source_sequence": events[-1].sequence_number if events else None,
+        "source_document_ids": sorted({str(event.source_document_id) for event in events}),
+        "replay_bindings": replay_bindings,
+        "replay_bindings_sha256": _sha256(_canonical_json(replay_bindings)),
+        "stored_checkpoint_unchanged": True,
+    }
+    projected["projection"] = {
+        "valid": True,
+        "state": "background_without_objective",
+        "reason": "Recorded history is available as background; no prior user objective was recovered.",
+        "stored_schema_version": checkpoint.schema_version,
+    }
+    return projected
 
 
 async def project_desktop_stage_checkpoint_data(
@@ -14506,6 +14680,8 @@ def _compose_session_goal_request(
 def _build_sections(
     events: list[SessionEvent],
     snapshot: RepositorySnapshot | None,
+    *,
+    background_only: bool = False,
 ) -> dict[str, list[DraftItem]]:
     sections: dict[str, list[DraftItem]] = {category: [] for category in CHECKPOINT_CATEGORIES}
     conversation_state = resolve_conversation_state(events)
@@ -14532,7 +14708,7 @@ def _build_sections(
     events = (
         [event for event in events if event.sequence_number >= goal_event.sequence_number]
         if goal_event is not None
-        else []
+        else events if background_only else []
     )
     if goal_event is not None:
         request_verbatim = goal_statement
@@ -15040,6 +15216,8 @@ def _build_sections(
         -MAX_ITEMS_PER_CATEGORY:
     ]
 
+    if background_only:
+        return sections
     next_item = _derive_next_action(
         events,
         goal_event,

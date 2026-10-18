@@ -119,7 +119,7 @@ from app.services.workspace_foundation_operational import (
 )
 
 
-WORKSPACE_FOUNDATION_COMPILER_VERSION = "workspace_foundation_compiler.v2"
+WORKSPACE_FOUNDATION_COMPILER_VERSION = "workspace_foundation_compiler.v3"
 MAX_CAPABILITIES = 8
 MAX_CAPABILITY_SURFACES = 5
 MAX_ARCHITECTURE_COMPONENTS = 256
@@ -128,7 +128,6 @@ MAX_RELATED_TEST_PATHS_PER_CHANGE = 12
 MAX_TARGETED_TEST_IMPORTS_PER_FILE = 256
 MAX_TARGETED_TEST_REFERENCES_PER_FILE = 256
 MAX_REPOSITORY_ENGINEERING_KNOWLEDGE = 16
-MAX_DURABLE_KNOWLEDGE_FACTS = 12
 
 _CAPABILITY_STOP_WORDS = frozenset(
     {
@@ -2978,12 +2977,16 @@ def _durable_knowledge(
 ) -> tuple[DurableKnowledgeFact, ...]:
     if foundation is None:
         return ()
+    # Project Foundation already bounds facts by topic coverage and tokens.
+    # A second sorted prefix here would erase later topics before rendering
+    # or detailed export.
     result: list[DurableKnowledgeFact] = []
-    seen_identity_keys: set[str] = set()
+    seen_assertions: set[tuple[str, str]] = set()
     for item in sorted(foundation.items, key=_durable_item_sort_key):
-        if item.identity_key in seen_identity_keys:
+        assertion = (item.identity_key, item.statement.strip())
+        if assertion in seen_assertions:
             continue
-        seen_identity_keys.add(item.identity_key)
+        seen_assertions.add(assertion)
         tier = _durable_evidence_tier(
             item.evidence_level,
             source_types=(reference.source_type for reference in item.provenance_refs),
@@ -3015,7 +3018,7 @@ def _durable_knowledge(
         )
         result.append(
             DurableKnowledgeFact(
-                id=f"knowledge.{_stable_hash(item.identity_key)[:16]}",
+                id=f"knowledge.{_stable_hash(json.dumps(assertion))[:16]}",
                 identity_key=item.identity_key,
                 kind=_durable_fact_kind(
                     item.kind,
@@ -3030,8 +3033,6 @@ def _durable_knowledge(
                 evidence_ref_ids=references,
             )
         )
-        if len(result) >= MAX_DURABLE_KNOWLEDGE_FACTS:
-            break
     return tuple(result)
 
 

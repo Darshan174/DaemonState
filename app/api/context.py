@@ -671,6 +671,7 @@ async def prepare_context(
                 content=result.markdown,
                 claims=workspace_context_claims(foundation_payload),
                 evaluation_metadata={
+                    "context_role": "background_only",
                     "objective_independent": foundation.objective_independent,
                     "copy_ready": quality_report.get("copy_ready") is True,
                     "hash_valid": hashlib.sha256(

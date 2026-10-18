@@ -1,13 +1,12 @@
 # Product guide
 
-DaemonState is a continuity and evidence layer between a software project and
-the coding agents that work on it. Its primary job is to let a new agent session
-start from a current, reviewable handoff without asking the user to reconstruct
-the task from memory.
+DaemonState builds portable, source-backed project and session context. Users
+load that context into an AI agent, add their next instruction, and continue
+working without reconstructing the project or conversation from memory.
 
-The product is deliberately not an agent. It does not decide which product to
-build, submit browser handoffs, turn a provider's self-report into proof, or
-silently promote one session's claims into project-wide truth.
+The user determines the next task. DaemonState preserves the distinction between
+current repository observations, historical conversation, and unverified claims;
+it does not promote a provider's self-report into proof.
 
 ## Current product surface
 
@@ -15,7 +14,7 @@ silently promote one session's claims into project-wide truth.
 |---|---|---|
 | Continue | Available | Carry the newest eligible local session into a fresh, user-reviewed desktop composer. |
 | Library | Available | Discover, search, group, and inspect local sessions and recovery checkpoints within one project boundary. |
-| Execute | Available | Compile Workspace Context and compare or copy up to three explicitly selected historical Session Contexts. |
+| Execute | Available | Compile Workspace Context and compare, copy, or download up to three explicitly selected historical Session Contexts. |
 | Workspaces | Available through workspace management | Create one project boundary per repository, rename/archive it, and permanently delete an archived workspace with exact-name confirmation. |
 | Evidence | Under construction | Backend graph, digest, scrutiny, timeline, source-diff, and focused context behavior exists; the top-level browser route is intentionally gated. |
 | Sources | Under construction | Source creation, upload, bulk ingestion, revision, listing, and detail APIs exist; the top-level browser route is intentionally gated. |
@@ -84,23 +83,56 @@ repository snapshot.
 
 ### Session Context
 
-Session Context is the task-specific child for one local coding-agent session.
-It captures the current goal, state, next action, decisions, failed attempts,
-changed files, checks, blockers, scope, and done conditions at an immutable
-session boundary.
+Session Context is background from one local coding-agent session that the user
+can build on with a new instruction. It describes historical requests, recorded
+progress, decisions, failed attempts, relevant files, observations, and open
+questions at an immutable session boundary. It does not authorize continued work.
 
-The default visible renderer is `compact_v2` and has five sections:
+The public `session_background.v1` artifact uses the
+`session_context_background.v7` renderer. It identifies the session event time and
+labels older snapshots, unresolved objectives, and unavailable evidence. These
+limitations do not prevent copying the available text. A copied attachment
+reference does not mean the attachment bytes were delivered to the receiving app.
 
-1. Goal
-2. State now
-3. Start here
-4. Do not repeat
-5. Done when
+Repository snapshots saved with a checkpoint and later repository inspections are
+shown separately, with their own observation times. Checkpoint creation can occur
+after the session events it preserves; neither later snapshot proves which branch
+was used during the earlier conversation.
 
-The renderer preserves the exact user lead and hash while keeping audit-only
-IDs, ranking values, and large inventories out of the model-facing brief.
-`legacy_v1` remains an emergency rollback through
-`SESSION_HANDOFF_BRIEF_VARIANT`.
+Session Context also retrieves exact user, assistant, and useful tool-result
+excerpts from accessible events at or before that boundary. It uses a 4,000-token
+budget by default; the request's `token_budget` controls how much evidence fits
+(for example, 8,000). These are character-based token estimates, not model-specific
+token counts. Mandatory context is kept even if it already exceeds the budget.
+Excerpts carry event IDs, timestamps, roles, and offsets; JSON tool reports carry
+field locators, and excerpts render in session order. Selection pins the user's
+original request, latest request, and explicit constraints, then ranks the rest by
+reciprocal-rank fusion of recency, reasoning/failure cues, recurring entities
+(files, identifiers, errors), and lexical match to the user's own requests. An
+older excerpt that a newer one restates, or that the overview already states, is
+dropped. Tool output may not crowd out conversation but can use leftover space;
+tool output containing instruction-like text is omitted. Imported compaction
+recaps and system/developer setup are excluded. Tool output remains historical
+evidence, not present-day verification or permission to act. No model is required,
+and the downloadable details preserve the selected source bindings. When excerpts
+are attached, empty structured sections are omitted from the overview.
+
+Workspace Context likewise remains usable when verification or durable knowledge
+is incomplete, provided its foundation integrity checks pass. Those gaps remain
+visible. Both copy surfaces require the compiler's copy decision and matching
+quality-controller approval; corrupted content and incorrect source/workspace
+identity remain blocked.
+
+In either full preview, **Download context** refreshes and validates the same
+context before saving a Markdown file. It contains the overview, a topic index,
+and the available detailed records and evidence references, including captured
+records omitted from the compact display. Attach it to another AI chat and supply
+your next instruction. Original repository files and image bytes are not bundled;
+the export names missing dependencies rather than pretending to deliver them.
+
+The execution transport and its `compact_v2`/`legacy_v1` renderers remain separate.
+Their requirements for an actionable objective and receiver evidence do not apply
+to public background copying.
 
 ### Checkpoint
 

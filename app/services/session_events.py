@@ -19,6 +19,21 @@ MAX_PAYLOAD_STRING_CHARS = 24_000
 MAX_PAYLOAD_LIST_ITEMS = 200
 
 
+def session_event_integrity_valid(event: SessionEvent) -> bool:
+    """Verify the persisted event, including the payload used to label excerpts."""
+    canonical = _canonical_json({
+        "provider_event_id": event.provider_event_id,
+        "sequence_number": event.sequence_number,
+        "event_type": event.event_type,
+        "role": event.role,
+        "occurred_at": event.occurred_at.isoformat() if event.occurred_at else None,
+        "content": event.content,
+        "payload": event_payload(event),
+        "source_cursor": event.source_cursor,
+    })
+    return event.content_sha256 == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class NormalizedSessionEvent:
     provider_event_id: str

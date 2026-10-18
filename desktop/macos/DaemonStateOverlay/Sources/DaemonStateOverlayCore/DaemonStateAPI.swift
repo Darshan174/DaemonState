@@ -334,7 +334,7 @@ public final class DaemonStateAPI: @unchecked Sendable {
                 activeSession: activeSession
             )
         }
-        if checkpoint.map(ContextValidator.isCurrentSessionTip) != true {
+        if checkpoint.map(ContextValidator.isCurrentSessionBackgroundTip) != true {
             checkpoint = try await captureCheckpoint(
                 workspaceID: workspaceID,
                 activeSession: activeSession
@@ -350,7 +350,7 @@ public final class DaemonStateAPI: @unchecked Sendable {
                 "the current session checkpoint could not be captured"
             )
         }
-        try ContextValidator.requireCurrentSessionTip(checkpoint)
+        try ContextValidator.requireCurrentSessionBackgroundTip(checkpoint)
 
         let checkpointID = checkpoint.id!
         let handoff: SessionHandoffEnvelope = try await send(

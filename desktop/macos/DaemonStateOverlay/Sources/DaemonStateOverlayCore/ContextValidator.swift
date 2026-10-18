@@ -14,6 +14,8 @@ enum ContextValidator {
     static let checkpointSchemaExpectation =
         "work_checkpoint.v5, work_checkpoint.v6, work_checkpoint.v7, work_checkpoint.v8, work_checkpoint.v9, or work_checkpoint.v10"
     static let sessionSchema = "session_handoff.v1"
+    static let sessionBackgroundSchema = "session_background.v1"
+    static let qualityControlSchema = "context_quality_activation.v1"
     static let contextPackSchema = "context_pack.v2"
     static let workspaceSchema = "workspace_context.v1"
     static let activitySchema = "now_activity.v1"
@@ -295,6 +297,33 @@ enum ContextValidator {
         return true
     }
 
+    static func isCurrentSessionBackgroundTip(_ checkpoint: LatestCheckpointEnvelope) -> Bool {
+        // Copying captured background requires an exact source boundary, not a
+        // resolved goal or an executable next action. The checkpoint serializer
+        // marks capture_status/projection incomplete when it cannot derive an
+        // action; background integrity is checked on the generated artifact.
+        checkpoint.schemaVersion == currentCheckpointSchema
+            && exactTipCurrentnessStates.contains(normalizedKey(checkpoint.currentness?.state))
+            && visible(checkpoint.boundary?.eventID) != nil
+            && checkpoint.boundary?.hasNewerEvents == false
+            && checkpoint.boundary?.sequenceNumber != nil
+            && checkpoint.boundary?.sequenceNumber == checkpoint.boundary?.sessionTipSequence
+    }
+
+    static func requireCurrentSessionBackgroundTip(_ checkpoint: LatestCheckpointEnvelope) throws {
+        guard checkpoint.schemaVersion.map(checkpointSchemas.contains) == true else {
+            throw DaemonStateError.unsupportedSchema(
+                expected: checkpointSchemaExpectation,
+                actual: checkpoint.schemaVersion
+            )
+        }
+        guard isCurrentSessionBackgroundTip(checkpoint) else {
+            throw DaemonStateError.activeSessionUnavailable(
+                "the service did not return a complete checkpoint at the current session tip"
+            )
+        }
+    }
+
     static func requireCurrentSessionTip(_ checkpoint: LatestCheckpointEnvelope) throws {
         guard checkpoint.schemaVersion.map(checkpointSchemas.contains) == true else {
             throw DaemonStateError.unsupportedSchema(
@@ -315,10 +344,16 @@ enum ContextValidator {
         activeSession: ActiveSessionIdentity,
         checkpoint: LatestCheckpointEnvelope
     ) throws -> VerifiedContext {
-        guard handoff.schemaVersion == sessionSchema else {
+        let isBackground = handoff.schemaVersion == sessionBackgroundSchema
+        guard isBackground || handoff.schemaVersion == sessionSchema else {
             throw DaemonStateError.unsupportedSchema(
-                expected: sessionSchema,
+                expected: "\(sessionBackgroundSchema) or \(sessionSchema)",
                 actual: handoff.schemaVersion
+            )
+        }
+        if isBackground, handoff.contextRole != "background_only" {
+            throw DaemonStateError.invalidPayload(
+                "session background context_role must be background_only"
             )
         }
         guard handoff.scope == ContextScope.session.rawValue else {
@@ -341,6 +376,11 @@ enum ContextValidator {
                 actual: handoff.sessionID
             )
         }
+        try validateCheckpointIdentity(
+            checkpoint,
+            workspaceID: workspaceID,
+            activeSession: activeSession
+        )
         let checkpointID = visible(checkpoint.id)!
         guard visible(handoff.checkpointID) == checkpointID else {
             throw DaemonStateError.identityMismatch(
@@ -369,8 +409,10 @@ enum ContextValidator {
                 actual: handoff.boundary?.eventID
             )
         }
-        guard handoff.boundary?.sessionTipSequence == expectedSequence,
-              handoff.boundary?.hasNewerEvents == false else {
+        if !isBackground && (
+            handoff.boundary?.sessionTipSequence != expectedSequence
+                || handoff.boundary?.hasNewerEvents != false
+        ) {
             throw DaemonStateError.activeSessionUnavailable(
                 "the handoff is not bound to the current session tip"
             )
@@ -380,17 +422,36 @@ enum ContextValidator {
                 "handoff.quality_report.copy_ready is missing"
             )
         }
-        guard let semanticCopyReady = handoff.readinessDimensions?
-            .semanticReadiness?.copyReady else {
-            throw DaemonStateError.invalidPayload(
-                "handoff.readiness_dimensions.semantic_readiness.copy_ready is missing"
-            )
+        let semanticCopyReady: Bool
+        if isBackground {
+            // The public background contract is the quality decision plus the
+            // clipboard capability. Legacy execution dimensions are descriptive.
+            semanticCopyReady = true
+        } else {
+            guard let legacySemanticReady = handoff.readinessDimensions?.semanticReadiness?.copyReady else {
+                throw DaemonStateError.invalidPayload(
+                    "handoff.readiness_dimensions.semantic_readiness.copy_ready is missing"
+                )
+            }
+            semanticCopyReady = legacySemanticReady
         }
-        guard let evidenceBlocksCopy = handoff.readinessDimensions?
-            .evidenceAccess?.blocksCopy else {
-            throw DaemonStateError.invalidPayload(
-                "handoff.readiness_dimensions.evidence_access.blocks_copy is missing"
-            )
+        let evidenceBlocksCopy: Bool
+        if isBackground {
+            // Receiver availability is separate from a faithful text export.
+            // The producer still reports absent attachments in the background.
+            guard let clipboardAllowed = handoff.operationCapabilities?.clipboardCopy?.allowed else {
+                throw DaemonStateError.invalidPayload(
+                    "session background operation_capabilities.clipboard_copy.allowed is missing"
+                )
+            }
+            evidenceBlocksCopy = !clipboardAllowed
+        } else {
+            guard let blocksCopy = handoff.readinessDimensions?.evidenceAccess?.blocksCopy else {
+                throw DaemonStateError.invalidPayload(
+                    "handoff.readiness_dimensions.evidence_access.blocks_copy is missing"
+                )
+            }
+            evidenceBlocksCopy = blocksCopy
         }
         guard copyReady, semanticCopyReady, !evidenceBlocksCopy else {
             let issues = handoff.qualityReport?.blockingIssues
@@ -408,11 +469,18 @@ enum ContextValidator {
             expectedSHA256: handoff.sha256,
             scope: .session
         )
+        if isBackground || handoff.qualityControl != nil {
+            try validateQualityControl(
+                handoff.qualityControl,
+                contentSHA256: verified.sha256,
+                scope: .session
+            )
+        }
         return VerifiedContext(
             content: verified.content,
             scope: .session,
             workspaceID: workspaceID,
-            schemaVersion: sessionSchema,
+            schemaVersion: isBackground ? sessionBackgroundSchema : sessionSchema,
             sha256: verified.sha256,
             checkpointID: checkpointID,
             provider: activeSession.provider,
@@ -497,8 +565,8 @@ enum ContextValidator {
             scope: .project
         )
         guard let repositoryFingerprint = visible(
-            manifest.repoState?.stateFingerprint
-                ?? manifest.repoState?.snapshotFingerprint
+            manifest.repoState?.snapshotFingerprint
+                ?? manifest.repoState?.stateFingerprint
         ),
         repositoryFingerprint == visible(
             foundation.repositorySnapshotFingerprint
@@ -539,6 +607,11 @@ enum ContextValidator {
             expectedSHA256: manifest.rendering?.markdownSHA256,
             scope: .project
         )
+        try validateQualityControl(
+            response.qualityControl,
+            contentSHA256: verified.sha256,
+            scope: .project
+        )
         return VerifiedContext(
             content: verified.content,
             scope: .project,
@@ -560,6 +633,39 @@ enum ContextValidator {
             return "opencode"
         default:
             return normalized
+        }
+    }
+
+    private static func validateQualityControl(
+        _ control: ContextQualityControlEnvelope?,
+        contentSHA256: String,
+        scope: ContextScope
+    ) throws {
+        guard let control else {
+            throw DaemonStateError.invalidPayload("\(scope.rawValue) quality_control is missing")
+        }
+        guard control.schemaVersion == qualityControlSchema else {
+            throw DaemonStateError.unsupportedSchema(
+                expected: qualityControlSchema,
+                actual: control.schemaVersion
+            )
+        }
+        guard control.status == "active", control.copyAllowed == true else {
+            throw DaemonStateError.contextNotCopyReady(
+                scope: scope,
+                reasons: ["Context quality control has not approved this artifact (\(control.status ?? "missing status"))."]
+            )
+        }
+        guard let candidateID = visible(control.candidateID),
+              visible(control.activeCandidateID) == candidateID else {
+            throw DaemonStateError.invalidPayload(
+                "\(scope.rawValue) quality control candidate is not the active artifact"
+            )
+        }
+        guard visible(control.artifactSHA256)?.lowercased() == contentSHA256 else {
+            throw DaemonStateError.invalidPayload(
+                "\(scope.rawValue) quality control is not bound to the delivered content"
+            )
         }
     }
 

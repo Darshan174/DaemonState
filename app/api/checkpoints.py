@@ -18,12 +18,14 @@ from app.services.checkpoint_verifier import compare_checkpoint_repository, veri
 from app.services.checkpoints import (
     MAX_CONTINUATION_LEAD_CHARS,
     SessionContextMaterializationRequiredError,
+    _checkpoint_is_materialized,
     capture_checkpoint,
     checkpoint_to_dict,
     checkpoints_to_dicts,
     get_checkpoint,
     latest_checkpoint,
     list_checkpoints,
+    project_background_session_checkpoint_data,
     render_resume_bundle,
     resolve_session_handoff_attachment_descriptors,
     resolve_session_handoff_request_verbatim,
@@ -56,6 +58,7 @@ from app.services.session_context import (
     build_session_context_artifact,
 )
 from app.services.session_scope import normalize_session_key, session_provider_values
+from app.services.session_retrieval import load_session_retrieval_context
 
 
 router = APIRouter()
@@ -465,6 +468,12 @@ async def create_session_handoff(
     checkpoint = await _accessible_checkpoint(
         session, checkpoint_id, body.workspace_id, access_scope
     )
+    if (
+        not checkpoint.payload_json
+        or hashlib.sha256(checkpoint.payload_json.encode("utf-8")).hexdigest()
+        != checkpoint.payload_sha256
+    ):
+        raise HTTPException(status_code=422, detail="Checkpoint content failed integrity validation.")
     if body.handoff_origin == "current_active":
         await _require_current_active_session_tip(
             session,
@@ -491,6 +500,14 @@ async def create_session_handoff(
         checkpoint,
         access_scope=access_scope,
     )
+    if (
+        request_verbatim is None
+        and not any(item.category == "goal" for item in checkpoint.items)
+        and _checkpoint_is_materialized(checkpoint)
+    ):
+        # An intact historical session can contain useful background without an
+        # actionable objective. Do not synthesize one from assistant reports.
+        request_verbatim = ""
     if request_verbatim is None:
         raise HTTPException(
             status_code=422,
@@ -543,6 +560,21 @@ async def create_session_handoff(
         selected_repo_path=body.repo_path,
     )
     try:
+        if not request_verbatim:
+            data = await project_background_session_checkpoint_data(
+                session,
+                checkpoint,
+                checkpoint_data=data,
+                access_scope=access_scope,
+            )
+            evidence_source_document_ids = tuple(sorted({
+                *evidence_source_document_ids,
+                *collect_source_document_ids(data),
+            }, key=str))
+        retrieval_context = await load_session_retrieval_context(
+            session, checkpoint,
+            boundary_sequence=data["boundary"]["sequence_number"], access_scope=access_scope,
+        )
         artifact = build_session_context_artifact(
             checkpoint,
             request_verbatim=request_verbatim,
@@ -554,7 +586,12 @@ async def create_session_handoff(
             continuation_lead=body.continuation_lead,
             target_model=body.target_model,
             token_budget=body.token_budget,
+            retrieval_context=retrieval_context,
         )
+        evidence_source_document_ids = tuple(sorted({
+            *evidence_source_document_ids,
+            *collect_source_document_ids(artifact.get("retrieval_context")),
+        }, key=str))
     except SessionContextMaterializationRequiredError as exc:
         raise HTTPException(
             status_code=exc.status_code,
@@ -588,6 +625,9 @@ async def create_session_handoff(
                 context_kind=ContextKind.SESSION,
                 provider=checkpoint.provider,
                 session_id=checkpoint.session_id,
+                checkpoint_id=(
+                    checkpoint.id if body.handoff_origin == "selected" else None
+                ),
             ),
             access_scope_sha256_value=access_scope_sha256(access_scope),
             delivery_profile_sha256_value=delivery_profile_sha256(
@@ -598,6 +638,7 @@ async def create_session_handoff(
             ),
             observation={
                 "schema_version": "session_background_observation.v1",
+                "handoff_origin": body.handoff_origin,
                 "workspace_id": str(body.workspace_id),
                 "provider": checkpoint.provider,
                 "session_id": checkpoint.session_id,
@@ -620,6 +661,8 @@ async def create_session_handoff(
                     str(item.get("sha256") or "")
                     for item in artifact.get("supporting_context") or []
                 ),
+                "background_projection": data.get("background_projection"),
+                "retrieval_context_sha256": canonical_sha256(artifact.get("retrieval_context")),
             },
             artifact=artifact,
             content=str(artifact["content"]),
@@ -644,8 +687,13 @@ async def create_session_handoff(
                 ),
                 "permissions_current": access_scope.allows_workspace(body.workspace_id),
                 "required_dependencies_complete": (
-                    "REQUIRED_DEPENDENCY_MISSING"
-                    not in quality_evaluation.get("hard_failures", [])
+                    ((artifact.get("readiness_dimensions") or {}).get(
+                        "source_completeness"
+                    ) or {}).get("complete") is True
+                    and "REQUIRED_DEPENDENCY_MISSING" not in [
+                        *quality_evaluation.get("hard_failures", []),
+                        *quality_evaluation.get("warnings", []),
+                    ]
                 ),
             },
             artifact_schema_version=SESSION_BACKGROUND_SCHEMA_VERSION,

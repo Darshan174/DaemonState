@@ -768,7 +768,16 @@ def test_handoff_attachment_uri_resolves_only_through_checkpoint_bound_bytes(
             "visual_inspection": None,
         }
     ]
+    identity = {
+        "workspace_id": "attachment-test-workspace",
+        "provider": "codex",
+        "session_id": "attachment-test-session",
+    }
+    boundary_id = "attachment-test-boundary"
     payload = {
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
+        **identity,
+        "boundary": {"session_event_id": boundary_id},
         "sections": {
             "goal": [
                 {
@@ -796,6 +805,8 @@ def test_handoff_attachment_uri_resolves_only_through_checkpoint_bound_bytes(
     )
     checkpoint = SimpleNamespace(
         schema_version=CHECKPOINT_SCHEMA_VERSION,
+        **identity,
+        boundary_event_id=boundary_id,
         payload_json=payload_json,
         payload_sha256=hashlib.sha256(payload_json.encode()).hexdigest(),
     )

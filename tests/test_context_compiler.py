@@ -1409,12 +1409,12 @@ async def test_current_verified_claim_revision_populates_exact_evidence_audit(
     assert result.manifest["repo_state"]["state_fingerprint"]
     assert result.manifest["compiler"] == {
         "name": "ContextCompiler",
-        "version": "context_compiler.v9",
+        "version": "context_compiler.v10",
         "ranking_version": "objective_file_rank.v5",
         "evidence_contract_version": "exact_evidence_span.v1",
         "token_estimation_method": "chars_div_4.v1",
-        "workspace_foundation_compiler_version": "workspace_foundation_compiler.v2",
-        "workspace_foundation_renderer_version": "workspace_foundation_renderer.v2",
+        "workspace_foundation_compiler_version": "workspace_foundation_compiler.v3",
+        "workspace_foundation_renderer_version": "workspace_foundation_renderer.v3",
     }
     assert result.manifest["target_model"]["capabilities"]["name"] == "small_coder_model"
     assert result.manifest["execution_policy"]["require_plan"] is True

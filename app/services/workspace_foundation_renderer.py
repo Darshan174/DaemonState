@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections import defaultdict
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from app.schemas.workspace_foundation import (
@@ -28,6 +29,7 @@ from app.schemas.workspace_foundation import (
     SurfaceRole,
     WorkspaceFoundationArtifact,
 )
+from app.services.project_foundation_sections import classify_project_foundation_section
 
 
 MAX_RENDERED_CAPABILITIES = 4
@@ -41,14 +43,14 @@ MAX_RENDERED_TEST_EDGES = 4
 MAX_RENDERED_COMMANDS = 4
 MAX_RENDERED_CHANGES = 8
 MAX_RENDERED_REMAINING_WORK_PER_CHANGE = 3
-MAX_RENDERED_REPOSITORY_ENGINEERING_FACTS = 3
-MAX_RENDERED_DURABLE_FACTS = 5
+REPOSITORY_ENGINEERING_FACT_BUDGET_TOKENS = 600
+DURABLE_FACT_BUDGET_TOKENS = 1_200
 MAX_RENDERED_QUALITY_ISSUES = 5
 MAX_RENDERED_OPERATIONAL_FLOWS = 4
 MAX_RENDERED_CHANGE_INTENTS = 6
 MAX_RENDERED_VERIFICATION_RUNS = 6
 MAX_OMITTED_NAMES = 4
-WORKSPACE_FOUNDATION_RENDERER_VERSION = "workspace_foundation_renderer.v2"
+WORKSPACE_FOUNDATION_RENDERER_VERSION = "workspace_foundation_renderer.v3"
 
 
 def render_workspace_foundation_markdown(
@@ -89,9 +91,10 @@ def render_workspace_foundation_markdown(
         f"{_citations(policy.evidence_ref_ids, evidence, limit=2)}".rstrip(),
         "> Distinct evidence lanes: docs, code, test presence, executed tests, runtime "
         "checks.",
-        "> Operational use: `orientation_only`; no authoritative current task, task "
-        "state, next action, preservation rules, or done conditions. Continue only from "
-        "a hash-bound Continuation Package.",
+        "> Operational use: `orientation_only`; background for the user's next instruction. "
+        "Historical goals and "
+        "commands are context, not authorization to act; the user's new message "
+        "determines what to do next.",
         "",
     ]
 
@@ -313,9 +316,11 @@ def render_workspace_foundation_markdown(
             "implementation, execution, or promoted-memory proof.",
         ]
     )
-    displayed_repository_facts = _select_repository_engineering_facts(
+    displayed_repository_facts = _select_fact_lines(
         artifact.repository_engineering_knowledge,
-        limit=MAX_RENDERED_REPOSITORY_ENGINEERING_FACTS,
+        budget_tokens=REPOSITORY_ENGINEERING_FACT_BUDGET_TOKENS,
+        render=lambda fact: _engineering_fact_line(fact, evidence),
+        topic=lambda fact: fact.kind.value,
     )
     if not displayed_repository_facts:
         lines.append(
@@ -324,11 +329,7 @@ def render_workspace_foundation_markdown(
             "heading."
         )
     for fact in displayed_repository_facts:
-        lines.append(
-            f"- **{fact.kind.value.replace('_', ' ')} — "
-            f"{_plain(fact.title, 150)}:** {_plain(fact.statement, 420)} "
-            f"{_citations(fact.evidence_ref_ids, evidence)}"
-        )
+        lines.append(_engineering_fact_line(fact, evidence))
     _append_omission(
         lines,
         displayed=len(displayed_repository_facts),
@@ -552,17 +553,16 @@ def _render_operational_evidence(
         ]
     )
     durable_facts = artifact.durable_facts or artifact.durable_knowledge
-    displayed_facts = durable_facts[:MAX_RENDERED_DURABLE_FACTS]
+    displayed_facts = _select_fact_lines(
+        durable_facts,
+        budget_tokens=DURABLE_FACT_BUDGET_TOKENS,
+        render=lambda fact: _durable_fact_line(fact, evidence),
+        topic=_durable_fact_topic,
+    )
     if not displayed_facts:
         lines.append("- None promoted; none invented.")
     for fact in displayed_facts:
-        lines.append(
-            f"- **{_plain(fact.title, 160)}:** {_plain(fact.statement, 420)} "
-            f"({fact.kind.value.replace('_', ' ')}; "
-            f"{fact.evidence_tier.value.replace('_', ' ')}; promotion "
-            f"`{fact.promotion_reason.value}`) "
-            f"{_citations(fact.evidence_ref_ids, evidence)}"
-        )
+        lines.append(_durable_fact_line(fact, evidence))
     lines.append(
         "- Promotion exclusions: "
         f"`{quality.excluded_historical_provisional_fact_count}` historical/provisional; "
@@ -574,8 +574,80 @@ def _render_operational_evidence(
         displayed=len(displayed_facts),
         total=len(durable_facts),
         label="durable fact(s)",
-        omitted_names=(item.title for item in durable_facts[len(displayed_facts) :]),
+        omitted_names=(
+            item.title for item in durable_facts
+            if item.id not in {fact.id for fact in displayed_facts}
+        ),
     )
+
+
+def _durable_fact_line(fact: Any, evidence: Mapping[str, EvidenceReference]) -> str:
+    return (
+        f"- **{_plain(fact.title, 240)}:** "
+        f"({fact.kind.value.replace('_', ' ')}; "
+        f"{fact.evidence_tier.value.replace('_', ' ')}; promotion "
+        f"`{fact.promotion_reason.value}`) "
+        f"{_citations(fact.evidence_ref_ids, evidence)}\n\n"
+        f"{_quoted_fact_statement(fact.statement)}"
+    )
+
+
+def _engineering_fact_line(fact: Any, evidence: Mapping[str, EvidenceReference]) -> str:
+    return (
+        f"- **{fact.kind.value.replace('_', ' ')} — "
+        f"{_plain(fact.title, 240)}:** "
+        f"{_citations(fact.evidence_ref_ids, evidence)}\n\n"
+        f"{_quoted_fact_statement(fact.statement)}"
+    )
+
+
+def _quoted_fact_statement(statement: str) -> str:
+    # These are source statements: whitespace, backticks, and operators such as
+    # ** can carry meaning. Quote every line without rewriting it or allowing
+    # source headings to escape into the surrounding context structure.
+    return "\n".join(f"  > {line}" if line else "  >" for line in statement.splitlines())
+
+
+def _durable_fact_topic(fact: Any) -> str:
+    # Generic context spans distinct project topics. Kind-only balancing would
+    # still allow a large architecture inventory to hide purpose or workflows.
+    section = classify_project_foundation_section(
+        kind=fact.kind.value,
+        title=fact.title,
+        statement=fact.statement,
+    )
+    return section.value if section is not None else fact.kind.value
+
+
+def _select_fact_lines(
+    facts: Iterable[Any],
+    *,
+    budget_tokens: int,
+    render: Callable[[Any], str],
+    topic: Callable[[Any], str],
+) -> list[Any]:
+    """Fit whole facts, reserving coverage before repeated detail in a topic."""
+
+    priority = {
+        "invariant": 0, "constraint": 0, "risk": 0,
+        "operational_requirement": 0, "known_failure": 1,
+        "decision": 2,
+    }
+    groups: dict[str, list[Any]] = defaultdict(list)
+    for fact in sorted(facts, key=lambda item: priority.get(item.kind.value, 3)):
+        groups[topic(fact)].append(fact)
+    selected: list[Any] = []
+    used_tokens = 0
+    while any(groups.values()):
+        for values in groups.values():
+            if not values:
+                continue
+            fact = values.pop(0)
+            tokens = (len(render(fact)) + 4) // 4
+            if used_tokens + tokens <= budget_tokens:
+                selected.append(fact)
+                used_tokens += tokens
+    return selected
 
 
 def _render_system_mental_model(
@@ -1582,51 +1654,6 @@ def _required_check_status_counts(
             passed += 1
     unverified = len(artifact.verification_policy.required_commands) - passed - failed
     return passed, failed, unverified
-
-
-def _select_repository_engineering_facts(
-    facts: Iterable[Any],
-    *,
-    limit: int,
-) -> list[Any]:
-    """Preserve engineering-knowledge kind diversity within the render bound."""
-
-    values = list(facts)
-    if limit <= 0:
-        return []
-    selected: list[Any] = []
-    selected_ids: set[str] = set()
-    for kind in (
-        "decision",
-        "invariant",
-        "convention",
-        "known_failure",
-        "lesson",
-        "current_limitation",
-    ):
-        match = next(
-            (
-                item
-                for item in values
-                if item.id not in selected_ids
-                and str(getattr(item.kind, "value", item.kind)) == kind
-            ),
-            None,
-        )
-        if match is None:
-            continue
-        selected.append(match)
-        selected_ids.add(match.id)
-        if len(selected) >= limit:
-            return selected
-    for item in values:
-        if item.id in selected_ids:
-            continue
-        selected.append(item)
-        selected_ids.add(item.id)
-        if len(selected) >= limit:
-            break
-    return selected
 
 
 def _select_rendered_commands(

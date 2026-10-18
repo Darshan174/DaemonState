@@ -6,6 +6,7 @@ import {
   ArrowRight,
   BookOpenCheck,
   Clipboard,
+  Download,
   FileCode2,
   LockKeyhole,
   RefreshCw,
@@ -55,6 +56,7 @@ import {
   writeExecuteSessionContexts,
 } from "./executeSessionSelection";
 import { useProductWorkspace } from "./useProductWorkspace";
+import { downloadContextFile, sessionContextFile, workspaceContextFile } from "./contextExport";
 
 const SECTION_LINKS = {
   requirements: "/app/execute/inspector?view=active&category=requirements",
@@ -376,8 +378,8 @@ export default function ExecutePage() {
     setWorkspaceCopyState("copying");
     setPreviewError(null);
     try {
-      // Clipboard content is an execution boundary. Recompile immediately so
-      // an internally valid but repository-stale preview cannot be copied.
+      // Refresh the current workspace background, then validate its identity
+      // and integrity. Informational gaps follow the compiler's copy policy.
       const result = await compileWorkspaceContext({ force: true });
       await writeClipboard(await workspaceContextContent(result));
       setWorkspaceCopyState("copied");
@@ -385,6 +387,19 @@ export default function ExecutePage() {
     } catch (error) {
       setWorkspaceCopyState("error");
       recordWorkspaceFailure(error, "Workspace Context could not be copied.");
+      return false;
+    }
+  };
+
+  const downloadWorkspaceContext = async () => {
+    setPreviewError(null);
+    try {
+      const result = await compileWorkspaceContext({ force: true });
+      await workspaceContextContent(result);
+      downloadContextFile(workspaceContextFile(result.workspace_context));
+      return true;
+    } catch (error) {
+      recordWorkspaceFailure(error, "Workspace Context could not be downloaded.");
       return false;
     }
   };
@@ -522,6 +537,7 @@ export default function ExecutePage() {
           canRetry={workspacePreviewRetryable}
           onRetry={retryPreview}
           onCopy={copyWorkspaceContext}
+          onDownload={downloadWorkspaceContext}
           copyState={workspaceCopyState}
           review={workspaceReview}
           reviewCandidate={workspaceReviewCandidate}
@@ -1051,7 +1067,7 @@ function SelectedSessionContextCard({
       );
       if (
         !forceCapture
-        && !sessionCheckpointIsExactTip(checkpoint, provider, sessionId)
+        && !sessionBackgroundCheckpointIsExactTip(checkpoint, provider, sessionId)
       ) {
         checkpoint = await captureSelectedTip();
       }
@@ -1239,6 +1255,26 @@ function SelectedSessionContextCard({
         reason,
         `${title} Session Context could not be copied.`,
       );
+      return false;
+    }
+  };
+
+  const downloadContext = async () => {
+    setError(null);
+    try {
+      const result = await loadContext({ retryTransientNetworkFailure: true });
+      const handoff = result?.handoff || result;
+      const checkpoint = result?.checkpoint || contextCheckpoint || checkpointQuery.data;
+      await copyReadySessionContextContent(handoff, {
+        provider,
+        sessionId,
+        checkpointId: checkpoint?.id,
+        boundarySequence: checkpoint?.boundary?.sequence_number,
+      });
+      downloadContextFile(await sessionContextFile(handoff));
+      return true;
+    } catch (reason) {
+      recordFailure(reason, `${title} Session Context could not be downloaded.`);
       return false;
     }
   };
@@ -1483,12 +1519,13 @@ function SelectedSessionContextCard({
           canRetry={retryable}
           copyState={copyState}
           onCopy={copyContext}
+          onDownload={downloadContext}
           onRetry={retryContext}
           onClose={closePreview}
           returnFocusRef={previewReturnFocusRef}
           contextName={contextName}
           previewTitle={`${title} Session Context Preview`}
-          eyebrow={`Selected task child · ${sessionProviderLabel(provider)}`}
+          eyebrow={`Selected session background · ${sessionProviderLabel(provider)}`}
           review={review}
           reviewCandidate={reviewCandidate}
           candidatesQuery={candidatesQuery}
@@ -1878,6 +1915,29 @@ function ContextQualityReviewPanel({
 }
 
 
+function ContextDownloadButton({ onDownload, disabled }) {
+  const [state, setState] = useState("idle");
+  return (
+    <button
+      type="button"
+      disabled={disabled || state === "downloading"}
+      onClick={async () => {
+        setState("downloading");
+        try {
+          setState(await onDownload() ? "downloaded" : "error");
+        } catch {
+          setState("error");
+        }
+      }}
+      className="btn-secondary min-h-9 shrink-0 px-3 text-[10px]"
+    >
+      <Download className="h-3.5 w-3.5" aria-hidden="true" />
+      {state === "downloading" ? "Preparing download…" : state === "downloaded"
+        ? "Download again" : state === "error" ? "Retry download" : "Download context"}
+    </button>
+  );
+}
+
 function ContextPreviewDialog({
   result,
   loading,
@@ -1885,6 +1945,7 @@ function ContextPreviewDialog({
   canRetry,
   onRetry,
   onCopy,
+  onDownload,
   copyState,
   review,
   reviewCandidate,
@@ -1937,6 +1998,10 @@ function ContextPreviewDialog({
   const workspaceContext = result?.workspace_context || {};
   const workspaceContent = workspaceContext.content || "";
   const workspaceCopyReady = workspaceContext.quality_report?.copy_ready === true;
+  const workspaceLimitations = (workspaceContext.quality_report?.issues || [])
+    .filter((issue) => issue?.blocking !== true)
+    .map((issue) => rawText(issue?.message))
+    .filter(Boolean);
   const workspaceTokens = Number.isFinite(workspaceContext.estimated_tokens)
     ? workspaceContext.estimated_tokens
     : workspaceContent
@@ -2035,6 +2100,10 @@ function ContextPreviewDialog({
                 <div role="alert" className="mb-5 rounded-xl border border-attention/35 bg-attention/10 p-4 text-xs leading-5 text-ink">
                   This foundation is incomplete. Review the blocking gaps below and recompile after adding the missing evidence; copying is disabled.
                 </div>
+              ) : workspaceLimitations.length ? (
+                <div role="status" className="mb-5 rounded-xl border border-attention/35 bg-attention/10 p-4 text-xs leading-5 text-ink">
+                  Background available with limitations. {workspaceLimitations.join(" ")}
+                </div>
               ) : null}
               <div>
                 <div className="flex items-center justify-between gap-3">
@@ -2060,6 +2129,16 @@ function ContextPreviewDialog({
                 >
                   {workspaceContent}
                 </pre>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <ContextDownloadButton
+                    onDownload={onDownload}
+                    disabled={!workspaceContent || !workspaceCopyReady || copyState === "copying"}
+                  />
+                  <p className="max-w-xl text-[10px] leading-4 text-muted">
+                    Download adds detailed records and evidence references to the overview.
+                    Original files and images stay separate.
+                  </p>
+                </div>
               </div>
               <details className="mt-5 rounded-xl border border-line bg-surface-raised p-4">
                 <summary className="cursor-pointer text-xs font-semibold text-ink">
@@ -2107,12 +2186,13 @@ function SessionContextPreviewDialog({
   canRetry,
   copyState,
   onCopy,
+  onDownload,
   onRetry,
   onClose,
   returnFocusRef,
   contextName = "Session Context",
   previewTitle = "Session Context Preview",
-  eyebrow = "Task child · same harness",
+  eyebrow = "Session background · same harness",
   review,
   reviewCandidate,
   candidatesQuery,
@@ -2179,7 +2259,7 @@ function SessionContextPreviewDialog({
               {previewTitle}
             </h2>
             <p className="mt-1 text-xs leading-5 text-ink-muted">
-              A previewable background artifact for this individual session. Its Workspace Context parent is separate; receiver delivery and copy readiness are reported independently.
+              Background from this session for you to build on with your next instruction. Any missing evidence or other limitations are noted below.
             </p>
           </div>
           <button
@@ -2287,6 +2367,16 @@ function SessionContextPreviewDialog({
               >
                 {result.content}
               </pre>
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <ContextDownloadButton
+                  onDownload={onDownload}
+                  disabled={!copyReady || copyState === "copying"}
+                />
+                <p className="max-w-xl text-[10px] leading-4 text-muted">
+                  Download adds detailed records and evidence references to the overview.
+                  Original files and images stay separate.
+                </p>
+              </div>
             </div>
           </>
         ) : null}
@@ -3554,7 +3644,7 @@ async function retryTransientNetworkRequest(request, retryEnabled) {
 }
 
 
-function sessionCheckpointIsExactTip(checkpoint, provider, sessionId) {
+function sessionBackgroundCheckpointIsExactTip(checkpoint, provider, sessionId) {
   const currentness = rawText(checkpoint?.currentness?.state).toLowerCase();
   if (
     !checkpoint
@@ -3562,7 +3652,9 @@ function sessionCheckpointIsExactTip(checkpoint, provider, sessionId) {
     || !checkpoint.id
     || normalizeProvider(checkpoint.provider) !== normalizeProvider(provider)
     || rawText(checkpoint.session_id) !== rawText(sessionId)
-    || checkpoint.capture_status !== "complete"
+    || !rawText(checkpoint.boundary?.event_id)
+    // Capture/projection completeness describes the historical execution task.
+    // The background endpoint validates the immutable source and copy policy.
     // Historical is strictly an age classification. An exact boundary remains
     // the selected session tip until a newer event supersedes it.
     || !["captured", "historical"].includes(currentness)

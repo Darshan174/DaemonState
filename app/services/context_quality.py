@@ -184,6 +184,7 @@ def context_scope_key_sha256(
     repository_identity: str | None = None,
     provider: str | None = None,
     session_id: str | None = None,
+    checkpoint_id: UUID | None = None,
 ) -> str:
     if context_kind is ContextKind.SESSION:
         if not provider or not session_id:
@@ -194,6 +195,10 @@ def context_scope_key_sha256(
             "provider": str(provider).strip().casefold(),
             "session_id": str(session_id).strip(),
         }
+        if checkpoint_id is not None:
+            # An explicitly selected capture has its own review history. It must
+            # not replace the current-session pointer or inherit a later task.
+            identity["checkpoint_id"] = str(checkpoint_id)
     else:
         identity = {
             "workspace_id": str(workspace_id),

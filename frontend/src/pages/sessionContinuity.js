@@ -97,6 +97,17 @@ export function sessionContextSemanticCopyReady(handoff) {
 
 function sessionContextPolicyCopyReady(handoff) {
   const report = handoff?.quality_report;
+  if (handoff?.schema_version === SESSION_BACKGROUND_SCHEMA) {
+    // The background compiler decides which gaps are informational. Delivery
+    // readiness and the historical task objective must not override that policy.
+    return Boolean(
+      report?.copy_ready === true
+      && contextQualityActivationCopyReady(
+        handoff?.quality_control,
+        handoff?.sha256,
+      ),
+    );
+  }
   const dimensions = sessionContextReadinessDimensions(handoff);
   const semantic = dimensions?.semantic_readiness;
   const evidence = dimensions?.evidence_access;
@@ -204,12 +215,10 @@ export function sessionContextOperationState(handoff) {
   const policyCopyReady = sessionContextPolicyCopyReady(handoff);
   const clipboardCopyAllowed = Boolean(
     policyCopyReady
-    && !receiverPending
-    && !degraded
     && (
       canonical
         ? clipboardCapability.configured && clipboardCapability.allowed
-        : true
+        : !receiverPending && !sourceUnavailable && !degraded
     )
   );
 
@@ -228,7 +237,7 @@ export function sessionContextOperationState(handoff) {
       label: "Background available · Evidence pending",
       tone: "attention",
       previewAllowed: true,
-      clipboardCopyAllowed: false,
+      clipboardCopyAllowed,
     };
   }
   if (sourceUnavailable) {
@@ -237,7 +246,7 @@ export function sessionContextOperationState(handoff) {
       label: "Background available · Required evidence unavailable",
       tone: "attention",
       previewAllowed: true,
-      clipboardCopyAllowed: false,
+      clipboardCopyAllowed,
     };
   }
   if (degraded) {
@@ -246,7 +255,7 @@ export function sessionContextOperationState(handoff) {
       label: "Background available · Degraded text only",
       tone: "attention",
       previewAllowed: true,
-      clipboardCopyAllowed: false,
+      clipboardCopyAllowed,
     };
   }
   if (RECEIVER_DELIVERED_STATUSES.has(receiverStatus)) {
@@ -280,6 +289,18 @@ export function sessionContextOperationState(handoff) {
       tone: "attention",
       previewAllowed: true,
       clipboardCopyAllowed: false,
+    };
+  }
+  if (
+    qualityStatus === "ready_with_limitations"
+    || clipboardCapability.status === "ready_with_limitations"
+  ) {
+    return {
+      status: "background_with_limitations",
+      label: "Background available · Limitations noted",
+      tone: "attention",
+      previewAllowed: true,
+      clipboardCopyAllowed,
     };
   }
   return {
@@ -359,8 +380,14 @@ export function sessionContextAdvisories(handoff) {
   }
   if (operation.status === "evidence_pending") {
     messages.push(
-      "The background can be previewed, but required evidence must be attached or materialized before it is sent to a receiver.",
+      operation.clipboardCopyAllowed
+        ? "Background text can be copied. Referenced attachments are not included; attach them separately if needed."
+        : "The background can be previewed, but required evidence must be attached or materialized before it is sent to a receiver.",
     );
+  } else if (operation.status === "evidence_unavailable") {
+    messages.push("Some source evidence is unavailable. Review the recorded gaps before relying on the background.");
+  } else if (operation.status === "degraded") {
+    messages.push("Only the available text is included; the original evidence is incomplete.");
   } else if (operation.status === "ready_to_send") {
     messages.push(
       operation.clipboardCopyAllowed
@@ -380,7 +407,14 @@ export function sessionContextAdvisories(handoff) {
   ) {
     messages.push(cleanText(repositorySnapshot.message));
   }
-  return messages;
+  const warnings = Array.isArray(handoff?.quality_report?.warnings)
+    ? handoff.quality_report.warnings
+    : [];
+  for (const warning of warnings) {
+    const message = cleanText(typeof warning === "string" ? warning : warning?.message);
+    if (message) messages.push(message);
+  }
+  return [...new Set(messages)];
 }
 
 function sessionContextReadinessDimensions(handoff) {
@@ -420,6 +454,12 @@ export function sessionContextQualityMessage(
   contextName = "Current Session Context",
 ) {
   const operation = sessionContextOperationState(handoff);
+  if (operation.clipboardCopyAllowed) {
+    const detail = sessionContextAdvisories(handoff).join(" ");
+    return detail
+      ? `${contextName} can be copied as background. ${detail}`
+      : `${contextName} can be copied as background for your next instruction.`;
+  }
   if (operation.status === "evidence_pending") {
     return `${contextName} is available for preview, but required evidence is not ready for the receiver. Use a verified attachment delivery flow before continuing.`;
   }

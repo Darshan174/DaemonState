@@ -8,7 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-CONTEXT_QUALITY_POLICY_VERSION = "context_quality_policy.v1"
+CONTEXT_QUALITY_POLICY_VERSION = "context_quality_policy.v2"
 CONTEXT_QUALITY_ACTIVATION_SCHEMA_VERSION = "context_quality_activation.v1"
 
 
@@ -155,4 +155,3 @@ def canonical_json(value: Any) -> str:
 
 def canonical_sha256(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
-

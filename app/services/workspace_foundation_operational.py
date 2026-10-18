@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
@@ -343,8 +344,9 @@ def compile_durable_facts(
     for fact in durable_knowledge:
         promotion_reason = _promotion_reason(fact.evidence_tier)
         payload = fact.model_dump(mode="python")
+        assertion = (fact.identity_key, fact.statement.strip())
         payload.update(
-            id=f"fact.{_stable_hash(fact.identity_key)[:16]}",
+            id=f"fact.{_stable_hash(json.dumps(assertion))[:16]}",
             promotion_reason=promotion_reason,
         )
         result.append(DurableKnowledgeFact.model_validate(payload))
