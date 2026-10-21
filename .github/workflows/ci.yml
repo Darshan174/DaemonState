@@ -30,9 +30,9 @@ jobs:
         working-directory: frontend
         run: |
           npm run build
-          cmp ../LICENSE dist/assets/legal/LICENSE
-          cmp ../NOTICE dist/assets/legal/NOTICE
-          cmp ../THIRD_PARTY_NOTICES.txt dist/assets/legal/THIRD_PARTY_NOTICES.txt
+          cmp ../LICENSE dist/client/assets/legal/LICENSE
+          cmp ../NOTICE dist/client/assets/legal/NOTICE
+          cmp ../THIRD_PARTY_NOTICES.txt dist/client/assets/legal/THIRD_PARTY_NOTICES.txt
       - name: Build Docker image
         run: docker build -t daemonstate .
       - name: Exercise personal self-hosting stack

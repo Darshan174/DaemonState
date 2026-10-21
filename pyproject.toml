@@ -57,10 +57,10 @@ dependencies = [
 daemonstate = "app.cli.main:main"
 
 [project.urls]
-Homepage = "https://github.com/Darshan174/DaemonState-Private"
-Repository = "https://github.com/Darshan174/DaemonState-Private"
-Issues = "https://github.com/Darshan174/DaemonState-Private/issues"
-Documentation = "https://github.com/Darshan174/DaemonState-Private#readme"
+Homepage = "https://github.com/Darshan174/DaemonState"
+Repository = "https://github.com/Darshan174/DaemonState"
+Issues = "https://github.com/Darshan174/DaemonState/issues"
+Documentation = "https://github.com/Darshan174/DaemonState#readme"
 
 [project.optional-dependencies]
 dev = [
@@ -76,6 +76,11 @@ packages = ["app"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+# Pin the rule set explicitly: newer ruff releases widen the default selection,
+# which would otherwise turn CI red without any code change.
+select = ["E4", "E7", "E9", "F"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
