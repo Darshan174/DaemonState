@@ -25,6 +25,14 @@ from app.services.vector_search import (
 )
 
 
+
+async def _disabled_vector_search(*_args, **_kwargs):
+    return VectorSearchResult(enabled=False, matches=[])
+
+
+async def _disabled_text_search(*_args, **_kwargs):
+    return TextSearchResult(enabled=False, matches=[])
+
 class TestGraphProvenance:
     async def test_component_read_includes_source_type(self, client, db_session):
         model = Model(id=uuid4(), name="Pricing")
@@ -784,6 +792,12 @@ class TestWorkspaceScopedGraphEndpoints:
     async def test_query_is_limited_to_workspace_components(self, client, db_session):
         ws1 = "00000000-0000-0000-0000-000000000051"
         ws2 = "00000000-0000-0000-0000-000000000052"
+        # PostgreSQL enforces source_documents.workspace_id; create both workspaces.
+        db_session.add_all([
+            Workspace(id=UUID(ws1), name="Workspace one", slug=f"ws-one-{uuid4().hex[:8]}"),
+            Workspace(id=UUID(ws2), name="Workspace two", slug=f"ws-two-{uuid4().hex[:8]}"),
+        ])
+        await db_session.flush()
         embedder = HashingEmbedder()
         model = Model(id=uuid4(), name="Risk")
         doc_ws1 = SourceDocument(
@@ -854,7 +868,17 @@ class TestWorkspaceScopedGraphEndpoints:
         assert trace["scored_component_count"] >= 1
         assert trace["relationships_used"] == []
 
-    async def test_query_exposes_versioned_trace_and_retrieval_knobs(self, client, db_session):
+    async def test_query_exposes_versioned_trace_and_retrieval_knobs(
+        self, client, db_session, monkeypatch,
+    ):
+        # This test covers the Python-scan fallback; disable both database
+        # prefilters so it behaves the same on SQLite and PostgreSQL.
+        monkeypatch.setattr(
+            "app.services.query.search_component_vectors", _disabled_vector_search,
+        )
+        monkeypatch.setattr(
+            "app.services.query.search_component_text", _disabled_text_search,
+        )
         embedder = HashingEmbedder()
         model = Model(id=uuid4(), name="Risk")
         doc = SourceDocument(
@@ -978,6 +1002,12 @@ class TestWorkspaceScopedGraphEndpoints:
             )
 
         monkeypatch.setattr("app.services.query.search_component_vectors", fake_vector_search)
+        # Isolate the vector path: on PostgreSQL the real full-text prefilter
+        # would also return candidates and turn this into a hybrid query.
+        monkeypatch.setattr(
+            "app.services.query.search_component_text",
+            _disabled_text_search,
+        )
 
         resp = await client.post("/api/query", json={
             "question": "launch blocker",
@@ -1039,6 +1069,11 @@ class TestWorkspaceScopedGraphEndpoints:
             )
 
         monkeypatch.setattr("app.services.query.search_component_text", fake_text_search)
+        # Isolate the text path from the real pgvector prefilter on PostgreSQL.
+        monkeypatch.setattr(
+            "app.services.query.search_component_vectors",
+            _disabled_vector_search,
+        )
 
         resp = await client.post("/api/query", json={
             "question": "launch blocker",
@@ -1245,6 +1280,12 @@ class TestWorkspaceScopedGraphEndpoints:
     async def test_graph_build_processes_only_workspace_pending_documents(self, client, db_session):
         ws1 = "00000000-0000-0000-0000-000000000061"
         ws2 = "00000000-0000-0000-0000-000000000062"
+        # PostgreSQL enforces source_documents.workspace_id; create both workspaces.
+        db_session.add_all([
+            Workspace(id=UUID(ws1), name="Workspace one", slug=f"ws-one-{uuid4().hex[:8]}"),
+            Workspace(id=UUID(ws2), name="Workspace two", slug=f"ws-two-{uuid4().hex[:8]}"),
+        ])
+        await db_session.flush()
         doc_ws1 = SourceDocument(
             id=uuid4(),
             source_type="slack",

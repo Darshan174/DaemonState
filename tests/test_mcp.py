@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, text
+from sqlalchemy import inspect, select, text
 
 from app.models import (
     Claim,
@@ -42,10 +42,12 @@ async def _insert_context_pack(
     manifest,
     health_score=None,
 ):
-    columns = {
-        row[1]
-        for row in (await session.execute(text("PRAGMA table_info(context_packs)"))).all()
-    }
+    connection = await session.connection()
+    columns = await connection.run_sync(
+        lambda sync_conn: {
+            column["name"] for column in inspect(sync_conn).get_columns("context_packs")
+        }
+    )
     if "repo_state_json" in columns:
         await session.execute(
             text(
@@ -116,10 +118,12 @@ async def _insert_context_pack_item(
     token_cost,
     item_type="component",
 ):
-    columns = {
-        row[1]
-        for row in (await session.execute(text("PRAGMA table_info(context_pack_items)"))).all()
-    }
+    connection = await session.connection()
+    columns = await connection.run_sync(
+        lambda sync_conn: {
+            column["name"] for column in inspect(sync_conn).get_columns("context_pack_items")
+        }
+    )
     if "item_type" in columns:
         await session.execute(
             text(
