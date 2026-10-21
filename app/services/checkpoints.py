@@ -4165,7 +4165,12 @@ async def resolve_session_handoff_request_verbatim(
                 goal_payload,
             )
             if request is not None and not requires_dialogue_replay:
-                validated_stored_request = request
+                # Validation trims surrounding whitespace; when that is the only
+                # difference, keep the stored bytes so the request stays
+                # lossless (its sha256 matches the source event).
+                validated_stored_request = (
+                    stored_verbatim if request == stored_verbatim.strip() else request
+                )
             if requires_dialogue_replay:
                 # A classifier-version mismatch invalidates the stored selection,
                 # not just its rendering. Replay the access-scoped dialogue before

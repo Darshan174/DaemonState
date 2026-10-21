@@ -1673,6 +1673,8 @@ def _append_staging_proof_obligations(
         str(_field(item, "id", "")): item for item in contract.verification
     }
     emitted = False
+    uses_default_proof = False
+    default_proof_index: int | None = None
     for requirement_id in contract.definition_of_done:
         requirement = requirements.get(requirement_id)
         if (
@@ -1714,14 +1716,34 @@ def _append_staging_proof_obligations(
                 )
             )
         proof = list(dict.fromkeys(value for value in proof if value))
+        if default_proof_index is None:
+            default_proof_index = len(lines)
         lines.append(f"- {requirement_id} [{status}]: {requirement_text}")
-        lines.append(f"  - Proof: {'; '.join(proof)}.")
+        if proof == [_DEFAULT_REQUIREMENT_PROOF]:
+            # The generic rule is stated once above the list instead of being
+            # repeated under every requirement; this keeps Project Context
+            # inside its model-facing overhead budget.
+            uses_default_proof = True
+        else:
+            lines.append(f"  - Proof: {'; '.join(proof)}.")
+    if uses_default_proof and default_proof_index is not None:
+        lines.insert(
+            default_proof_index,
+            "- Proof for every requirement without its own Proof line: "
+            f"{_DEFAULT_REQUIREMENT_PROOF}.",
+        )
     if not emitted:
         lines.append("- Satisfy the authoritative current lead.")
     lines.extend([
         "- Every mandatory verifier has observed passing evidence.",
         "- Protected repository baseline remains intact.",
     ])
+
+
+_DEFAULT_REQUIREMENT_PROOF = (
+    "record observed repository/runtime evidence that this exact "
+    "requirement is satisfied; prior-worker claims alone do not count"
+)
 
 
 def _model_rubric_proof_guidance(
@@ -1818,10 +1840,7 @@ def _model_rubric_proof_guidance(
             "alone do not count"
         )
 
-    return (
-        "record observed repository/runtime evidence that this exact "
-        "requirement is satisfied; prior-worker claims alone do not count"
-    )
+    return _DEFAULT_REQUIREMENT_PROOF
 
 
 def _contract_repository_paths(

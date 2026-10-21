@@ -338,7 +338,16 @@ def resolve_conversation_state(
         )
         transition: TurnTransition
 
-        if objective_classification in {
+        # "done" right after an explicit user-action request (for example
+        # "please authenticate GitHub") answers that prerequisite; it is not a
+        # bare completion marker, so let the acknowledgement branch bind it.
+        answers_user_action = bool(
+            objective_classification is ObjectiveClassification.COMPLETION_MARKER
+            and pending is not None
+            and pending.kind == "user_action"
+            and _ACK_RE.fullmatch(user_text)
+        )
+        if not answers_user_action and objective_classification in {
             ObjectiveClassification.INTERRUPTION_MARKER,
             ObjectiveClassification.COMPLETION_MARKER,
             ObjectiveClassification.PROVIDER_COMPACTION_WRAPPER,
@@ -643,7 +652,14 @@ def resolve_conversation_state(
                 )
                 lifecycle = "active"
             pending = None
-        elif objective_classification is ObjectiveClassification.DEICTIC:
+        elif objective_classification is ObjectiveClassification.DEICTIC and not (
+            # An explicit scope follow-up ("both for session and workspace
+            # context") is bindable to the active goal even though it is not
+            # self-contained; only unanchored deictic turns stay unresolved.
+            root_fragment is not None
+            and _TASK_FOLLOWUP_RE.search(user_text)
+            and not _TASK_RESET_RE.search(user_text)
+        ):
             transition = _transition(
                 event_id,
                 sequence,

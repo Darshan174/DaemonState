@@ -4,8 +4,10 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import struct
 import subprocess
+import sys
 import threading
 import zlib
 from datetime import timedelta
@@ -41,6 +43,7 @@ from app.models import (
 from app.models_continuation_stage import ContinuationStageRequest
 from app.services.access import AccessScope
 from app.services import continuation as continuation_module
+from app.services.session_context import SESSION_CONTEXT_RENDERER_VERSION
 from app.services.checkpoints import (
     MAX_CONTINUATION_LEAD_CHARS,
     capture_checkpoint,
@@ -3062,6 +3065,13 @@ async def test_run_continuation_delivers_real_pack_and_records_lineage(
         "app.services.harness_adapters.shutil.which",
         lambda name: str(fake_claude) if name == "claude" else None,
     )
+    # The compiled verifier runs `python3 -m pytest`; resolve `python3` to the
+    # interpreter running this suite so the result does not depend on whether
+    # the machine's global python3 has pytest installed.
+    monkeypatch.setenv(
+        "PATH",
+        f"{Path(sys.executable).parent}{os.pathsep}{os.environ.get('PATH', '')}",
+    )
 
     response = await client.post(
         "/api/continuations",
@@ -4493,7 +4503,7 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     )
     assert public_context["semantic_schema_version"] == "session_context.v3"
     assert public_context["context_role"] == "background_only"
-    assert public_context["render_variant"] == "session_context_background.v2"
+    assert public_context["render_variant"] == SESSION_CONTEXT_RENDERER_VERSION
     assert public_context["continuation_lead"]["request_verbatim"] == continuation_lead
     assert public_context["current_goal"]["request_verbatim"] == goal
     assert public_context["readiness"]["status"] == "awaiting_user_instruction"
