@@ -162,7 +162,7 @@ The returned manifest follows the implemented `context_pack.v2` contract:
 - persist applicable `ContextPackItem` claim, component, evidence-span, and
   source-document identifiers.
 
-The broader [Context Pack v2 design reference](context-pack-v2.md) contains
+The broader Context Pack v2 design reference contains
 additional historical hardening proposals. For current behavior, the compiler
 manifest and its focused tests are authoritative.
 
@@ -229,7 +229,7 @@ Agents should cite facts from the trace instead of inventing missing context.
 Status: implemented reference for the Context Compiler v2 MCP boundary. The
 runtime write tools above are registered, and `prepare_task` calls the shared
 compiler, validates the returned durable pack, and follows the manifest
-contract in [Context Pack v2](context-pack-v2.md). Its import guard exists for
+contract in Context Pack v2. Its import guard exists for
 partial/integration checkouts and returns `compiler_unavailable` instead of
 inventing a parallel compiler.
 
@@ -314,7 +314,7 @@ Side effects:
 - Trust zone: generated instructions are `trusted_system`; user objective is
   `trusted_human`; quoted evidence keeps original trust.
 - Manifest: must use the final `context_pack.v2` field names and persistence
-  metadata from `docs/context-pack-v2.md`.
+  metadata from the Context Pack v2 design reference.
 - Idempotency: the compiler derives its replay identity from the normalized
   objective, explicit focus, workspace, profile, and repository state.
 

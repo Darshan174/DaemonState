@@ -73,4 +73,4 @@ records, and renders the Markdown deterministically.
 Trust separation prevents source text from gaining instruction authority; it
 does not prove the source is true. Source provenance, trust zones, freshness,
 and conflict handling remain the responsibility of the evidence ledger and
-context compiler described in [Security For Context Packs](security-context-packs.md).
+context compiler described in the security contract for context packs.

@@ -10,7 +10,6 @@ distinguishes shipped behavior from design contracts and future work.
 |---|---|
 | [Getting started](getting-started.md) | Choose an install profile, start DaemonState, connect a repository, and complete the first product loop. |
 | [Product guide](product-guide.md) | Understand Continue, Library, Execute, Workspace Context, Session Context, checkpoints, evidence, and current browser boundaries. |
-| [Product positioning](product-positioning.md) | Read the audience, category, promise, current wedge, non-goals, and evidence standard. |
 | [Self-hosting](self-hosting.md) | Operate the workstation, personal Docker, or hardened single-host profile. |
 | [Demo walkthrough](demo.md) | Tour the product with clearly marked sample evidence and no provider credentials. |
 
@@ -43,29 +42,10 @@ distinguishes shipped behavior from design contracts and future work.
 |---|---|
 | [Production runbook](production-runbook.md) | Hardened single-host API deployment, TLS, secrets, backups, restore drills, upgrades, and rollback. |
 | [OpenTelemetry](opentelemetry.md) | Optional metadata-only trace export and privacy boundaries. |
-| [Release readiness](release-readiness.md) | Maintainer snapshot of release checks, known gaps, and verification history. It is not a support-policy guarantee. |
 | [Changelog](../CHANGELOG.md) | User-visible additions, changes, and current alpha boundaries for the unreleased 0.3.0 line. |
 | [Licensing](licensing.md) | SUL-1.0 permissions, restrictions, the earlier MIT boundary, and contribution implications. |
 | [Security policy](../SECURITY.md) | Supported versions and private vulnerability reporting. |
 | [Contributing](../CONTRIBUTING.md) | Maintainer setup, checks, code style, and the current contribution pause. |
-
-## Implementation and design contracts
-
-The files below are useful to maintainers and reviewers. Some contain a mix of
-observed implementation, acceptance contracts, and explicitly labelled future
-work. A proposed section is not a product claim. For current user-facing
-behavior, prefer the README, Product guide, source code, and tests.
-
-- [Context Compiler v2 contract](context-compiler-v2.md)
-- [Context Pack v2 contract](context-pack-v2.md)
-- [Security for context packs contract](security-context-packs.md)
-- [Deterministic project compiler contract](deterministic-project-compiler-contract.md)
-- [Knowledge graph contract](knowledge-graph-contract.md)
-- [Knowledge graph display strategy](knowledge-graph-display-strategy.md)
-- [Connector/graph contract](connectors-graph-contract.md)
-- [Founder oversight contract](founder-oversight-contract.md)
-- [Roadmap completion contract](roadmap-completion-contract.md)
-- [Project map behavior](board-vs-explore.md)
 
 ## Status language
 
