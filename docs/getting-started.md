@@ -29,7 +29,7 @@ installed only on the host.
 Run the read-only prerequisite check before installing anything:
 
 ```bash
-git clone https://github.com/Darshan174/DaemonState-Private.git daemonstate
+git clone https://github.com/Darshan174/DaemonState.git daemonstate
 cd daemonstate
 bash scripts/doctor.sh --bare-metal
 ```

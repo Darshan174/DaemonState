@@ -9,7 +9,7 @@ fake connected state, or turn sample records into a real repository checkout.
 Use the personal Docker profile:
 
 ```bash
-git clone https://github.com/Darshan174/DaemonState-Private.git daemonstate
+git clone https://github.com/Darshan174/DaemonState.git daemonstate
 cd daemonstate
 bash scripts/self-host.sh
 ```

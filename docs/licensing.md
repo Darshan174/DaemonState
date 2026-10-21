@@ -45,7 +45,7 @@ so describing this version as “open source” would be inaccurate.
 This change is not retroactive. Versions through 0.2.0 were distributed under
 the MIT License, and anyone who validly received those versions keeps the
 rights the MIT License granted. The exact final MIT-licensed source boundary is
-commit [`45b7a6e653a1762bf91b99fae4c7adf3dafc55ce`](https://github.com/Darshan174/DaemonState-Private/commit/45b7a6e653a1762bf91b99fae4c7adf3dafc55ce).
+commit [`3bec08178c8dbf2517de1dbc6ec0db7bab21bb89`](https://github.com/Darshan174/DaemonState/commit/3bec08178c8dbf2517de1dbc6ec0db7bab21bb89).
 Later source distributed with the current `LICENSE` file uses SUL 1.0.
 
 ## Contributions

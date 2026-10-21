@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Darshan174/DaemonState-Private/releases"><img alt="Version 0.3.0" src="https://img.shields.io/badge/version-0.3.0-171713"></a>
-  <a href="https://github.com/Darshan174/DaemonState-Private/blob/main/LICENSE"><img alt="SUL 1.0 license" src="https://img.shields.io/badge/license-SUL--1.0-d9ff68"></a>
+  <a href="https://github.com/Darshan174/DaemonState/releases"><img alt="Version 0.3.0" src="https://img.shields.io/badge/version-0.3.0-171713"></a>
+  <a href="https://github.com/Darshan174/DaemonState/blob/main/LICENSE"><img alt="SUL 1.0 license" src="https://img.shields.io/badge/license-SUL--1.0-d9ff68"></a>
   <img alt="Python 3.12 or newer" src="https://img.shields.io/badge/python-%E2%89%A53.12-3776AB">
   <img alt="Active alpha" src="https://img.shields.io/badge/status-active%20alpha-f59e0b">
 </p>
@@ -21,6 +21,9 @@
   <a href="CONTRIBUTING.md">Contributing</a> ·
   <a href="SECURITY.md">Security</a>
 </p>
+
+**Portable project context that follows your work across Codex, Claude Code, and
+OpenCode.**
 
 DaemonState is a local, source-backed continuity layer for AI coding agents. It
 discovers project-scoped Codex, Claude Code, and OpenCode sessions, reconciles
@@ -89,7 +92,7 @@ installed Codex, Claude, or OpenCode desktop app. Setup prebuilds the native
 paste helper used by the cards.
 
 ```bash
-git clone https://github.com/Darshan174/DaemonState-Private.git daemonstate
+git clone https://github.com/Darshan174/DaemonState.git daemonstate
 cd daemonstate
 bash scripts/doctor.sh --bare-metal
 bash scripts/setup.sh
@@ -112,7 +115,7 @@ UI at <http://localhost:5000> and the API remains at port 8000.
 Requirements: Git, Docker, and Docker Compose v2 with `up --wait` support.
 
 ```bash
-git clone https://github.com/Darshan174/DaemonState-Private.git daemonstate
+git clone https://github.com/Darshan174/DaemonState.git daemonstate
 cd daemonstate
 bash scripts/self-host.sh
 ```
@@ -266,5 +269,5 @@ bash scripts/smoke.sh
 DaemonState 0.3.0 and later use the source-available Sustainable Use License 1.0
 (`SUL-1.0`). Personal, noncommercial, and internal business self-hosting are
 allowed; paid product or service use is not. The final MIT-licensed source is
-commit `45b7a6e653a1762bf91b99fae4c7adf3dafc55ce`. See [LICENSE](LICENSE) and
+commit `3bec08178c8dbf2517de1dbc6ec0db7bab21bb89`. See [LICENSE](LICENSE) and
 [Licensing](docs/licensing.md).
